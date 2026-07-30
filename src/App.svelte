@@ -1369,7 +1369,8 @@
     }
 
     .popover {
-      width: 320px;
+      width: 100%;
+      min-width: 0;
       max-width: 320px;
     }
   }

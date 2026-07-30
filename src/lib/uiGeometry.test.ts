@@ -35,6 +35,13 @@ describe('popover geometry contract', () => {
     expect(css).toMatch(/\.panel-resize-dragger::after\s*{[^}]*width: 36px;[^}]*height: 4px;/s);
   });
 
+  it('lets the webview shrink below its nominal width without creating horizontal focus scroll', () => {
+    expect(componentCss).toMatch(
+      /html,\s*body,\s*#app,\s*\.popover\s*{[^}]*width: 100%;[^}]*min-width: 0;[^}]*max-width: 320px;/s,
+    );
+    expect(css).not.toMatch(/\.popover\s*{[^}]*\n\s*width: 320px;/s);
+  });
+
   it('keeps regular-density spacing and chrome dimensions', () => {
     expect(css).toMatch(/\.content\s*{[^}]*padding: 14px 14px 12px;/s);
     expect(css).toMatch(/\.content\s*{[^}]*overflow-y: auto;[^}]*scrollbar-width: none;/s);
