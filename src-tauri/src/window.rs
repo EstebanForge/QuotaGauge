@@ -579,6 +579,10 @@ fn schedule_outside_click_dismiss(window: Window) {
             let still_unfocused = window.is_focused().is_ok_and(|focused| !focused);
 
             if guard.is_current(token) && still_unfocused {
+                if let Some(session) = window.app_handle().try_state::<Arc<PanelResizeSession>>() {
+                    session.finish(current_logical_height(&window));
+                }
+                let _ = window.set_resizable(false);
                 let _ = window.hide();
                 let _ = app_for_dismiss.emit("popup-hidden", ());
             }
@@ -607,10 +611,6 @@ pub fn handle_window_event(window: &Window, event: &WindowEvent) {
                 .state::<DesktopIntegration>()
                 .standalone_window =>
         {
-            if let Some(session) = window.app_handle().try_state::<Arc<PanelResizeSession>>() {
-                session.finish(current_logical_height(window));
-            }
-            let _ = window.set_resizable(false);
             schedule_outside_click_dismiss(window.clone())
         }
         WindowEvent::CloseRequested { api, .. } => {

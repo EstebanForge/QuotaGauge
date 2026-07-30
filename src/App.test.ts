@@ -88,7 +88,6 @@ describe('OpenQuota dashboard', () => {
       if (command === 'set_panel_height_manual') return Promise.resolve();
       if (command === 'begin_panel_resize') return Promise.resolve('bottom');
       if (command === 'lock_panel_resize_axis') return Promise.resolve();
-      if (command === 'finish_panel_resize') return Promise.resolve();
       if (command === 'get_log_path') return Promise.resolve('C:\\OpenQuota\\logs\\OpenQuota.log');
       if (command === 'open_log_folder') return Promise.resolve();
       if (command === 'dismiss_main_window') return Promise.resolve();
@@ -1041,7 +1040,7 @@ describe('OpenQuota dashboard', () => {
     expect(event.defaultPrevented).toBe(true);
   });
 
-  it('locks the resize axis immediately but finishes persistence on pointer release', async () => {
+  it('keeps native persistence active through synthetic pointer handoff events', async () => {
     Object.defineProperty(window, '__TAURI_INTERNALS__', {
       configurable: true,
       value: {},
@@ -1057,8 +1056,9 @@ describe('OpenQuota dashboard', () => {
       await waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith('lock_panel_resize_axis'));
       expect(mocks.invoke).not.toHaveBeenCalledWith('finish_panel_resize');
 
+      await fireEvent.pointerCancel(window);
       await fireEvent.pointerUp(window);
-      await waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith('finish_panel_resize'));
+      expect(mocks.invoke).not.toHaveBeenCalledWith('finish_panel_resize');
     } finally {
       delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
     }

@@ -73,13 +73,6 @@ pub fn lock_panel_resize_axis(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn finish_panel_resize(app: AppHandle) {
-    if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
-        finish_native_panel_resize(&window);
-    }
-}
-
-#[tauri::command]
 pub fn quit_app(app: AppHandle) {
     if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
         finish_native_panel_resize(&window);

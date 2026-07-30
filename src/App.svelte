@@ -4,7 +4,6 @@
   import {
     beginPanelResize,
     dismissMainWindow,
-    finishPanelResize,
     getBootstrapState,
     getLogPath,
     getPanelHeightMode,
@@ -449,12 +448,6 @@
       if (panelResizeOperation === operation) panelResizeOperation = null;
     });
   }
-  function finishPanelResizeGesture() {
-    if (!('__TAURI_INTERNALS__' in window)) return;
-    void finishPanelResize()
-      .then(updatePanelHeightMode)
-      .catch(() => undefined);
-  }
   async function changePanelHeightMode(mode: PanelHeightMode) {
     if (!('__TAURI_INTERNALS__' in window)) return;
     panelHeightModeRequest += 1;
@@ -584,7 +577,6 @@
     );
     listeners.add(
       onPopupHidden(() => {
-        finishPanelResizeGesture();
         resetTransientUi();
         navigate('dashboard');
       }),
@@ -617,11 +609,7 @@
 </script>
 
 <svelte:head><meta name="color-scheme" content="light dark" /></svelte:head>
-<svelte:window
-  onpointerdown={handleWindowPointerDown}
-  onpointerup={finishPanelResizeGesture}
-  onpointercancel={finishPanelResizeGesture}
-/>
+<svelte:window onpointerdown={handleWindowPointerDown} />
 
 <main
   class="popover"

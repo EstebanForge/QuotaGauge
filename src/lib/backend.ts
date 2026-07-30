@@ -116,10 +116,6 @@ export function lockPanelResizeAxis() {
   return invoke<void>('lock_panel_resize_axis');
 }
 
-export function finishPanelResize() {
-  return invoke<void>('finish_panel_resize');
-}
-
 export function quitApplication() {
   return invoke<void>('quit_app');
 }
