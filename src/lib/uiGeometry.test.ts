@@ -4,23 +4,38 @@ import layoutCss from '../styles/layout.css?raw';
 import componentCss from '../styles/components.css?raw';
 import tokensCss from '../styles/tokens.css?raw';
 import tauriConfigSource from '../../src-tauri/tauri.conf.json?raw';
-import { PANEL_MIN_HEIGHT, PANEL_SCREEN_FRACTION } from './panelSizing';
 import { coLocatedComponentCss } from './uiStyleSources';
 
 const css = `${layoutCss}\n${componentCss}\n${coLocatedComponentCss}`;
 
 const tauriConfig = JSON.parse(tauriConfigSource) as {
-  app: { windows: Array<{ width: number; minHeight: number }> };
+  app: {
+    windows: Array<{
+      width: number;
+      height: number;
+      minHeight: number;
+      minWidth: number;
+      maxWidth: number;
+      resizable: boolean;
+    }>;
+  };
 };
 
 describe('popover geometry contract', () => {
-  it('keeps the reference popover and display bounds', () => {
-    expect(tauriConfig.app.windows[0]).toMatchObject({ width: 320, minHeight: 200 });
-    expect(PANEL_MIN_HEIGHT).toBe(200);
-    expect(PANEL_SCREEN_FRACTION).toBe(0.85);
+  it('keeps system resize borders locked and exposes only the native vertical grip', () => {
+    expect(tauriConfig.app.windows[0]).toMatchObject({
+      width: 320,
+      height: 800,
+      minWidth: 320,
+      maxWidth: 320,
+      minHeight: 240,
+      resizable: false,
+    });
+    expect(css).toMatch(/\.panel-resize-dragger\s*{[^}]*height: 10px;[^}]*cursor: ns-resize;/s);
+    expect(css).toMatch(/\.panel-resize-dragger::after\s*{[^}]*width: 36px;[^}]*height: 4px;/s);
   });
 
-  it('keeps the reference regular-density spacing and chrome dimensions', () => {
+  it('keeps regular-density spacing and chrome dimensions', () => {
     expect(css).toMatch(/\.content\s*{[^}]*padding: 14px 14px 12px;/s);
     expect(css).toMatch(/\.content\s*{[^}]*overflow-y: auto;[^}]*scrollbar-width: none;/s);
     expect(css).toMatch(/\.content::-webkit-scrollbar\s*{[^}]*width: 0;[^}]*height: 0;/s);

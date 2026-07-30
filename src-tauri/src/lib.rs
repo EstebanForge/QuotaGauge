@@ -51,7 +51,9 @@ use crate::{
         ProviderRegistry, UsageProvider,
     },
     storage::Storage,
-    window::{handle_window_event, open_screen, show_popup, toggle_popup, MAIN_WINDOW},
+    window::{
+        handle_window_event, open_screen, show_popup, toggle_popup, PanelResizeSession, MAIN_WINDOW,
+    },
 };
 
 fn spawn_startup_credential_detection(
@@ -215,6 +217,7 @@ pub fn run() {
             let app_data_dir = app.path().app_data_dir()?;
             let database_path = app_data_dir.join("openquota.db");
             let storage = Arc::new(Storage::open(&database_path)?);
+            app.manage(Arc::new(PanelResizeSession::new(storage.clone())));
             app_debug!("cache", "application database opened");
             let pricing = Arc::new(PricingStore::new(app_data_dir.join("pricing"))?);
             let providers: Vec<Arc<dyn UsageProvider>> = vec![
@@ -234,7 +237,7 @@ pub fn run() {
             let registry = Arc::new(ProviderRegistry::new(providers)?);
             let service = Arc::new(ProviderService::new(registry.clone(), storage.clone()));
             let (settings_service, credential_detection_plan) =
-                SettingsService::new_deferred(storage, registry.clone())?;
+                SettingsService::new_deferred(storage.clone(), registry.clone())?;
             let settings = Arc::new(settings_service);
             logging::set_level(settings.get().log_level);
             app_info!(
@@ -328,9 +331,7 @@ pub fn run() {
                     let _ = window.set_skip_taskbar(false);
                     let _ = window.set_always_on_top(false);
                     let _ = window.set_decorations(true);
-                    let _ = window.center();
-                    let _ = window.show();
-                    let _ = window.set_focus();
+                    show_popup(&window);
                 }
             }
 
@@ -371,7 +372,9 @@ pub fn run() {
             commands::settings::get_log_path,
             commands::settings::open_log_folder,
             commands::window::dismiss_main_window,
-            commands::window::resize_main_window,
+            commands::window::get_panel_resize_edge,
+            commands::window::begin_panel_resize,
+            commands::window::finish_panel_resize,
             commands::window::quit_app,
             updates::check_for_updates,
             updates::install_update,

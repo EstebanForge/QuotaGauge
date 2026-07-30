@@ -13,6 +13,7 @@ import type {
 
 type StopListening = () => void;
 type PayloadHandler<T> = (payload: T) => void;
+export type PanelResizeEdge = 'top' | 'bottom';
 
 function onEvent<T>(name: string, handler: PayloadHandler<T>): Promise<StopListening> {
   return listen<T>(name, (event) => handler(event.payload));
@@ -86,8 +87,16 @@ export function dismissMainWindow() {
   return invoke<void>('dismiss_main_window');
 }
 
-export function resizeMainWindow(height: number) {
-  return invoke<void>('resize_main_window', { height });
+export function getPanelResizeEdge() {
+  return invoke<PanelResizeEdge>('get_panel_resize_edge');
+}
+
+export function beginPanelResize() {
+  return invoke<PanelResizeEdge>('begin_panel_resize');
+}
+
+export function finishPanelResize() {
+  return invoke<void>('finish_panel_resize');
 }
 
 export function quitApplication() {

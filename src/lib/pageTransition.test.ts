@@ -40,11 +40,12 @@ describe('page transition', () => {
     expect(transition.css?.(0, 1)).toContain('translate3d(-292px, 0, 0)');
   });
 
-  it('slides only between screens that share a stable panel height', () => {
+  it('slides every navigation inside the stable user-sized panel', () => {
     expect(shouldSlideBetweenScreens('dashboard', 'settings')).toBe(true);
     expect(shouldSlideBetweenScreens('settings', 'dashboard')).toBe(true);
-    expect(shouldSlideBetweenScreens('dashboard', 'customize')).toBe(false);
-    expect(shouldSlideBetweenScreens('customize', 'provider:codex')).toBe(false);
-    expect(shouldSlideBetweenScreens('provider:codex', 'dashboard')).toBe(false);
+    expect(shouldSlideBetweenScreens('dashboard', 'customize')).toBe(true);
+    expect(shouldSlideBetweenScreens('customize', 'provider:codex')).toBe(true);
+    expect(shouldSlideBetweenScreens('provider:codex', 'dashboard')).toBe(true);
+    expect(shouldSlideBetweenScreens('dashboard', 'dashboard')).toBe(false);
   });
 });

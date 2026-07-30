@@ -56,7 +56,6 @@ describe('OpenQuota customization persistence and reorder', () => {
           settings: args?.settings ?? settingsState.settings,
         });
       if (command === 'reset_customization') return Promise.resolve(settingsState);
-      if (command === 'resize_main_window') return Promise.resolve();
       if (command === 'check_for_updates')
         return Promise.resolve({
           available: false,
@@ -132,7 +131,6 @@ describe('OpenQuota customization persistence and reorder', () => {
       if (command === 'get_usage_state') return Promise.resolve(liveState);
       if (command === 'get_app_settings') return Promise.resolve(settingsState);
       if (command === 'save_app_settings') return Promise.reject('Launch at login is unavailable.');
-      if (command === 'resize_main_window') return Promise.resolve();
       return Promise.reject(new Error(`unexpected command ${command} ${String(args)}`));
     });
     render(App);

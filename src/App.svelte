@@ -1,9 +1,13 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { getCurrentWindow } from '@tauri-apps/api/window';
   import {
+    beginPanelResize,
     dismissMainWindow,
+    finishPanelResize,
     getBootstrapState,
     getLogPath,
+    getPanelResizeEdge,
     onOpenScreen,
     onPopupHidden,
     onSettingsState,
@@ -18,6 +22,7 @@
     requestNotificationPermission,
     resetCustomization as resetCustomizationCommand,
     resetProviderCustomization as resetProviderCustomizationCommand,
+    type PanelResizeEdge,
   } from './lib/backend';
   import CustomizeProviderDetail from './lib/CustomizeProviderDetail.svelte';
   import CustomizeProviderList from './lib/CustomizeProviderList.svelte';
@@ -76,12 +81,11 @@
   const providerDisplayName = (id: string) => catalog.displayName(id);
   const settingsState = $derived(settingsController.state);
   const updates = new UpdateController();
+  let resizeEdge = $state<PanelResizeEdge>(platform === 'windows' ? 'top' : 'bottom');
   const windowController = createWindowController({
     screen: () => screen,
     refreshing: () => anyRefreshing,
     reordering: () => reordering,
-    reducedMotion: () => reducedMotion,
-    onError: (message) => (settingsError = message),
   });
 
   $effect(() => {
@@ -374,6 +378,35 @@
       closeOptionsMenu();
     }
   }
+  function updatePanelResizeEdge() {
+    if (!('__TAURI_INTERNALS__' in window)) return;
+    void getPanelResizeEdge()
+      .then((edge) => (resizeEdge = edge))
+      .catch(() => undefined);
+  }
+  function handlePanelResizePointerDown(event: PointerEvent) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    void (async () => {
+      try {
+        const edge = await beginPanelResize();
+        resizeEdge = edge;
+        // TODO(macOS): Tao 0.35 reports native resize dragging as unsupported and Tauri currently
+        // swallows that runtime error. Re-test after Tauri/Tao upgrades; add an AppKit fallback if
+        // upstream support is still unavailable.
+        await getCurrentWindow().startResizeDragging(edge === 'top' ? 'North' : 'South');
+      } catch {
+        settingsError = 'OpenQuota panel resize could not be started.';
+      } finally {
+        void finishPanelResize();
+      }
+    })();
+  }
+  function finishPanelResizeGesture() {
+    if (!('__TAURI_INTERNALS__' in window)) return;
+    void finishPanelResize();
+  }
   async function requestNotifications() {
     const current = settingsState;
     if (!current) return;
@@ -413,10 +446,12 @@
     };
     updateMotionPreference();
     motionQuery.addEventListener('change', updateMotionPreference);
-    const refreshPermissionState = () => {
+    const refreshWindowState = () => {
       void settingsController.refreshIfIdle();
+      updatePanelResizeEdge();
     };
-    window.addEventListener('focus', refreshPermissionState);
+    updatePanelResizeEdge();
+    window.addEventListener('focus', refreshWindowState);
 
     const popover = document.querySelector<HTMLElement>('.popover');
     const resizeObserver =
@@ -485,6 +520,7 @@
     );
     listeners.add(
       onPopupHidden(() => {
+        finishPanelResizeGesture();
         resetTransientUi();
         navigate('dashboard');
       }),
@@ -507,7 +543,7 @@
       window.clearInterval(clock);
       windowController.dispose();
       motionQuery.removeEventListener('change', updateMotionPreference);
-      window.removeEventListener('focus', refreshPermissionState);
+      window.removeEventListener('focus', refreshWindowState);
       document.documentElement.removeAttribute('data-reduced-motion');
       mutationObserver.disconnect();
       resizeObserver?.disconnect();
@@ -517,7 +553,11 @@
 </script>
 
 <svelte:head><meta name="color-scheme" content="light dark" /></svelte:head>
-<svelte:window onpointerdown={handleWindowPointerDown} />
+<svelte:window
+  onpointerdown={handleWindowPointerDown}
+  onpointerup={finishPanelResizeGesture}
+  onpointercancel={finishPanelResizeGesture}
+/>
 
 <main
   class="popover"
@@ -527,6 +567,15 @@
   <p id="reorder-instructions" class="sr-only">
     Drag to reorder. With a keyboard, use Alt plus Up Arrow or Alt plus Down Arrow.
   </p>
+  {#if resizeEdge === 'top'}
+    <div
+      class="panel-resize-dragger panel-resize-dragger--top"
+      role="separator"
+      aria-label="Resize panel height"
+      aria-orientation="horizontal"
+      onpointerdown={handlePanelResizePointerDown}
+    ></div>
+  {/if}
   {#if settingsState}
     {#if screen !== 'dashboard'}
       <header class="screen-header app-top-bar">
@@ -774,6 +823,15 @@
       {/if}
     </div>
   {/if}
+  {#if resizeEdge === 'bottom'}
+    <div
+      class="panel-resize-dragger panel-resize-dragger--bottom"
+      role="separator"
+      aria-label="Resize panel height"
+      aria-orientation="horizontal"
+      onpointerdown={handlePanelResizePointerDown}
+    ></div>
+  {/if}
 </main>
 
 <style>
@@ -789,6 +847,42 @@
       background: var(--tray);
       isolation: isolate;
       user-select: none;
+    }
+
+    .panel-resize-dragger {
+      position: relative;
+      z-index: 20;
+      display: grid;
+      width: 100%;
+      height: 10px;
+      flex: 0 0 10px;
+      cursor: ns-resize;
+      touch-action: none;
+      place-items: center;
+    }
+
+    .panel-resize-dragger::after {
+      width: 36px;
+      height: 4px;
+      border-radius: 999px;
+      background: var(--separator);
+      content: '';
+      transition:
+        width 120ms ease,
+        background-color 120ms ease;
+    }
+
+    .panel-resize-dragger:hover::after {
+      width: 42px;
+      background: var(--tertiary);
+    }
+
+    .panel-resize-dragger--top {
+      box-shadow: 0 10px 18px -20px rgba(0, 0, 0, 0.7);
+    }
+
+    .panel-resize-dragger--bottom {
+      box-shadow: 0 -10px 18px -20px rgba(0, 0, 0, 0.7);
     }
 
     .content {

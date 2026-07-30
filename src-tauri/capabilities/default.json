@@ -3,5 +3,9 @@
   "identifier": "default",
   "description": "Minimal permissions for the OpenQuota popup",
   "windows": ["main"],
-  "permissions": ["core:default", "core:window:allow-hide"]
+  "permissions": [
+    "core:default",
+    "core:window:allow-hide",
+    "core:window:allow-start-resize-dragging"
+  ]
 }

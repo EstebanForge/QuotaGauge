@@ -59,6 +59,10 @@ impl Storage {
              CREATE TABLE IF NOT EXISTS app_settings (
                id INTEGER PRIMARY KEY CHECK (id = 1),
                payload TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS panel_state (
+               id INTEGER PRIMARY KEY CHECK (id = 1),
+               height INTEGER NOT NULL
              );",
         )?;
         if !Self::has_column(&connection, "log_file_cache", "modified_nanos")? {
@@ -245,6 +249,25 @@ impl Storage {
         Ok(())
     }
 
+    pub fn load_panel_height(&self) -> Result<Option<u32>, StorageError> {
+        let connection = self.connection()?;
+        let height = connection
+            .query_row("SELECT height FROM panel_state WHERE id = 1", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .optional()?;
+        Ok(height.and_then(|value| u32::try_from(value).ok()))
+    }
+
+    pub fn save_panel_height(&self, height: u32) -> Result<(), StorageError> {
+        self.connection()?.execute(
+            "INSERT INTO panel_state(id, height) VALUES (1, ?1)
+             ON CONFLICT(id) DO UPDATE SET height = excluded.height",
+            [i64::from(height)],
+        )?;
+        Ok(())
+    }
+
     fn insert_day(
         transaction: &rusqlite::Transaction<'_>,
         provider_id: &str,
@@ -390,6 +413,20 @@ mod tests {
             ..AppSettings::default()
         };
         storage.save_settings(&settings).unwrap();
+        assert_eq!(storage.load_settings().unwrap(), Some(settings));
+    }
+
+    #[test]
+    fn panel_height_round_trip_is_independent_from_app_settings() {
+        let directory = tempdir().unwrap();
+        let storage = Storage::open(&directory.path().join("openquota.db")).unwrap();
+        let settings = AppSettings::default();
+        storage.save_settings(&settings).unwrap();
+
+        assert_eq!(storage.load_panel_height().unwrap(), None);
+        storage.save_panel_height(734).unwrap();
+
+        assert_eq!(storage.load_panel_height().unwrap(), Some(734));
         assert_eq!(storage.load_settings().unwrap(), Some(settings));
     }
 

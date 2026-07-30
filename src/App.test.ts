@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
   listen: vi.fn(),
   currentMonitor: vi.fn(),
+  startResizeDragging: vi.fn(),
 }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: mocks.listen }));
@@ -28,6 +29,7 @@ vi.mock('@tauri-apps/api/window', () => ({
   getCurrentWindow: () => ({
     scaleFactor: () => Promise.resolve(1),
     innerSize: () => Promise.resolve({ width: 320, height: 600 }),
+    startResizeDragging: mocks.startResizeDragging,
   }),
 }));
 
@@ -57,6 +59,7 @@ describe('OpenQuota dashboard', () => {
       workArea: { size: { width: 1280, height: 700 } },
     });
     mocks.listen.mockReset().mockResolvedValue(vi.fn());
+    mocks.startResizeDragging.mockReset().mockResolvedValue(undefined);
     mocks.invoke.mockReset();
     mockInvoke((command: string, args?: InvokeArgs) => {
       if (
@@ -77,7 +80,9 @@ describe('OpenQuota dashboard', () => {
       if (command === 'open_provider_link') return Promise.resolve();
       if (command === 'reset_customization') return Promise.resolve(settingsState);
       if (command === 'reset_provider_customization') return Promise.resolve(settingsState);
-      if (command === 'resize_main_window') return Promise.resolve();
+      if (command === 'get_panel_resize_edge') return Promise.resolve('bottom');
+      if (command === 'begin_panel_resize') return Promise.resolve('bottom');
+      if (command === 'finish_panel_resize') return Promise.resolve();
       if (command === 'get_log_path') return Promise.resolve('C:\\OpenQuota\\logs\\OpenQuota.log');
       if (command === 'open_log_folder') return Promise.resolve();
       if (command === 'dismiss_main_window') return Promise.resolve();
@@ -291,7 +296,6 @@ describe('OpenQuota dashboard', () => {
           ...multiSettings,
           settings: args?.settings ?? multiSettings.settings,
         });
-      if (command === 'resize_main_window') return Promise.resolve();
       return Promise.resolve();
     });
 
@@ -315,7 +319,7 @@ describe('OpenQuota dashboard', () => {
     }
   });
 
-  it('uses the compact reference caret instead of a labeled On Demand divider', async () => {
+  it('uses the compact caret instead of a labeled On Demand divider', async () => {
     render(App);
     const toggle = await screen.findByRole('button', { name: 'Show more' });
     const providerHeader = screen.getByRole('group', { name: 'Drag Codex to reorder' });
@@ -576,7 +580,6 @@ describe('OpenQuota dashboard', () => {
           settings: args?.settings ?? settingsState.settings,
         });
       if (command === 'open_notification_settings') return Promise.resolve();
-      if (command === 'resize_main_window') return Promise.resolve();
       return Promise.reject(new Error(`unexpected command ${command}`));
     });
 
@@ -681,7 +684,6 @@ describe('OpenQuota dashboard', () => {
       if (command === 'get_usage_state') return Promise.resolve(multiProviderState);
       if (command === 'get_app_settings') return Promise.resolve(multiProviderSettings);
       if (command === 'refresh_provider_usage') return refreshResult;
-      if (command === 'resize_main_window') return Promise.resolve();
       return Promise.resolve();
     });
 
@@ -821,7 +823,6 @@ describe('OpenQuota dashboard', () => {
       if (command === 'get_usage_state')
         return Promise.resolve({ providers: { claude: pendingClaude } });
       if (command === 'get_app_settings') return Promise.resolve(claudeSettings);
-      if (command === 'resize_main_window') return Promise.resolve();
       return new Promise(() => undefined);
     });
 
@@ -985,7 +986,7 @@ describe('OpenQuota dashboard', () => {
     );
   });
 
-  it('honors Reduce Motion and refits the panel when On Demand changes content height', async () => {
+  it('honors Reduce Motion without overriding the user-sized native panel', async () => {
     const originalMatchMedia = window.matchMedia;
     window.matchMedia = vi.fn().mockReturnValue({
       matches: true,
@@ -1004,14 +1005,10 @@ describe('OpenQuota dashboard', () => {
     try {
       render(App);
       await waitFor(() => expect(document.documentElement).toHaveAttribute('data-reduced-motion'));
-      const resizeCalls = () =>
-        mocks.invoke.mock.calls.filter(([command]) => command === 'resize_main_window');
-      await waitFor(() =>
-        expect(mocks.invoke).toHaveBeenCalledWith('resize_main_window', { height: 200 }),
-      );
-      const callsBeforeExpand = resizeCalls().length;
+      await screen.findByText('Plus');
+      expect(mocks.invoke).not.toHaveBeenCalledWith('resize_main_window', expect.anything());
       await fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
-      await waitFor(() => expect(resizeCalls().length).toBeGreaterThan(callsBeforeExpand));
+      expect(mocks.invoke).not.toHaveBeenCalledWith('resize_main_window', expect.anything());
     } finally {
       delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
       window.matchMedia = originalMatchMedia;
@@ -1024,6 +1021,25 @@ describe('OpenQuota dashboard', () => {
     const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
     screen.getByLabelText('OpenQuota usage dashboard').dispatchEvent(event);
     expect(event.defaultPrevented).toBe(true);
+  });
+
+  it('starts and settles a native resize from the persistent panel grip', async () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      configurable: true,
+      value: {},
+    });
+    try {
+      render(App);
+      const grip = await screen.findByRole('separator', { name: 'Resize panel height' });
+      await waitFor(() => expect(grip).toHaveClass('panel-resize-dragger--bottom'));
+
+      await fireEvent.pointerDown(grip, { button: 0 });
+      expect(mocks.invoke).toHaveBeenCalledWith('begin_panel_resize');
+      await waitFor(() => expect(mocks.startResizeDragging).toHaveBeenCalledWith('South'));
+      await waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith('finish_panel_resize'));
+    } finally {
+      delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+    }
   });
 
   it('opens and dismisses the About panel from Options', async () => {

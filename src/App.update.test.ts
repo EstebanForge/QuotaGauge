@@ -50,7 +50,6 @@ describe('OpenQuota update lifecycle', () => {
           ...settingsState,
           settings: args?.settings ?? settingsState.settings,
         });
-      if (command === 'resize_main_window') return Promise.resolve();
       if (command === 'check_for_updates')
         return Promise.resolve({
           available: false,

@@ -9,9 +9,7 @@ interface PageTransitionOptions {
 type AppScreen = 'dashboard' | 'customize' | 'settings' | `provider:${string}`;
 
 export function shouldSlideBetweenScreens(from: AppScreen, to: AppScreen) {
-  const hasStablePanelHeight = (screen: AppScreen) =>
-    screen === 'dashboard' || screen === 'settings';
-  return hasStablePanelHeight(from) && hasStablePanelHeight(to);
+  return from !== to;
 }
 
 export function horizontalPageTransition(
