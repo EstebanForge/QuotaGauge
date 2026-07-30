@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { PanelHeightMode } from './backend';
   import Icon from './Icon.svelte';
   import type { DesktopPlatform } from './platform';
   import SelectMenu from './SelectMenu.svelte';
@@ -12,7 +13,9 @@
   interface Props {
     settingsView: SettingsViewState;
     platform: DesktopPlatform;
+    panelHeightMode: PanelHeightMode;
     onChange: (settings: AppSettings) => void;
+    onPanelHeightModeChange: (mode: PanelHeightMode) => void;
     onRequestNotifications: () => void;
     onOpenNotificationSettings: () => void;
     updateError: UpdateFailure | null;
@@ -25,7 +28,9 @@
   let {
     settingsView,
     platform,
+    panelHeightMode,
     onChange,
+    onPanelHeightModeChange,
     onRequestNotifications,
     onOpenNotificationSettings,
     updateError,
@@ -197,6 +202,17 @@
           { value: 'compact', label: 'Compact' },
         ]}
         onChange={(value) => patch({ density: value as AppSettings['density'] })}
+      />
+    </div>
+    <div class="setting-row">
+      <span><b>Panel Height</b></span><SelectMenu
+        label="Panel Height"
+        value={panelHeightMode}
+        options={[
+          { value: 'automatic', label: 'Automatic' },
+          { value: 'manual', label: 'Manual' },
+        ]}
+        onChange={(value) => onPanelHeightModeChange(value as PanelHeightMode)}
       />
     </div>
     <div class="setting-row">

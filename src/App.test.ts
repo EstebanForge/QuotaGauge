@@ -37,6 +37,7 @@ type InvokeArgs = {
   settings?: SettingsViewState['settings'];
   providerId?: string;
   linkIndex?: number;
+  height?: number;
 };
 type InvokeImplementation = (command: string, args?: InvokeArgs) => unknown;
 
@@ -81,7 +82,12 @@ describe('OpenQuota dashboard', () => {
       if (command === 'reset_customization') return Promise.resolve(settingsState);
       if (command === 'reset_provider_customization') return Promise.resolve(settingsState);
       if (command === 'get_panel_resize_edge') return Promise.resolve('bottom');
+      if (command === 'get_panel_height_mode') return Promise.resolve('automatic');
+      if (command === 'fit_panel_to_content') return Promise.resolve(true);
+      if (command === 'set_panel_height_automatic') return Promise.resolve();
+      if (command === 'set_panel_height_manual') return Promise.resolve();
       if (command === 'begin_panel_resize') return Promise.resolve('bottom');
+      if (command === 'lock_panel_resize_axis') return Promise.resolve();
       if (command === 'finish_panel_resize') return Promise.resolve();
       if (command === 'get_log_path') return Promise.resolve('C:\\OpenQuota\\logs\\OpenQuota.log');
       if (command === 'open_log_folder') return Promise.resolve();
@@ -986,8 +992,13 @@ describe('OpenQuota dashboard', () => {
     );
   });
 
-  it('honors Reduce Motion without overriding the user-sized native panel', async () => {
+  it('honors Reduce Motion without overriding a manually sized native panel', async () => {
     const originalMatchMedia = window.matchMedia;
+    const defaultInvoke = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation((command: string, args?: InvokeArgs) => {
+      if (command === 'get_panel_height_mode') return Promise.resolve('manual');
+      return defaultInvoke(command, args);
+    });
     window.matchMedia = vi.fn().mockReturnValue({
       matches: true,
       media: '(prefers-reduced-motion: reduce)',
@@ -1006,9 +1017,16 @@ describe('OpenQuota dashboard', () => {
       render(App);
       await waitFor(() => expect(document.documentElement).toHaveAttribute('data-reduced-motion'));
       await screen.findByText('Plus');
-      expect(mocks.invoke).not.toHaveBeenCalledWith('resize_main_window', expect.anything());
+      await fireEvent.click(screen.getByLabelText('Open options'));
+      await fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+      await waitFor(() =>
+        expect(screen.getByRole('combobox', { name: 'Panel Height' })).toHaveTextContent('Manual'),
+      );
+      await fireEvent.click(screen.getByLabelText('Back'));
+      mocks.invoke.mockClear();
       await fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
-      expect(mocks.invoke).not.toHaveBeenCalledWith('resize_main_window', expect.anything());
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(mocks.invoke).not.toHaveBeenCalledWith('fit_panel_to_content', expect.anything());
     } finally {
       delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
       window.matchMedia = originalMatchMedia;
@@ -1023,7 +1041,7 @@ describe('OpenQuota dashboard', () => {
     expect(event.defaultPrevented).toBe(true);
   });
 
-  it('starts and settles a native resize from the persistent panel grip', async () => {
+  it('locks the resize axis immediately but finishes persistence on pointer release', async () => {
     Object.defineProperty(window, '__TAURI_INTERNALS__', {
       configurable: true,
       value: {},
@@ -1036,7 +1054,53 @@ describe('OpenQuota dashboard', () => {
       await fireEvent.pointerDown(grip, { button: 0 });
       expect(mocks.invoke).toHaveBeenCalledWith('begin_panel_resize');
       await waitFor(() => expect(mocks.startResizeDragging).toHaveBeenCalledWith('South'));
+      await waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith('lock_panel_resize_axis'));
+      expect(mocks.invoke).not.toHaveBeenCalledWith('finish_panel_resize');
+
+      await fireEvent.pointerUp(window);
       await waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith('finish_panel_resize'));
+    } finally {
+      delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+    }
+  });
+
+  it('changes panel height mode from Settings Appearance and keeps grip double-click available', async () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      configurable: true,
+      value: {},
+    });
+    const defaultInvoke = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation((command: string, args?: InvokeArgs) => {
+      if (command === 'get_panel_height_mode') return Promise.resolve('manual');
+      return defaultInvoke(command, args);
+    });
+    try {
+      render(App);
+      await screen.findByText('Plus');
+      await fireEvent.click(screen.getByLabelText('Open options'));
+      await fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+      const heightMode = screen.getByRole('combobox', { name: 'Panel Height' });
+      await waitFor(() => expect(heightMode).toHaveTextContent('Manual'));
+
+      await fireEvent.click(heightMode);
+      await fireEvent.click(screen.getByRole('option', { name: 'Automatic' }));
+      expect(mocks.invoke).toHaveBeenCalledWith('set_panel_height_automatic');
+      await waitFor(() => expect(heightMode).toHaveTextContent('Automatic'));
+
+      await fireEvent.click(heightMode);
+      await fireEvent.click(screen.getByRole('option', { name: 'Manual' }));
+      expect(mocks.invoke).toHaveBeenCalledWith('set_panel_height_manual');
+      await waitFor(() => expect(heightMode).toHaveTextContent('Manual'));
+
+      await fireEvent.click(screen.getByLabelText('Back'));
+      const grip = screen.getByRole('separator', { name: 'Resize panel height' });
+      await fireEvent.pointerDown(grip, { button: 0, detail: 1 });
+      await fireEvent.pointerDown(grip, { button: 0, detail: 2 });
+      await waitFor(() =>
+        expect(
+          mocks.invoke.mock.calls.filter(([command]) => command === 'set_panel_height_automatic'),
+        ).toHaveLength(2),
+      );
     } finally {
       delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
     }

@@ -304,7 +304,12 @@ pub fn run() {
                     }
                     "customize" => open_screen(app, "customize"),
                     "settings" => open_screen(app, "settings"),
-                    "quit" => app.exit(0),
+                    "quit" => {
+                        if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
+                            window::finish_native_panel_resize(&window);
+                        }
+                        app.exit(0);
+                    }
                     _ => {}
                 });
                 #[cfg(not(target_os = "linux"))]
@@ -373,7 +378,12 @@ pub fn run() {
             commands::settings::open_log_folder,
             commands::window::dismiss_main_window,
             commands::window::get_panel_resize_edge,
+            commands::window::get_panel_height_mode,
+            commands::window::fit_panel_to_content,
+            commands::window::set_panel_height_automatic,
+            commands::window::set_panel_height_manual,
             commands::window::begin_panel_resize,
+            commands::window::lock_panel_resize_axis,
             commands::window::finish_panel_resize,
             commands::window::quit_app,
             updates::check_for_updates,

@@ -268,6 +268,12 @@ impl Storage {
         Ok(())
     }
 
+    pub fn clear_panel_height(&self) -> Result<(), StorageError> {
+        self.connection()?
+            .execute("DELETE FROM panel_state WHERE id = 1", [])?;
+        Ok(())
+    }
+
     fn insert_day(
         transaction: &rusqlite::Transaction<'_>,
         provider_id: &str,
@@ -428,6 +434,9 @@ mod tests {
 
         assert_eq!(storage.load_panel_height().unwrap(), Some(734));
         assert_eq!(storage.load_settings().unwrap(), Some(settings));
+
+        storage.clear_panel_height().unwrap();
+        assert_eq!(storage.load_panel_height().unwrap(), None);
     }
 
     #[test]

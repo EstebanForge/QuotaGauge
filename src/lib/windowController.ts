@@ -1,47 +1,173 @@
+import { currentMonitor, getCurrentWindow } from '@tauri-apps/api/window';
+import { fitPanelToContent } from './backend';
+import { springMotion } from './motion';
+import { panelTargetHeight, screenPanelHeight, shouldDeferPanelFit } from './panelSizing';
+
 export type AppScreen = 'dashboard' | 'customize' | 'settings' | `provider:${string}`;
 
 interface WindowControllerOptions {
   screen: () => AppScreen;
   refreshing: () => boolean;
   reordering: () => boolean;
+  automatic: () => boolean;
+  reducedMotion: () => boolean;
+  onError: (message: string) => void;
+}
+
+function cssPixels(value: string) {
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 export function createWindowController(options: WindowControllerOptions) {
   let measureFrame = 0;
+  let resizeFrame = 0;
+  let resizeGeneration = 0;
+  let resizeAvailable = true;
+  let contentMorphActive = false;
+  let contentMorphTimer: ReturnType<typeof setTimeout> | undefined;
+  let resizeInFlight = false;
+  let pendingResizeHeight: number | null = null;
+  let dashboardHeight: number | null = null;
 
   function shouldDefer() {
-    return options.reordering() || (options.screen() === 'dashboard' && options.refreshing());
+    return options.reordering() || shouldDeferPanelFit(options.screen(), options.refreshing());
+  }
+
+  function cancelPendingResize() {
+    if (typeof window === 'undefined') return;
+    window.cancelAnimationFrame(resizeFrame);
+    pendingResizeHeight = null;
+    resizeGeneration += 1;
+  }
+
+  function beginContentMorph() {
+    if (typeof window === 'undefined') return;
+    cancelPendingResize();
+    window.clearTimeout(contentMorphTimer);
+    contentMorphActive = options.automatic() && !options.reducedMotion();
+    if (!contentMorphActive) {
+      scheduleFit();
+      return;
+    }
+    const duration = springMotion(false).duration;
+    contentMorphTimer = window.setTimeout(() => {
+      contentMorphActive = false;
+      scheduleFit();
+    }, duration + 34);
   }
 
   function scheduleFit() {
     if (typeof window === 'undefined') return;
     if (shouldDefer()) {
       window.cancelAnimationFrame(measureFrame);
+      cancelPendingResize();
       return;
     }
     window.cancelAnimationFrame(measureFrame);
-    measureFrame = window.requestAnimationFrame(measurePage);
+    measureFrame = window.requestAnimationFrame(() => void fit());
   }
 
-  function measurePage() {
+  async function fit() {
     if (shouldDefer()) return;
     const screen = options.screen();
     const page = document.querySelector<HTMLElement>(`.screen-page[data-screen="${screen}"]`);
+    const content = document.querySelector<HTMLElement>('.content');
     const stage = document.querySelector<HTMLElement>('.screen-stage');
-    if (!page || !stage) return;
+    const header = document.querySelector<HTMLElement>('.screen-header');
+    const footer = document.querySelector<HTMLElement>('.footer');
+    const dragger = document.querySelector<HTMLElement>('.panel-resize-dragger');
+    if (!page || !content || !stage) return;
 
-    // The user owns the native panel height. We only keep the transition stage matched to the
-    // currently rendered page so content can slide and scroll inside that fixed window.
     const renderedHeight = page.getBoundingClientRect().height;
     const pageHeight = renderedHeight > 0 ? renderedHeight : page.offsetHeight || page.scrollHeight;
     stage.style.height = `${pageHeight}px`;
+
+    if (!options.automatic() || !('__TAURI_INTERNALS__' in window) || !resizeAvailable) return;
+
+    const contentStyle = window.getComputedStyle(content);
+    const contentPadding =
+      cssPixels(contentStyle.paddingTop) + cssPixels(contentStyle.paddingBottom);
+    const idealHeight =
+      pageHeight +
+      contentPadding +
+      (header?.offsetHeight ?? 0) +
+      (footer?.offsetHeight ?? 0) +
+      (dragger?.offsetHeight ?? 0);
+    const monitor = await currentMonitor().catch(() => null);
+    const workAreaHeight = monitor
+      ? monitor.workArea.size.height / monitor.scaleFactor
+      : window.screen.availHeight;
+    const contentTarget = panelTargetHeight(idealHeight, workAreaHeight);
+    if (screen === 'dashboard') dashboardHeight = contentTarget;
+
+    let current: number | null = null;
+    if (screen === 'settings' && dashboardHeight === null) {
+      const appWindow = getCurrentWindow();
+      const scale = await appWindow.scaleFactor();
+      current = (await appWindow.innerSize()).height / scale;
+    }
+    const target = screenPanelHeight(
+      screen,
+      contentTarget,
+      dashboardHeight ?? Math.round(current ?? contentTarget),
+    );
+
+    if (options.reducedMotion() || contentMorphActive) {
+      ++resizeGeneration;
+      window.cancelAnimationFrame(resizeFrame);
+      await resize(target);
+      return;
+    }
+
+    if (current === null) {
+      const appWindow = getCurrentWindow();
+      const scale = await appWindow.scaleFactor();
+      current = (await appWindow.innerSize()).height / scale;
+    }
+    const generation = ++resizeGeneration;
+    window.cancelAnimationFrame(resizeFrame);
+    if (Math.abs(current - target) < 1) return;
+
+    const started = performance.now();
+    const motion = springMotion(false);
+    const animate = (time: number) => {
+      if (generation !== resizeGeneration || !options.automatic()) return;
+      const progress = Math.min(1, (time - started) / motion.duration);
+      const eased = motion.easing(progress);
+      void resize(Math.round(current + (target - current) * eased));
+      if (progress < 1) resizeFrame = window.requestAnimationFrame(animate);
+    };
+    resizeFrame = window.requestAnimationFrame(animate);
+  }
+
+  async function resize(height: number) {
+    pendingResizeHeight = height;
+    if (resizeInFlight) return;
+    resizeInFlight = true;
+    try {
+      while (pendingResizeHeight !== null && resizeAvailable && options.automatic()) {
+        const nextHeight = pendingResizeHeight;
+        pendingResizeHeight = null;
+        await fitPanelToContent(nextHeight);
+      }
+    } catch {
+      pendingResizeHeight = null;
+      resizeAvailable = false;
+      options.onError('OpenQuota window could not adapt to its content.');
+    } finally {
+      resizeInFlight = false;
+    }
   }
 
   return {
-    beginContentMorph: scheduleFit,
+    beginContentMorph,
     scheduleFit,
     dispose() {
+      window.clearTimeout(contentMorphTimer);
+      contentMorphActive = false;
       window.cancelAnimationFrame(measureFrame);
+      cancelPendingResize();
     },
   };
 }

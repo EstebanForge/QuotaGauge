@@ -1,6 +1,6 @@
 use std::{
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, Sender},
         Arc, Mutex,
     },
@@ -17,54 +17,108 @@ use crate::{desktop_integration::DesktopIntegration, popup::PopupDismissGuard, s
 pub const MAIN_WINDOW: &str = "main";
 pub const PANEL_WIDTH: f64 = 320.0;
 pub const PANEL_MIN_HEIGHT: u32 = 240;
-pub const PANEL_DEFAULT_HEIGHT: u32 = 800;
 const PANEL_SCREEN_FRACTION: f64 = 0.85;
 const PANEL_RESIZE_SAVE_DELAY: Duration = Duration::from_millis(120);
 
+#[derive(Clone, Copy)]
+struct PendingPanelHeight {
+    generation: u64,
+    height: u32,
+}
+
 pub struct PanelResizeSession {
     active: AtomicBool,
+    automatic: Arc<AtomicBool>,
+    generation: Arc<AtomicU64>,
     latest_height: Mutex<Option<u32>>,
-    height_sender: Sender<u32>,
+    height_sender: Sender<PendingPanelHeight>,
+    persistence: Arc<Mutex<()>>,
     storage: Arc<Storage>,
 }
 
 impl PanelResizeSession {
     pub fn new(storage: Arc<Storage>) -> Self {
-        let (height_sender, height_receiver) = mpsc::channel();
+        let automatic = Arc::new(AtomicBool::new(
+            storage.load_panel_height().ok().flatten().is_none(),
+        ));
+        let generation = Arc::new(AtomicU64::new(0));
+        let persistence = Arc::new(Mutex::new(()));
+        let (height_sender, height_receiver) = mpsc::channel::<PendingPanelHeight>();
+        let worker_automatic = automatic.clone();
+        let worker_generation = generation.clone();
+        let worker_persistence = persistence.clone();
         let worker_storage = storage.clone();
         thread::spawn(move || {
-            while let Ok(mut height) = height_receiver.recv() {
-                while let Ok(next_height) = height_receiver.recv_timeout(PANEL_RESIZE_SAVE_DELAY) {
-                    height = next_height;
+            while let Ok(mut pending) = height_receiver.recv() {
+                while let Ok(next) = height_receiver.recv_timeout(PANEL_RESIZE_SAVE_DELAY) {
+                    pending = next;
                 }
-                let _ = worker_storage.save_panel_height(height);
+                let Ok(_guard) = worker_persistence.lock() else {
+                    continue;
+                };
+                if pending.generation == worker_generation.load(Ordering::SeqCst)
+                    && !worker_automatic.load(Ordering::SeqCst)
+                {
+                    let _ = worker_storage.save_panel_height(pending.height);
+                }
             }
         });
         Self {
             active: AtomicBool::new(false),
+            automatic,
+            generation,
             latest_height: Mutex::new(None),
             height_sender,
+            persistence,
             storage,
         }
     }
 
-    fn begin(&self) {
+    fn begin(&self, height: u32) -> Result<(), String> {
         self.active.store(true, Ordering::SeqCst);
         if let Ok(mut latest) = self.latest_height.lock() {
             *latest = None;
         }
+        if let Err(error) = self.set_manual(height) {
+            self.active.store(false, Ordering::SeqCst);
+            return Err(error);
+        }
+        Ok(())
     }
 
-    pub fn finish(&self) {
-        self.active.store(false, Ordering::SeqCst);
-        let latest = self
+    pub fn finish(&self, current_height: Option<u32>) {
+        let was_active = self.active.swap(false, Ordering::SeqCst);
+        let recorded_height = self
             .latest_height
             .lock()
             .ok()
             .and_then(|mut height| height.take());
-        if let Some(height) = latest {
-            let _ = self.storage.save_panel_height(height);
+        let Some(height) = current_height.or(recorded_height) else {
+            return;
+        };
+        if !was_active {
+            return;
         }
+        let Ok(_guard) = self.persistence.lock() else {
+            return;
+        };
+        if !self.automatic.load(Ordering::SeqCst) && self.storage.save_panel_height(height).is_ok()
+        {
+            self.generation.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    pub fn set_manual(&self, height: u32) -> Result<(), String> {
+        let _guard = self
+            .persistence
+            .lock()
+            .map_err(|_| "OpenQuota panel state is unavailable.")?;
+        self.storage
+            .save_panel_height(height)
+            .map_err(|_| "OpenQuota panel state could not be saved.".to_owned())?;
+        self.generation.fetch_add(1, Ordering::SeqCst);
+        self.automatic.store(false, Ordering::SeqCst);
+        Ok(())
     }
 
     fn record(&self, height: u32) {
@@ -74,12 +128,51 @@ impl PanelResizeSession {
         if let Ok(mut latest) = self.latest_height.lock() {
             *latest = Some(height);
         }
-        let _ = self.height_sender.send(height);
+        let _ = self.height_sender.send(PendingPanelHeight {
+            generation: self.generation.load(Ordering::SeqCst),
+            height,
+        });
+    }
+
+    pub fn mode(&self) -> PanelHeightMode {
+        if self.automatic.load(Ordering::SeqCst) {
+            PanelHeightMode::Automatic
+        } else {
+            PanelHeightMode::Manual
+        }
+    }
+
+    fn allows_automatic_fit(&self) -> bool {
+        self.automatic.load(Ordering::SeqCst) && !self.active.load(Ordering::SeqCst)
+    }
+
+    pub fn set_automatic(&self) -> Result<(), String> {
+        self.active.store(false, Ordering::SeqCst);
+        if let Ok(mut latest) = self.latest_height.lock() {
+            *latest = None;
+        }
+        let _guard = self
+            .persistence
+            .lock()
+            .map_err(|_| "OpenQuota panel state is unavailable.")?;
+        self.storage
+            .clear_panel_height()
+            .map_err(|_| "OpenQuota panel state could not be saved.".to_owned())?;
+        self.generation.fetch_add(1, Ordering::SeqCst);
+        self.automatic.store(true, Ordering::SeqCst);
+        Ok(())
     }
 
     fn saved_height(&self) -> Option<u32> {
         self.storage.load_panel_height().ok().flatten()
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PanelHeightMode {
+    Automatic,
+    Manual,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -119,14 +212,14 @@ pub fn show_popup(window: &WebviewWindow) {
         .standalone_window;
     if standalone || cfg!(target_os = "linux") {
         let _ = window.unminimize();
-        let _ = apply_saved_panel_height(window);
+        let _ = restore_manual_panel_height(window);
         let _ = window.center();
     } else {
         let _ = window
             .as_ref()
             .window()
             .move_window_constrained(Position::TrayCenter);
-        let _ = apply_saved_panel_height(window);
+        let _ = restore_manual_panel_height(window);
     }
     let _ = window.show();
     let _ = window.set_focus();
@@ -275,18 +368,47 @@ fn configure_panel_size_constraints(window: &WebviewWindow) -> Result<u32, Strin
     Ok(maximum)
 }
 
-fn apply_saved_panel_height(window: &WebviewWindow) -> Result<(), String> {
+fn restore_manual_panel_height(window: &WebviewWindow) -> Result<(), String> {
     let maximum = panel_maximum_height(window)?;
     let minimum = PANEL_MIN_HEIGHT.min(maximum);
     let saved = window
         .app_handle()
         .try_state::<Arc<PanelResizeSession>>()
-        .and_then(|session| session.saved_height())
-        .unwrap_or(PANEL_DEFAULT_HEIGHT);
-    let height = saved.clamp(minimum, maximum);
-    resize_popup_anchored(window, height)?;
+        .and_then(|session| session.saved_height());
+    if let Some(saved) = saved {
+        resize_panel_for_context(window, saved.clamp(minimum, maximum))?;
+    }
     configure_panel_size_constraints(window)?;
     Ok(())
+}
+
+fn resize_panel_for_context(window: &WebviewWindow, height: u32) -> Result<(), String> {
+    if window
+        .app_handle()
+        .state::<DesktopIntegration>()
+        .standalone_window
+    {
+        return window
+            .set_size(LogicalSize::new(PANEL_WIDTH, f64::from(height)))
+            .map_err(|_| "OpenQuota window could not be resized.".to_owned());
+    }
+    resize_popup_anchored(window, height)
+}
+
+pub fn fit_panel_to_content(window: &WebviewWindow, height: u32) -> Result<bool, String> {
+    let Some(session) = window.app_handle().try_state::<Arc<PanelResizeSession>>() else {
+        return Ok(false);
+    };
+    if !session.allows_automatic_fit() {
+        return Ok(false);
+    }
+    // Show/open and native drag setup already install the constraints. Auto-fit only needs the
+    // current monitor clamp here; reapplying native min/max constraints on every animation frame
+    // causes unnecessary platform window-manager work.
+    let maximum = panel_maximum_height(window)?;
+    let minimum = PANEL_MIN_HEIGHT.min(maximum);
+    resize_panel_for_context(window, height.clamp(minimum, maximum))?;
+    Ok(true)
 }
 
 pub fn prepare_native_panel_resize(window: &WebviewWindow) -> Result<PanelResizeEdge, String> {
@@ -296,23 +418,56 @@ pub fn prepare_native_panel_resize(window: &WebviewWindow) -> Result<PanelResize
         .set_resizable(true)
         .map_err(|_| "OpenQuota panel resize could not be enabled.".to_owned())?;
     if let Some(session) = window.app_handle().try_state::<Arc<PanelResizeSession>>() {
-        session.begin();
+        let height = current_logical_height(&window.as_ref().window())
+            .ok_or("OpenQuota content size is unavailable.")?;
+        session.begin(height)?;
     }
     Ok(edge)
 }
 
+pub fn set_manual_panel_height(window: &WebviewWindow) -> Result<(), String> {
+    let height = current_logical_height(&window.as_ref().window())
+        .ok_or("OpenQuota content size is unavailable.")?;
+    window
+        .app_handle()
+        .state::<Arc<PanelResizeSession>>()
+        .set_manual(height)
+}
+
 pub fn finish_native_panel_resize(window: &WebviewWindow) {
     if let Some(session) = window.app_handle().try_state::<Arc<PanelResizeSession>>() {
-        session.finish();
+        session.finish(current_logical_height(&window.as_ref().window()));
     }
+    let _ = lock_native_panel_resize_axis(window);
+}
+
+pub fn lock_native_panel_resize_axis(window: &WebviewWindow) -> Result<(), String> {
     // Keep the system's invisible left/right resize borders disabled outside the explicit vertical
     // gesture. Re-applying the logical width also repairs any transient WebView viewport change if a
     // platform briefly reported a horizontal resize before the native constraint took effect.
-    let _ = window.set_resizable(false);
-    if let (Ok(size), Ok(scale)) = (window.inner_size(), window.scale_factor()) {
-        let height = f64::from(size.height) / scale;
-        let _ = window.set_size(LogicalSize::new(PANEL_WIDTH, height));
-    }
+    window
+        .set_resizable(false)
+        .map_err(|_| "OpenQuota panel resize could not be settled.".to_owned())?;
+    let size = window
+        .inner_size()
+        .map_err(|_| "OpenQuota content size is unavailable.")?;
+    let scale = window
+        .scale_factor()
+        .map_err(|_| "OpenQuota display scale is unavailable.")?;
+    let height = f64::from(size.height) / scale;
+    window
+        .set_size(LogicalSize::new(PANEL_WIDTH, height))
+        .map_err(|_| "OpenQuota panel resize could not be settled.".to_owned())
+}
+
+fn current_logical_height(window: &Window) -> Option<u32> {
+    let size = window.inner_size().ok()?;
+    let scale = window.scale_factor().ok()?;
+    Some(
+        (f64::from(size.height) / scale)
+            .round()
+            .clamp(1.0, f64::from(u32::MAX)) as u32,
+    )
 }
 
 #[cfg(target_os = "windows")]
@@ -453,14 +608,14 @@ pub fn handle_window_event(window: &Window, event: &WindowEvent) {
                 .standalone_window =>
         {
             if let Some(session) = window.app_handle().try_state::<Arc<PanelResizeSession>>() {
-                session.finish();
+                session.finish(current_logical_height(window));
             }
             let _ = window.set_resizable(false);
             schedule_outside_click_dismiss(window.clone())
         }
         WindowEvent::CloseRequested { api, .. } => {
             if let Some(session) = window.app_handle().try_state::<Arc<PanelResizeSession>>() {
-                session.finish();
+                session.finish(current_logical_height(window));
             }
             let _ = window.set_resizable(false);
             api.prevent_close();
@@ -485,9 +640,46 @@ pub fn handle_window_event(window: &Window, event: &WindowEvent) {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use tempfile::tempdir;
+
     use super::{
-        anchored_vertical_frame, panel_resize_edge_for_frames, PanelResizeEdge, VerticalFrame,
+        anchored_vertical_frame, panel_resize_edge_for_frames, PanelHeightMode, PanelResizeEdge,
+        PanelResizeSession, VerticalFrame,
     };
+    use crate::storage::Storage;
+
+    #[test]
+    fn a_real_resize_owns_the_height_until_automatic_mode_is_restored() {
+        let directory = tempdir().unwrap();
+        let storage = Arc::new(Storage::open(&directory.path().join("openquota.db")).unwrap());
+        let session = PanelResizeSession::new(storage.clone());
+
+        assert_eq!(session.mode(), PanelHeightMode::Automatic);
+        session.begin(540).unwrap();
+        assert_eq!(session.mode(), PanelHeightMode::Manual);
+        assert_eq!(storage.load_panel_height().unwrap(), Some(540));
+        session.record(612);
+        session.finish(Some(612));
+        assert_eq!(session.mode(), PanelHeightMode::Manual);
+        assert_eq!(storage.load_panel_height().unwrap(), Some(612));
+
+        let restarted = PanelResizeSession::new(storage.clone());
+        assert_eq!(restarted.mode(), PanelHeightMode::Manual);
+        assert_eq!(restarted.saved_height(), Some(612));
+
+        session.set_automatic().unwrap();
+        assert_eq!(session.mode(), PanelHeightMode::Automatic);
+        assert_eq!(storage.load_panel_height().unwrap(), None);
+
+        session.begin(680).unwrap();
+        session.record(720);
+        session.set_automatic().unwrap();
+        session.finish(Some(720));
+        assert_eq!(session.mode(), PanelHeightMode::Automatic);
+        assert_eq!(storage.load_panel_height().unwrap(), None);
+    }
 
     #[test]
     fn bottom_anchored_popup_exposes_a_top_resize_grip() {

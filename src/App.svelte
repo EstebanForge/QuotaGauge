@@ -7,7 +7,9 @@
     finishPanelResize,
     getBootstrapState,
     getLogPath,
+    getPanelHeightMode,
     getPanelResizeEdge,
+    lockPanelResizeAxis,
     onOpenScreen,
     onPopupHidden,
     onSettingsState,
@@ -22,6 +24,9 @@
     requestNotificationPermission,
     resetCustomization as resetCustomizationCommand,
     resetProviderCustomization as resetProviderCustomizationCommand,
+    setPanelHeightAutomatic,
+    setPanelHeightManual,
+    type PanelHeightMode,
     type PanelResizeEdge,
   } from './lib/backend';
   import CustomizeProviderDetail from './lib/CustomizeProviderDetail.svelte';
@@ -82,10 +87,17 @@
   const settingsState = $derived(settingsController.state);
   const updates = new UpdateController();
   let resizeEdge = $state<PanelResizeEdge>(platform === 'windows' ? 'top' : 'bottom');
+  let panelHeightMode = $state<PanelHeightMode>('automatic');
+  let panelHeightModeRequest = 0;
+  let lastResizeGripPointerAt = Number.NEGATIVE_INFINITY;
+  let panelResizeOperation: Promise<void> | null = null;
   const windowController = createWindowController({
     screen: () => screen,
     refreshing: () => anyRefreshing,
     reordering: () => reordering,
+    automatic: () => panelHeightMode === 'automatic',
+    reducedMotion: () => reducedMotion,
+    onError: (message) => (settingsError = message),
   });
 
   $effect(() => {
@@ -384,14 +396,43 @@
       .then((edge) => (resizeEdge = edge))
       .catch(() => undefined);
   }
+  function updatePanelHeightMode() {
+    if (!('__TAURI_INTERNALS__' in window)) return;
+    const request = ++panelHeightModeRequest;
+    void getPanelHeightMode()
+      .then((mode) => {
+        if (request !== panelHeightModeRequest) return;
+        panelHeightMode = mode;
+        if (mode === 'automatic') scheduleWindowFit();
+      })
+      .catch(() => undefined);
+  }
+  function acceptPanelHeightMode(mode: PanelHeightMode) {
+    panelHeightModeRequest += 1;
+    panelHeightMode = mode;
+  }
   function handlePanelResizePointerDown(event: PointerEvent) {
     if (event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
-    void (async () => {
+    const pointerAt = event.timeStamp;
+    const repeatedPress = event.detail > 1 || pointerAt - lastResizeGripPointerAt <= 400;
+    lastResizeGripPointerAt = repeatedPress ? Number.NEGATIVE_INFINITY : pointerAt;
+    if (repeatedPress) {
+      const activeResize = panelResizeOperation;
+      void (async () => {
+        if (activeResize) await activeResize;
+        await changePanelHeightMode('automatic');
+      })();
+      return;
+    }
+    const operation = (async () => {
       try {
         const edge = await beginPanelResize();
         resizeEdge = edge;
+        // The native begin command has already persisted the current height as manual. Mirroring it
+        // here stops any in-flight frontend auto-fit without waiting for the first resize event.
+        acceptPanelHeightMode('manual');
         // TODO(macOS): Tao 0.35 reports native resize dragging as unsupported and Tauri currently
         // swallows that runtime error. Re-test after Tauri/Tao upgrades; add an AppKit fallback if
         // upstream support is still unavailable.
@@ -399,13 +440,33 @@
       } catch {
         settingsError = 'OpenQuota panel resize could not be started.';
       } finally {
-        void finishPanelResize();
+        await lockPanelResizeAxis().catch(() => undefined);
+        updatePanelHeightMode();
       }
     })();
+    panelResizeOperation = operation;
+    void operation.finally(() => {
+      if (panelResizeOperation === operation) panelResizeOperation = null;
+    });
   }
   function finishPanelResizeGesture() {
     if (!('__TAURI_INTERNALS__' in window)) return;
-    void finishPanelResize();
+    void finishPanelResize()
+      .then(updatePanelHeightMode)
+      .catch(() => undefined);
+  }
+  async function changePanelHeightMode(mode: PanelHeightMode) {
+    if (!('__TAURI_INTERNALS__' in window)) return;
+    panelHeightModeRequest += 1;
+    try {
+      if (mode === 'automatic') await setPanelHeightAutomatic();
+      else await setPanelHeightManual();
+      acceptPanelHeightMode(mode);
+      if (mode === 'automatic') scheduleWindowFit();
+    } catch {
+      settingsError = 'OpenQuota could not change the panel height mode.';
+      updatePanelHeightMode();
+    }
   }
   async function requestNotifications() {
     const current = settingsState;
@@ -449,8 +510,11 @@
     const refreshWindowState = () => {
       void settingsController.refreshIfIdle();
       updatePanelResizeEdge();
+      updatePanelHeightMode();
+      scheduleWindowFit();
     };
     updatePanelResizeEdge();
+    updatePanelHeightMode();
     window.addEventListener('focus', refreshWindowState);
 
     const popover = document.querySelector<HTMLElement>('.popover');
@@ -653,7 +717,9 @@
               <SettingsScreen
                 settingsView={settingsState}
                 {platform}
+                {panelHeightMode}
                 onChange={saveSettings}
+                onPanelHeightModeChange={(mode) => void changePanelHeightMode(mode)}
                 onRequestNotifications={requestNotifications}
                 onOpenNotificationSettings={openNotificationSettings}
                 updateError={updates.error}
