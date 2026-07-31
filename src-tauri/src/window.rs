@@ -9,16 +9,24 @@ use std::{
 };
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, LogicalSize, Manager, WebviewWindow, Window, WindowEvent};
+use tauri::{
+    webview::Color, AppHandle, Emitter, LogicalSize, Manager, Theme, WebviewWindow, Window,
+    WindowEvent,
+};
 use tauri_plugin_positioner::{Position, WindowExt};
 
-use crate::{desktop_integration::DesktopIntegration, popup::PopupDismissGuard, storage::Storage};
+use crate::{
+    desktop_integration::DesktopIntegration, models::ThemePreference, popup::PopupDismissGuard,
+    settings::SettingsService, storage::Storage,
+};
 
 pub const MAIN_WINDOW: &str = "main";
 pub const PANEL_WIDTH: f64 = 320.0;
 pub const PANEL_MIN_HEIGHT: u32 = 240;
 const PANEL_SCREEN_FRACTION: f64 = 0.85;
 const PANEL_RESIZE_SAVE_DELAY: Duration = Duration::from_millis(120);
+const LIGHT_PANEL_SURFACE: Color = Color(0xff, 0xff, 0xff, 0xff);
+const DARK_PANEL_SURFACE: Color = Color(0x1d, 0x1d, 0x1f, 0xff);
 
 #[derive(Clone, Copy)]
 struct PendingPanelHeight {
@@ -180,6 +188,30 @@ pub enum PanelHeightMode {
 pub enum PanelResizeEdge {
     Top,
     Bottom,
+}
+
+fn panel_surface_color(preference: ThemePreference, system_theme: Theme) -> Color {
+    match preference {
+        ThemePreference::Dark => DARK_PANEL_SURFACE,
+        ThemePreference::Light => LIGHT_PANEL_SURFACE,
+        ThemePreference::System if system_theme == Theme::Dark => DARK_PANEL_SURFACE,
+        ThemePreference::System => LIGHT_PANEL_SURFACE,
+    }
+}
+
+fn apply_panel_surface_for_theme(
+    window: &WebviewWindow,
+    preference: ThemePreference,
+    system_theme: Theme,
+) -> tauri::Result<()> {
+    window.set_background_color(Some(panel_surface_color(preference, system_theme)))
+}
+
+pub fn apply_panel_surface(
+    window: &WebviewWindow,
+    preference: ThemePreference,
+) -> tauri::Result<()> {
+    apply_panel_surface_for_theme(window, preference, window.theme().unwrap_or(Theme::Light))
 }
 
 /// Brings the already-running application forward when a later launch is redirected to it by the
@@ -605,6 +637,18 @@ pub fn handle_window_event(window: &Window, event: &WindowEvent) {
                 session.record(height);
             }
         }
+        WindowEvent::ThemeChanged(theme) => {
+            let app = window.app_handle();
+            let preference = app
+                .try_state::<Arc<SettingsService>>()
+                .map(|settings| settings.get().theme);
+            if preference == Some(ThemePreference::System) {
+                if let Some(webview) = app.get_webview_window(MAIN_WINDOW) {
+                    let _ =
+                        apply_panel_surface_for_theme(&webview, ThemePreference::System, *theme);
+                }
+            }
+        }
         WindowEvent::Focused(false)
             if !window
                 .app_handle()
@@ -645,10 +689,13 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        anchored_vertical_frame, panel_resize_edge_for_frames, PanelHeightMode, PanelResizeEdge,
-        PanelResizeSession, VerticalFrame,
+        anchored_vertical_frame, panel_resize_edge_for_frames, panel_surface_color,
+        PanelHeightMode, PanelResizeEdge, PanelResizeSession, VerticalFrame, DARK_PANEL_SURFACE,
+        LIGHT_PANEL_SURFACE,
     };
+    use crate::models::ThemePreference;
     use crate::storage::Storage;
+    use tauri::Theme;
 
     #[test]
     fn a_real_resize_owns_the_height_until_automatic_mode_is_restored() {
@@ -679,6 +726,26 @@ mod tests {
         session.finish(Some(720));
         assert_eq!(session.mode(), PanelHeightMode::Automatic);
         assert_eq!(storage.load_panel_height().unwrap(), None);
+    }
+
+    #[test]
+    fn panel_surface_follows_explicit_and_system_theme_preferences() {
+        assert_eq!(
+            panel_surface_color(ThemePreference::Dark, Theme::Light),
+            DARK_PANEL_SURFACE
+        );
+        assert_eq!(
+            panel_surface_color(ThemePreference::Light, Theme::Dark),
+            LIGHT_PANEL_SURFACE
+        );
+        assert_eq!(
+            panel_surface_color(ThemePreference::System, Theme::Dark),
+            DARK_PANEL_SURFACE
+        );
+        assert_eq!(
+            panel_surface_color(ThemePreference::System, Theme::Light),
+            LIGHT_PANEL_SURFACE
+        );
     }
 
     #[test]

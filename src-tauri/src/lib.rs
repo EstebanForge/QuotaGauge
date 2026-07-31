@@ -253,6 +253,12 @@ pub fn run() {
             app.manage(notifications.clone());
             app.manage(Arc::new(CodexResetClaimService::new()?));
 
+            if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
+                if window::apply_panel_surface(&window, settings.get().theme).is_err() {
+                    app_warn!("window", "initial panel surface theme could not be applied");
+                }
+            }
+
             if let Some(shortcut) = settings.get().global_shortcut {
                 let _ = register_shortcut(app.handle(), &shortcut);
             }

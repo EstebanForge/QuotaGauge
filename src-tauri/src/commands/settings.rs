@@ -75,6 +75,13 @@ pub async fn save_app_settings(
             updated.log_level.log_label()
         );
     }
+    if previous.theme != updated.theme {
+        if let Some(window) = app.get_webview_window(crate::window::MAIN_WINDOW) {
+            if crate::window::apply_panel_surface(&window, updated.theme).is_err() {
+                crate::app_warn!("window", "panel surface theme could not be applied");
+            }
+        }
+    }
     crate::app_debug!("config", "application settings persisted");
     tray_presentation::update(
         &app,
