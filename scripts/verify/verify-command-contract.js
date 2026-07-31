@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 
-const backend = fs.readFileSync(new URL('./src/lib/backend.ts', import.meta.url), 'utf8');
-const application = fs.readFileSync(new URL('./src-tauri/src/lib.rs', import.meta.url), 'utf8');
+const root = new URL('../../', import.meta.url);
+const backend = fs.readFileSync(new URL('src/lib/backend.ts', root), 'utf8');
+const application = fs.readFileSync(new URL('src-tauri/src/lib.rs', root), 'utf8');
 const invokedCommands = new Set(
   [...backend.matchAll(/invoke(?:<[^>]+>)?\(\s*'([^']+)'/g)].map((match) => match[1]),
 );

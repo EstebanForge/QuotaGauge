@@ -97,7 +97,7 @@ jobs:
           workspaces: src-tauri -> target
 
       - name: Validate release tag
-        run: node verify-versions.js "$RELEASE_TAG"
+        run: node scripts/verify/verify-versions.js "$RELEASE_TAG"
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile

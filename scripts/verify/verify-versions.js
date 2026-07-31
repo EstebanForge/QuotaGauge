@@ -1,10 +1,9 @@
 import fs from 'node:fs';
 
-const packageJson = JSON.parse(fs.readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
-const tauriConfig = JSON.parse(
-  fs.readFileSync(new URL('./src-tauri/tauri.conf.json', import.meta.url), 'utf8'),
-);
-const cargoManifest = fs.readFileSync(new URL('./src-tauri/Cargo.toml', import.meta.url), 'utf8');
+const root = new URL('../../', import.meta.url);
+const packageJson = JSON.parse(fs.readFileSync(new URL('package.json', root), 'utf8'));
+const tauriConfig = JSON.parse(fs.readFileSync(new URL('src-tauri/tauri.conf.json', root), 'utf8'));
+const cargoManifest = fs.readFileSync(new URL('src-tauri/Cargo.toml', root), 'utf8');
 const cargoPackage = cargoManifest.match(/\[package\][\s\S]*?^version\s*=\s*"([^"]+)"/m);
 
 if (!cargoPackage) {

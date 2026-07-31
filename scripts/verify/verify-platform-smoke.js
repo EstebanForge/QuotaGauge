@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 
-const root = new URL('./', import.meta.url);
+const root = new URL('../../', import.meta.url);
 const read = (path) => fs.readFileSync(new URL(path, root), 'utf8');
 const ci = read('.github/workflows/ci.yml');
 const release = read('.github/workflows/release.yml');

@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 
-const manifest = fs.readFileSync(new URL('./src-tauri/Cargo.toml', import.meta.url), 'utf8');
-const application = fs.readFileSync(new URL('./src-tauri/src/lib.rs', import.meta.url), 'utf8');
+const root = new URL('../../', import.meta.url);
+const manifest = fs.readFileSync(new URL('src-tauri/Cargo.toml', root), 'utf8');
+const application = fs.readFileSync(new URL('src-tauri/src/lib.rs', root), 'utf8');
 
 if (!/^tauri-plugin-single-instance\s*=/m.test(manifest)) {
   throw new Error('The desktop manifest must include the Tauri single-instance plugin.');

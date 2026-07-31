@@ -1,13 +1,14 @@
 import fs from 'node:fs';
 
+const root = new URL('../../', import.meta.url);
 const rustSource = [
-  './src-tauri/src/models.rs',
-  './src-tauri/src/service.rs',
-  './src-tauri/src/commands/bootstrap.rs',
+  'src-tauri/src/models.rs',
+  'src-tauri/src/service.rs',
+  'src-tauri/src/commands/bootstrap.rs',
 ]
-  .map((file) => fs.readFileSync(new URL(file, import.meta.url), 'utf8'))
+  .map((file) => fs.readFileSync(new URL(file, root), 'utf8'))
   .join('\n');
-const typeScriptSource = fs.readFileSync(new URL('./src/lib/types.ts', import.meta.url), 'utf8');
+const typeScriptSource = fs.readFileSync(new URL('src/lib/types.ts', root), 'utf8');
 const contracts = [
   'QuotaWindow',
   'MetricValue',

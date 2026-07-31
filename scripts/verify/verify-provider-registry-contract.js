@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 
-const root = new URL('./', import.meta.url);
+const root = new URL('../../', import.meta.url);
 const rustConsumers = [
   'src-tauri/src/service.rs',
   'src-tauri/src/settings.rs',
