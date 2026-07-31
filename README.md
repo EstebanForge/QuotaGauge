@@ -11,6 +11,7 @@
 <p align="center">
   <a href="https://github.com/deviffyy/OpenQuota/actions/workflows/ci.yml"><img src="https://github.com/deviffyy/OpenQuota/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
   <a href="https://github.com/deviffyy/OpenQuota/releases/latest"><img src="https://img.shields.io/github/v/release/deviffyy/OpenQuota" alt="Latest release"></a>
+  <a href="https://github.com/deviffyy/OpenQuota/releases"><img src="https://img.shields.io/github/downloads/deviffyy/OpenQuota/total" alt="Total downloads"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
 </p>
 
