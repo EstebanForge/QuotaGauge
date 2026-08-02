@@ -41,7 +41,7 @@ pub struct ClaudeTokenEvent {
     pub cost_usd: Option<f64>,
 }
 
-const LOG_CACHE_SCHEMA_VERSION: u8 = 2;
+const LOG_CACHE_SCHEMA_VERSION: u8 = 3;
 
 impl ClaudeTokenEvent {
     fn total_tokens(&self) -> u64 {
@@ -224,11 +224,16 @@ pub fn parse_jsonl(content: &str) -> Vec<ClaudeTokenEvent> {
         .lines()
         .filter(|line| line.contains("\"usage\":{"))
         .filter(|line| !has_unsupported_null_field(line))
-        .filter_map(parse_line)
+        .flat_map(|line| parse_entries(line).unwrap_or_default())
         .collect()
 }
 
+#[cfg(test)]
 fn parse_line(line: &str) -> Option<ClaudeTokenEvent> {
+    parse_entries(line)?.into_iter().next()
+}
+
+fn parse_entries(line: &str) -> Option<Vec<ClaudeTokenEvent>> {
     let object: Value = serde_json::from_str(line).ok()?;
     let timestamp = parse_log_timestamp(object.get("timestamp")?.as_str()?)?;
     let message = object.get("message")?;
@@ -250,6 +255,76 @@ fn parse_line(line: &str) -> Option<ClaudeTokenEvent> {
         return None;
     }
     let usage = message.get("usage")?;
+    let message_id = message.get("id").and_then(Value::as_str).map(str::to_owned);
+    let request_id = object
+        .get("requestId")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let sidechain = object
+        .get("isSidechain")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let parent = usage_event(
+        timestamp,
+        message
+            .get("model")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty() && *value != "<synthetic>")
+            .map(str::to_owned),
+        usage,
+        message_id.clone(),
+        request_id.clone(),
+        sidechain,
+        object.get("costUSD").and_then(number),
+    )?;
+    let mut events = vec![parent];
+    let mut advisor_index = 0;
+    for iteration in usage
+        .get("iterations")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if iteration.get("type").and_then(Value::as_str) != Some("advisor_message") {
+            continue;
+        }
+        let Some(model) = iteration
+            .get("model")
+            .and_then(Value::as_str)
+            .filter(|model| !model.is_empty())
+        else {
+            continue;
+        };
+        let advisor_message_id = message_id
+            .as_ref()
+            .map(|message_id| format!("{message_id}:advisor:{advisor_index}"));
+        let Some(advisor) = usage_event(
+            timestamp,
+            Some(model.to_owned()),
+            iteration,
+            advisor_message_id,
+            request_id.clone(),
+            sidechain,
+            None,
+        ) else {
+            continue;
+        };
+        events.push(advisor);
+        advisor_index += 1;
+    }
+    Some(events)
+}
+
+fn usage_event(
+    timestamp: DateTime<Utc>,
+    model: Option<String>,
+    usage: &Value,
+    message_id: Option<String>,
+    request_id: Option<String>,
+    sidechain: bool,
+    cost_usd: Option<f64>,
+) -> Option<ClaudeTokenEvent> {
     let input = integer(usage.get("input_tokens"))?;
     let output = integer(usage.get("output_tokens"))?;
     let speed = usage.get("speed").and_then(Value::as_str);
@@ -272,29 +347,18 @@ fn parse_line(line: &str) -> Option<ClaudeTokenEvent> {
         });
     Some(ClaudeTokenEvent {
         timestamp,
-        model: message
-            .get("model")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty() && *value != "<synthetic>")
-            .map(str::to_owned),
+        model,
         input,
         cache_write_5m,
         cache_write_1h,
         cache_read: integer(usage.get("cache_read_input_tokens")).unwrap_or_default(),
         output,
-        message_id: message.get("id").and_then(Value::as_str).map(str::to_owned),
-        request_id: object
-            .get("requestId")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
-        sidechain: object
-            .get("isSidechain")
-            .and_then(Value::as_bool)
-            .unwrap_or(false),
+        message_id,
+        request_id,
+        sidechain,
         is_fast: speed == Some("fast"),
         has_speed: speed.is_some(),
-        cost_usd: object.get("costUSD").and_then(number),
+        cost_usd,
     })
 }
 
@@ -460,7 +524,7 @@ mod tests {
         aggregate, claude_roots, deduplicate, discover_files_in_roots, has_unsupported_null_field,
         is_semver_prefix, parse_jsonl, parse_line, ClaudeTokenEvent,
     };
-    use crate::pricing::test_bundled_pricing;
+    use crate::pricing::{test_bundled_pricing, TokenBreakdown};
 
     #[test]
     fn provider_fixture_parses_and_deduplicates_claude_usage_lines() {
@@ -488,6 +552,64 @@ mod tests {
         assert!(event.is_fast);
         assert!(event.has_speed);
         assert_eq!(event.cost_usd, Some(0.5));
+    }
+
+    #[test]
+    fn expands_only_advisor_iterations_without_recounting_main_usage() {
+        let line = r#"{"timestamp":"2026-02-20T12:00:00.000Z","requestId":"req_1","costUSD":1.23,"message":{"id":"msg_1","model":"main-model","usage":{"input_tokens":2,"output_tokens":491,"cache_creation_input_tokens":7853,"cache_read_input_tokens":226584,"iterations":[{"type":"message","input_tokens":1,"output_tokens":200},{"type":"advisor_message","model":"claude-opus-4-6","input_tokens":10,"output_tokens":2,"cache_creation_input_tokens":3,"cache_read_input_tokens":4},{"type":"message","input_tokens":1,"output_tokens":291}]}}}"#;
+
+        let events = parse_jsonl(line);
+
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].model.as_deref(), Some("main-model"));
+        assert_eq!(events[0].input, 2);
+        assert_eq!(events[0].cache_write_5m, 7853);
+        assert_eq!(events[0].cache_read, 226584);
+        assert_eq!(events[0].output, 491);
+        assert_eq!(events[0].cost_usd, Some(1.23));
+        assert_eq!(events[1].model.as_deref(), Some("claude-opus-4-6"));
+        assert_eq!(events[1].message_id.as_deref(), Some("msg_1:advisor:0"));
+        assert_eq!(events[1].request_id.as_deref(), Some("req_1"));
+        assert_eq!(events[1].input, 10);
+        assert_eq!(events[1].cache_write_5m, 3);
+        assert_eq!(events[1].cache_read, 4);
+        assert_eq!(events[1].output, 2);
+        assert_eq!(events[1].cost_usd, None);
+
+        let duplicated = format!("{line}\n{line}");
+        assert_eq!(deduplicate(parse_jsonl(&duplicated)).len(), 2);
+    }
+
+    #[test]
+    fn advisor_iteration_uses_its_own_model_price_alongside_parent_cost() {
+        let content = r#"{"timestamp":"2026-07-15T08:00:00Z","requestId":"req_1","costUSD":0.001,"message":{"id":"msg_1","model":"main-model","usage":{"input_tokens":1,"output_tokens":2,"iterations":[{"type":"advisor_message","model":"claude-opus-4-6","input_tokens":10,"output_tokens":2}]}}}"#;
+        let pricing = test_bundled_pricing();
+        let advisor_cost = pricing
+            .estimated_cost_dollars(
+                "claude-opus-4-6",
+                TokenBreakdown {
+                    input: 10,
+                    output: 2,
+                    ..TokenBreakdown::default()
+                },
+                true,
+            )
+            .unwrap();
+        let now = Utc.with_ymd_and_hms(2026, 7, 15, 12, 0, 0).unwrap();
+
+        let history = aggregate(deduplicate(parse_jsonl(content)), now, &pricing);
+        let today = history.today.unwrap();
+
+        assert_eq!(today.tokens, 15);
+        assert!((today.estimated_cost_usd.unwrap() - (0.001 + advisor_cost)).abs() < 1e-12);
+        let models = today.model_breakdown.unwrap().models;
+        assert_eq!(
+            models
+                .iter()
+                .find(|entry| entry.model == "claude-opus-4-6")
+                .map(|entry| entry.total_tokens),
+            Some(12)
+        );
     }
 
     #[test]
