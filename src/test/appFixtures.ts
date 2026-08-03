@@ -334,12 +334,14 @@ export const antigravityState: ProviderViewState = {
 };
 
 export const settingsState: SettingsViewState = {
+  renamableProviderIds: ['claude', 'codex'],
   notificationPermission: 'prompt',
   integrationError: null,
   standaloneWindow: false,
   platformSummary: null,
   settings: {
-    schemaVersion: 5,
+    schemaVersion: 6,
+    providerNames: {},
     knownProviderIds: ['claude', 'codex', 'antigravity'],
     showTotalSpend: true,
     theme: 'system',

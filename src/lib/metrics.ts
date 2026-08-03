@@ -37,7 +37,9 @@ export class ProviderCatalogIndex {
     return this.#metricsById.get(id);
   }
 
-  displayName(id: string) {
+  displayName(id: string, providerNames?: Record<string, string>) {
+    const customName = providerNames?.[id]?.trim();
+    if (customName) return customName;
     return this.provider(id)?.displayName ?? id;
   }
 

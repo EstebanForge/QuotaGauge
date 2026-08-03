@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App.svelte';
 import type {
   AppSettings,
+  ProviderCatalog,
   ProviderViewState,
   SettingsViewState,
   UsageViewState,
@@ -41,13 +42,16 @@ type InvokeArgs = {
 };
 type InvokeImplementation = (command: string, args?: InvokeArgs) => unknown;
 
-function mockInvoke(implementation: InvokeImplementation) {
+function mockInvoke(
+  implementation: InvokeImplementation,
+  catalog: ProviderCatalog = providerCatalog,
+) {
   mocks.invoke.mockImplementation((command: string, args?: InvokeArgs) => {
     if (command === 'get_bootstrap_state') {
       return Promise.all([
         implementation('get_usage_state', args),
         implementation('get_app_settings', args),
-      ]).then(([usage, settings]) => ({ usage, settings, catalog: providerCatalog }));
+      ]).then(([usage, settings]) => ({ usage, settings, catalog }));
     }
     return implementation(command, args);
   });
@@ -200,6 +204,155 @@ describe('OpenQuota dashboard', () => {
         name: 'Only includes Claude and Codex',
       }),
     ).toBeInTheDocument();
+  });
+
+  it('renames an observed Claude card from its context menu', async () => {
+    const claudeSettings: SettingsViewState = {
+      ...settingsState,
+      settings: {
+        ...settingsState.settings,
+        providers: [
+          {
+            id: 'claude',
+            enabled: true,
+            detected: true,
+            expanded: false,
+            metrics: [
+              { id: 'claude.session', enabled: true, section: 'alwaysVisible', pinned: true },
+            ],
+          },
+        ],
+      },
+    };
+    const claudeUsage: UsageViewState = { providers: { claude: claudeState } };
+    mockInvoke((command: string, args?: InvokeArgs) => {
+      if (
+        command === 'get_usage_state' ||
+        command === 'refresh_usage' ||
+        command === 'refresh_provider_usage'
+      )
+        return Promise.resolve(claudeUsage);
+      if (command === 'get_app_settings') return Promise.resolve(claudeSettings);
+      if (command === 'save_app_settings')
+        return Promise.resolve({
+          ...claudeSettings,
+          settings: args?.settings ?? claudeSettings.settings,
+        });
+      if (command === 'get_panel_resize_edge') return Promise.resolve('bottom');
+      if (command === 'get_panel_height_mode') return Promise.resolve('automatic');
+      if (command === 'fit_panel_to_content') return Promise.resolve(true);
+      if (command === 'check_for_updates')
+        return Promise.resolve({
+          available: false,
+          currentVersion: '0.1.0',
+          version: null,
+          body: null,
+          installable: true,
+          releaseUrl: 'https://github.com/deviffyy/OpenQuota/releases/latest',
+        });
+      return Promise.resolve();
+    });
+
+    render(App);
+    const provider = await screen.findByRole('group', { name: 'Claude provider' });
+    await fireEvent.contextMenu(provider);
+    await fireEvent.click(screen.getByRole('menuitem', { name: 'Rename…' }));
+    const dialog = screen.getByRole('dialog', { name: 'Rename Card' });
+    const input = within(dialog).getByRole('textbox', { name: 'Name' });
+    await fireEvent.input(input, { target: { value: 'Personal' } });
+    await fireEvent.click(within(dialog).getByRole('button', { name: 'Rename' }));
+
+    await waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith('save_app_settings', {
+        settings: expect.objectContaining({ providerNames: { claude: 'Personal' } }),
+      }),
+    );
+    expect(await screen.findByRole('heading', { name: 'Personal' })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Move Personal' })).toHaveFocus(),
+    );
+    const savesAfterRename = mocks.invoke.mock.calls.filter(
+      ([command]) => command === 'save_app_settings',
+    ).length;
+    await fireEvent.keyDown(document, { key: 'z', ctrlKey: true });
+    await Promise.resolve();
+    expect(
+      mocks.invoke.mock.calls.filter(([command]) => command === 'save_app_settings'),
+    ).toHaveLength(savesAfterRename);
+  });
+
+  it('renames an observed extra Claude account card', async () => {
+    const providerId = 'claude@1234abcd';
+    const extraCatalog = structuredClone(providerCatalog);
+    const baseDefinition = extraCatalog.providers.find((provider) => provider.id === 'claude')!;
+    extraCatalog.providers.push({
+      ...baseDefinition,
+      id: providerId,
+      displayName: 'Claude — Work',
+      fallbackEnabled: false,
+      metrics: baseDefinition.metrics.map((metric) => ({
+        ...metric,
+        id: metric.id.replace('claude.', `${providerId}.`),
+      })),
+    });
+    const extraSettings: SettingsViewState = {
+      ...settingsState,
+      renamableProviderIds: [providerId],
+      settings: {
+        ...settingsState.settings,
+        providers: [
+          {
+            id: providerId,
+            enabled: true,
+            detected: true,
+            expanded: false,
+            metrics: [
+              {
+                id: `${providerId}.session`,
+                enabled: true,
+                section: 'alwaysVisible',
+                pinned: true,
+              },
+            ],
+          },
+        ],
+      },
+    };
+    const extraState: ProviderViewState = {
+      ...claudeState,
+      snapshot: claudeState.snapshot
+        ? { ...claudeState.snapshot, providerId }
+        : claudeState.snapshot,
+    };
+    const usage: UsageViewState = { providers: { [providerId]: extraState } };
+    mockInvoke((command: string, args?: InvokeArgs) => {
+      if (command === 'get_usage_state') return Promise.resolve(usage);
+      if (command === 'get_app_settings') return Promise.resolve(extraSettings);
+      if (command === 'save_app_settings')
+        return Promise.resolve({
+          ...extraSettings,
+          settings: args?.settings ?? extraSettings.settings,
+        });
+      if (command === 'get_panel_resize_edge') return Promise.resolve('bottom');
+      if (command === 'get_panel_height_mode') return Promise.resolve('automatic');
+      if (command === 'fit_panel_to_content') return Promise.resolve(true);
+      return Promise.resolve();
+    }, extraCatalog);
+
+    render(App);
+    const provider = await screen.findByRole('group', { name: 'Claude — Work provider' });
+    await fireEvent.contextMenu(provider);
+    await fireEvent.click(screen.getByRole('menuitem', { name: 'Rename…' }));
+    const dialog = screen.getByRole('dialog', { name: 'Rename Card' });
+    await fireEvent.input(within(dialog).getByRole('textbox', { name: 'Name' }), {
+      target: { value: 'Client' },
+    });
+    await fireEvent.click(within(dialog).getByRole('button', { name: 'Rename' }));
+
+    expect(await screen.findByRole('heading', { name: 'Client' })).toBeInTheDocument();
+    expect(mocks.invoke).toHaveBeenCalledWith('save_app_settings', {
+      settings: expect.objectContaining({ providerNames: { [providerId]: 'Client' } }),
+    });
   });
 
   it('persists Total Spend metric and period choices', async () => {

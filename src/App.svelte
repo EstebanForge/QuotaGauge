@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import {
     beginPanelResize,
@@ -31,6 +31,7 @@
   import CustomizeProviderDetail from './lib/CustomizeProviderDetail.svelte';
   import CustomizeProviderList from './lib/CustomizeProviderList.svelte';
   import ConfirmationSheet from './lib/ConfirmationSheet.svelte';
+  import { restoreCustomization } from './lib/customizationHistory';
   import Dashboard from './lib/Dashboard.svelte';
   import Icon from './lib/Icon.svelte';
   import { createListenerRegistry } from './lib/listenerRegistry';
@@ -39,6 +40,8 @@
   import OpenQuotaMark from './lib/OpenQuotaMark.svelte';
   import { horizontalPageTransition, shouldSlideBetweenScreens } from './lib/pageTransition';
   import { desktopPlatform, shortcutLabels } from './lib/platform';
+  import { withProviderName } from './lib/providerNames';
+  import RenameProviderSheet from './lib/RenameProviderSheet.svelte';
   import {
     buildProviderShareRows,
     renderProviderShareCard,
@@ -82,12 +85,14 @@
   const platform = desktopPlatform();
   const shortcuts = shortcutLabels(platform);
   const settingsController = new SettingsController((message) => (settingsError = message));
-  const providerDisplayName = (id: string) => catalog.displayName(id);
   const settingsState = $derived(settingsController.state);
+  const providerDisplayName = (id: string) =>
+    catalog.displayName(id, settingsState?.settings.providerNames);
   const updates = new UpdateController();
   let resizeEdge = $state<PanelResizeEdge>(platform === 'windows' ? 'top' : 'bottom');
   let panelHeightMode = $state<PanelHeightMode>('automatic');
   let panelHeightModeRequest = 0;
+  let renameCard = $state<{ id: string; initialValue: string } | null>(null);
   let lastResizeGripPointerAt = Number.NEGATIVE_INFINITY;
   let panelResizeOperation: Promise<void> | null = null;
   const windowController = createWindowController({
@@ -138,6 +143,7 @@
     closeOptionsMenu();
     showAbout = false;
     resetConfirmationOpen = false;
+    renameCard = null;
     resettingCustomization = false;
     confirmationMessage = null;
     const content = document.querySelector<HTMLElement>('.content');
@@ -185,6 +191,31 @@
     customizationHistory = [...customizationHistory.slice(-19), cloneSettings(current.settings)];
     saveSettings(next);
   }
+  function openRenameProvider(providerId: string) {
+    const current = settingsState;
+    if (!current) return;
+    renameCard = {
+      id: providerId,
+      initialValue: current.settings.providerNames[providerId] ?? '',
+    };
+  }
+  async function closeRenameProvider() {
+    const providerId = renameCard?.id;
+    renameCard = null;
+    if (!providerId) return;
+    await tick();
+    const provider = [...document.querySelectorAll<HTMLElement>('[data-provider-id]')].find(
+      (element) => element.dataset.providerId === providerId,
+    );
+    provider?.querySelector<HTMLElement>('[data-reorder-touch-handle]')?.focus();
+  }
+  function renameProvider(name: string) {
+    const current = settingsState;
+    if (!current || !renameCard) return;
+    const changed = withProviderName(current.settings, renameCard.id, name);
+    if (changed !== current.settings) saveSettings(changed);
+    void closeRenameProvider();
+  }
   function beginCustomizationGesture() {
     if (!settingsState) return;
     customizationGestureStart ??= cloneSettings(settingsState.settings);
@@ -206,10 +237,11 @@
     queueMicrotask(scheduleWindowFit);
   }
   function undoCustomization() {
+    const current = settingsState;
     const previous = customizationHistory.at(-1);
-    if (!previous) return;
+    if (!current || !previous) return;
     customizationHistory = customizationHistory.slice(0, -1);
-    saveSettings(previous);
+    saveSettings(restoreCustomization(current.settings, previous));
   }
   async function refresh() {
     if (anyRefreshing) return;
@@ -316,7 +348,12 @@
     const snapshot = [providerDisplayName(providerId), card.innerText.trim()].join('\n');
     try {
       const rows = buildProviderShareRows(catalog, provider, layout, current.settings, now);
-      const canvas = renderProviderShareCard(catalog, { providerId, plan: provider.plan, rows });
+      const canvas = renderProviderShareCard(catalog, {
+        providerId,
+        providerNames: current.settings.providerNames,
+        plan: provider.plan,
+        rows,
+      });
       await copyCanvas(canvas, snapshot);
     } catch {
       settingsError = 'Provider screenshot could not be copied.';
@@ -330,6 +367,7 @@
     try {
       const canvas = renderTotalSpendShareCard(catalog, {
         projection,
+        providerNames: current.settings.providerNames,
         metric: current.settings.totalSpendMetric,
         period: current.settings.totalSpendPeriod,
       });
@@ -680,6 +718,7 @@
               <Dashboard
                 {viewState}
                 {catalog}
+                renamableProviderIds={settingsState.renamableProviderIds}
                 settings={settingsState.settings}
                 {now}
                 onSettingsChange={saveSettings}
@@ -688,6 +727,7 @@
                 onReorderEnd={endCustomizationGesture}
                 onCustomize={() => navigate('customize')}
                 onOpenProviderCustomize={(id) => navigate(`provider:${id}`)}
+                onRenameProvider={openRenameProvider}
                 onShare={shareProvider}
                 onShareTotal={shareTotalSpend}
                 onRefresh={refreshProvider}
@@ -733,7 +773,9 @@
                 settings={settingsState.settings}
                 providerId={screen.slice(9)}
                 {catalog}
+                renamableProviderIds={settingsState.renamableProviderIds}
                 onChange={saveCustomization}
+                onNameChange={saveSettings}
                 onReorderStart={beginCustomizationGesture}
                 onReorderEnd={endCustomizationGesture}
                 {reducedMotion}
@@ -800,7 +842,7 @@
                 >
                 <div>
                   {#if shareMenuOpen}
-                    {#each settingsState.settings.providers.filter((provider) => provider.enabled) as provider (provider.id)}
+                    {#each settingsState.settings.providers.filter((provider) => provider.enabled && catalog.provider(provider.id)) as provider (provider.id)}
                       <button type="button" onclick={() => shareProvider(provider.id)}
                         >{providerDisplayName(provider.id)}</button
                       >
@@ -842,6 +884,14 @@
         pending={resettingCustomization}
         onConfirm={() => void confirmCustomizationReset()}
         onCancel={() => (resetConfirmationOpen = false)}
+      />
+    {/if}
+
+    {#if renameCard}
+      <RenameProviderSheet
+        initialValue={renameCard.initialValue}
+        onRename={renameProvider}
+        onCancel={() => void closeRenameProvider()}
       />
     {/if}
 

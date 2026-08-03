@@ -49,7 +49,8 @@ impl ProviderService {
         let mut refresh_flights = HashMap::new();
         for definition in &registry.catalog().providers {
             let id = definition.id.clone();
-            let state = match storage.load_snapshot(&id) {
+            let state = match storage.load_snapshot_for_identity(&id, registry.cache_identity(&id))
+            {
                 Ok(Some(snapshot)) => {
                     crate::app_debug!("cache", "loaded cached snapshot for {id}");
                     ProviderViewState::from_cache(snapshot)
@@ -393,10 +394,14 @@ impl ProviderService {
         provider_id: &str,
         result: Result<ProviderSnapshot, ProviderError>,
     ) -> ProviderViewState {
-        let cache_error = result
-            .as_ref()
-            .ok()
-            .is_some_and(|snapshot| self.storage.save_snapshot(snapshot).is_err());
+        let cache_error = result.as_ref().ok().is_some_and(|snapshot| {
+            self.storage
+                .save_snapshot_for_identity(
+                    snapshot,
+                    self.registry.cache_identity(provider_id).resolved_value(),
+                )
+                .is_err()
+        });
         if cache_error {
             crate::app_warn!("cache", "snapshot for {provider_id} could not be persisted");
         } else if result.is_ok() {

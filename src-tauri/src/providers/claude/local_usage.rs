@@ -53,6 +53,10 @@ pub fn scan_local_usage(
     storage: &Storage,
     now: DateTime<Utc>,
     pricing: &ModelPricing,
+    provider_id: &str,
+    configured_roots: &[PathBuf],
+    include_standard_roots: bool,
+    include_pi: bool,
 ) -> Result<UsageHistory, ClaudeError> {
     let since_date = now
         .with_timezone(&Local)
@@ -60,13 +64,13 @@ pub fn scan_local_usage(
         .checked_sub_days(Days::new(30))
         .unwrap_or(NaiveDate::MIN);
     let mut events = Vec::new();
-    let paths = discover_files();
+    let paths = discover_files(configured_roots, include_standard_roots);
     let mut seen_paths = HashSet::with_capacity(paths.len());
     for path in paths {
         seen_paths.insert(path.clone());
         let Some(parsed) = load_or_parse_log(
             storage,
-            "claude",
+            provider_id,
             &path,
             LOG_CACHE_SCHEMA_VERSION,
             parse_jsonl,
@@ -82,19 +86,23 @@ pub fn scan_local_usage(
         );
     }
     storage
-        .prune_log_events("claude", &seen_paths)
+        .prune_log_events(provider_id, &seen_paths)
         .map_err(|_| ClaudeError::LocalUsage)?;
     let mut accumulator = DailyUsageAccumulator::default();
     aggregate_into(deduplicate(events), now, pricing, &mut accumulator);
-    let includes_pi = match pi_usage::scan_into(storage, now, pricing, "claude", &mut accumulator) {
-        Ok(includes_pi) => includes_pi,
-        Err(_) => {
-            crate::app_warn!(
-                "plugin:pi",
-                "pi usage history could not be folded into Claude"
-            );
-            false
+    let includes_pi = if include_pi {
+        match pi_usage::scan_into(storage, now, pricing, provider_id, &mut accumulator) {
+            Ok(includes_pi) => includes_pi,
+            Err(_) => {
+                crate::app_warn!(
+                    "plugin:pi",
+                    "pi usage history could not be folded into Claude"
+                );
+                false
+            }
         }
+    } else {
+        false
     };
     let source_note = if includes_pi {
         "From your Claude usage history and pi (estimated)"
@@ -104,11 +112,19 @@ pub fn scan_local_usage(
     Ok(accumulator.build(now, source_note))
 }
 
-fn discover_files() -> Vec<PathBuf> {
+fn discover_files(configured_roots: &[PathBuf], include_standard_roots: bool) -> Vec<PathBuf> {
     let home = home_directory();
-    let config = env_text("CLAUDE_CONFIG_DIR");
-    let xdg = env_text("XDG_CONFIG_HOME");
-    discover_files_in_roots(&claude_roots(config.as_deref(), xdg.as_deref(), &home))
+    let mut roots = if include_standard_roots {
+        let config = env_text("CLAUDE_CONFIG_DIR");
+        let xdg = env_text("XDG_CONFIG_HOME");
+        claude_roots(config.as_deref(), xdg.as_deref(), &home)
+    } else {
+        Vec::new()
+    };
+    roots.extend(configured_roots.iter().cloned());
+    roots.sort();
+    roots.dedup();
+    discover_files_in_roots(&roots)
 }
 
 fn discover_files_in_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
@@ -144,7 +160,17 @@ fn claude_roots(config: Option<&str>, xdg: Option<&str>, home: &Path) -> Vec<Pat
     };
 
     if let Some(config) = config.map(str::trim).filter(|value| !value.is_empty()) {
-        add_if_valid(PathBuf::from(config));
+        for value in config
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            let mut root = expand_home(value, home);
+            if root.file_name().and_then(|name| name.to_str()) == Some("projects") {
+                root.pop();
+            }
+            add_if_valid(root);
+        }
     } else {
         let xdg = xdg
             .map(str::trim)
@@ -153,10 +179,10 @@ fn claude_roots(config: Option<&str>, xdg: Option<&str>, home: &Path) -> Vec<Pat
             .unwrap_or_else(|| home.join(".config"));
         add_if_valid(xdg.join("claude"));
         add_if_valid(home.join(".claude"));
+    }
 
-        for root in cowork_claude_roots(home) {
-            add_if_valid(root);
-        }
+    for root in cowork_claude_roots(home) {
+        add_if_valid(root);
     }
     roots
 }
@@ -193,10 +219,7 @@ fn child_directories(path: &Path) -> Vec<PathBuf> {
 }
 
 fn env_text(name: &str) -> Option<String> {
-    std::env::var(name)
-        .ok()
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
+    crate::provider_environment::value(name)
 }
 
 fn home_directory() -> PathBuf {
@@ -521,8 +544,8 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        aggregate, claude_roots, deduplicate, discover_files_in_roots, has_unsupported_null_field,
-        is_semver_prefix, parse_jsonl, parse_line, ClaudeTokenEvent,
+        aggregate, claude_roots, deduplicate, discover_files, discover_files_in_roots,
+        has_unsupported_null_field, is_semver_prefix, parse_jsonl, parse_line, ClaudeTokenEvent,
     };
     use crate::pricing::{test_bundled_pricing, TokenBreakdown};
 
@@ -690,19 +713,22 @@ mod tests {
     }
 
     #[test]
-    fn config_override_is_one_root_even_when_its_path_contains_a_comma() {
+    fn config_override_supports_multiple_roots_projects_alias_and_cowork() {
         let directory = tempdir().unwrap();
         let home = directory.path().join("home");
-        let configured = directory.path().join("claude,work");
+        let first = home.join("claude-one");
+        let second = directory.path().join("claude-two");
         let cowork = home.join(
             "Library/Application Support/Claude/local-agent-mode-sessions/group/sub/local_1/.claude",
         );
-        fs::create_dir_all(configured.join("projects")).unwrap();
+        fs::create_dir_all(first.join("projects")).unwrap();
+        fs::create_dir_all(second.join("projects")).unwrap();
         fs::create_dir_all(cowork.join("projects")).unwrap();
+        let configured = format!("~/claude-one,{}", second.join("projects").display());
 
-        let roots = claude_roots(Some(configured.to_str().unwrap()), None, &home);
+        let roots = claude_roots(Some(&configured), None, &home);
 
-        assert_eq!(roots, vec![configured]);
+        assert_eq!(roots, vec![first, second, cowork]);
     }
 
     #[test]
@@ -721,6 +747,24 @@ mod tests {
         assert_eq!(
             discover_files_in_roots(&[root]),
             vec![fs::canonicalize(log).unwrap()]
+        );
+    }
+
+    #[test]
+    fn account_scan_is_limited_to_its_configured_roots() {
+        let directory = tempdir().unwrap();
+        let account_root = directory.path().join("account");
+        let other_root = directory.path().join("other");
+        let account_log = account_root.join("projects/project/account.jsonl");
+        let other_log = other_root.join("projects/project/other.jsonl");
+        fs::create_dir_all(account_log.parent().unwrap()).unwrap();
+        fs::create_dir_all(other_log.parent().unwrap()).unwrap();
+        fs::write(&account_log, "{}").unwrap();
+        fs::write(&other_log, "{}").unwrap();
+
+        assert_eq!(
+            discover_files(&[account_root], false),
+            vec![fs::canonicalize(account_log).unwrap()]
         );
     }
 

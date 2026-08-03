@@ -127,6 +127,7 @@ where
 pub fn scan_or_cached_usage<E>(
     storage: &Storage,
     provider_id: &str,
+    identity: super::CacheIdentity<'_>,
     provider_name: &str,
     scan: impl FnOnce() -> Result<UsageHistory, E>,
     warnings: &mut Vec<String>,
@@ -143,7 +144,7 @@ pub fn scan_or_cached_usage<E>(
                 "Local {provider_name} usage history could not be refreshed; cached history is shown when available."
             ));
             storage
-                .load_snapshot(provider_id)
+                .load_snapshot_for_identity(provider_id, identity)
                 .ok()
                 .flatten()
                 .map(|snapshot| snapshot.usage)
@@ -352,6 +353,7 @@ mod tests {
         let usage = scan_or_cached_usage(
             &storage,
             "codex",
+            crate::providers::CacheIdentity::Unscoped,
             "Codex",
             || Err::<UsageHistory, ()>(()),
             &mut warnings,

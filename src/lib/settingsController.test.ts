@@ -11,12 +11,14 @@ vi.mock('./backend', () => mocks);
 
 function settingsView(theme: AppSettings['theme'] = 'system'): SettingsViewState {
   return {
+    renamableProviderIds: [],
     notificationPermission: 'prompt',
     integrationError: null,
     standaloneWindow: false,
     platformSummary: null,
     settings: {
-      schemaVersion: 5,
+      schemaVersion: 6,
+      providerNames: {},
       providers: [],
       knownProviderIds: [],
       showTotalSpend: true,

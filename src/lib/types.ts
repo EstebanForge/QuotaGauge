@@ -200,6 +200,7 @@ export interface AppSettings {
   schemaVersion: number;
   providers: ProviderLayout[];
   knownProviderIds: string[];
+  providerNames: Record<string, string>;
   showTotalSpend: boolean;
   theme: 'system' | 'light' | 'dark';
   density: 'default' | 'compact';
@@ -245,6 +246,7 @@ export interface UpdateFailure {
 
 export interface SettingsViewState {
   settings: AppSettings;
+  renamableProviderIds: string[];
   notificationPermission: 'granted' | 'denied' | 'prompt' | 'unavailable';
   integrationError: string | null;
   standaloneWindow: boolean;

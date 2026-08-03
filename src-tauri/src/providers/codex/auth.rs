@@ -89,6 +89,32 @@ impl CodexAuthState {
         }
     }
 
+    pub fn observed_account_identity() -> Option<String> {
+        Self::load_candidates()
+            .ok()?
+            .into_iter()
+            .find_map(|state| state.account_identity())
+    }
+
+    fn account_identity(&self) -> Option<String> {
+        self.account_id
+            .as_deref()
+            .and_then(nonempty_lowercase)
+            .or_else(|| {
+                self.document
+                    .pointer("/tokens/id_token")
+                    .and_then(Value::as_str)
+                    .and_then(jwt_payload)
+                    .and_then(|payload| {
+                        payload
+                            .pointer("/https:~1~1api.openai.com~1auth/chatgpt_account_id")
+                            .or_else(|| payload.get("chatgpt_account_id"))
+                            .and_then(Value::as_str)
+                            .and_then(nonempty_lowercase)
+                    })
+            })
+    }
+
     pub fn reload(&self) -> Result<Self, CodexError> {
         match &self.source {
             AuthSource::File(path) => load_from_path(path),
@@ -228,7 +254,9 @@ pub fn auth_paths() -> Vec<PathBuf> {
         .unwrap_or_default();
     candidate_paths(
         &home,
-        std::env::var_os("CODEX_HOME").map(PathBuf::from).as_deref(),
+        crate::provider_environment::value("CODEX_HOME")
+            .map(PathBuf::from)
+            .as_deref(),
     )
 }
 
@@ -258,10 +286,19 @@ fn parse_auth_document(text: &str) -> Option<Value> {
 }
 
 fn jwt_expiry(token: &str) -> Option<DateTime<Utc>> {
+    let value = jwt_payload(token)?;
+    DateTime::from_timestamp(value.get("exp")?.as_i64()?, 0)
+}
+
+fn jwt_payload(token: &str) -> Option<Value> {
     let payload = token.split('.').nth(1)?;
     let bytes = URL_SAFE_NO_PAD.decode(payload).ok()?;
-    let value: Value = serde_json::from_slice(&bytes).ok()?;
-    DateTime::from_timestamp(value.get("exp")?.as_i64()?, 0)
+    serde_json::from_slice(&bytes).ok()
+}
+
+fn nonempty_lowercase(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_ascii_lowercase())
 }
 
 fn string_at(document: &Value, pointer: &str) -> Option<String> {
@@ -369,6 +406,35 @@ mod tests {
         assert!(!auth_document_has_credentials(
             &json!({"tokens":{"access_token":""}})
         ));
+    }
+
+    #[test]
+    fn account_identity_prefers_the_explicit_id_and_falls_back_to_the_id_token() {
+        let state = CodexAuthState {
+            source: AuthSource::File("auth.json".into()),
+            document: json!({}),
+            access_token: "access".into(),
+            refresh_token: None,
+            account_id: Some("  ACCOUNT-A  ".into()),
+            last_refresh: None,
+        };
+        assert_eq!(state.account_identity().as_deref(), Some("account-a"));
+
+        let payload = URL_SAFE_NO_PAD.encode(
+            serde_json::to_vec(&json!({
+                "https://api.openai.com/auth": {"chatgpt_account_id": "Account-B"}
+            }))
+            .unwrap(),
+        );
+        let state = CodexAuthState {
+            source: AuthSource::File("auth.json".into()),
+            document: json!({"tokens": {"id_token": format!("header.{payload}.signature")}}),
+            access_token: "access".into(),
+            refresh_token: None,
+            account_id: None,
+            last_refresh: None,
+        };
+        assert_eq!(state.account_identity().as_deref(), Some("account-b"));
     }
 
     #[test]

@@ -12,6 +12,7 @@
   import TotalSpend from './TotalSpend.svelte';
   import type { SpendProjection } from './totalSpend';
   import type { ProviderCatalogIndex } from './metrics';
+  import { canRenameProvider } from './providerNames';
   import type {
     AppSettings,
     MetricLayout,
@@ -29,12 +30,14 @@
     settings: AppSettings;
     now: number;
     catalog: ProviderCatalogIndex;
+    renamableProviderIds: string[];
     onSettingsChange: (settings: AppSettings) => void;
     onCustomizationChange: (settings: AppSettings) => void;
     onReorderStart: () => void;
     onReorderEnd: (moved: boolean, cancelled?: boolean) => void;
     onCustomize: () => void;
     onOpenProviderCustomize: (providerId: string) => void;
+    onRenameProvider: (providerId: string) => void;
     onShare: (providerId: string) => void;
     onShareTotal: (projection: SpendProjection) => boolean | Promise<boolean>;
     onRefresh: (providerId: string) => void;
@@ -53,12 +56,14 @@
     settings,
     now,
     catalog,
+    renamableProviderIds,
     onSettingsChange,
     onCustomizationChange,
     onReorderStart,
     onReorderEnd,
     onCustomize,
     onOpenProviderCustomize,
+    onRenameProvider,
     onShare,
     onShareTotal,
     onRefresh,
@@ -73,7 +78,7 @@
     onOpenUpdatePage,
   }: Props = $props();
   const metricDefinition = (id: string) => catalog.metric(id);
-  const providerDisplayName = (id: string) => catalog.displayName(id);
+  const providerDisplayName = (id: string) => catalog.displayName(id, settings.providerNames);
   const providerSupportsSpend = (id: string) => catalog.supportsSpend(id);
   const emptyUsage: UsageHistory = {
     today: null,
@@ -101,7 +106,9 @@
   );
   let demandMorphing = $state(false);
   let demandMorphTimer: ReturnType<typeof setTimeout> | undefined;
-  const enabledProviders = $derived(settings.providers.filter((provider) => provider.enabled));
+  const enabledProviders = $derived(
+    settings.providers.filter((provider) => provider.enabled && catalog.provider(provider.id)),
+  );
   const dashboardProviders = $derived(
     enabledProviders.map((provider) => {
       const state = viewState.providers[provider.id];
@@ -213,10 +220,12 @@
   function openProviderMenu(event: MouseEvent, providerId: string) {
     event.preventDefault();
     metricMenu = null;
+    const provider = settings.providers.find((item) => item.id === providerId);
+    const menuHeight = provider && canRenameProvider(provider.id, renamableProviderIds) ? 204 : 174;
     providerMenu = {
       id: providerId,
       x: Math.max(6, Math.min(event.clientX, window.innerWidth - 196)),
-      y: Math.max(6, Math.min(event.clientY, window.innerHeight - 174)),
+      y: Math.max(6, Math.min(event.clientY, window.innerHeight - menuHeight)),
     };
     queueMicrotask(focusFirstMenuItem);
   }
@@ -613,6 +622,11 @@
       <button type="button" role="menuitem" onclick={() => onRefresh(menuProvider.id)}
         ><Icon name="refresh" size={15} />Refresh {providerDisplayName(menuProvider.id)}</button
       >
+      {#if canRenameProvider(menuProvider.id, renamableProviderIds)}
+        <button type="button" role="menuitem" onclick={() => onRenameProvider(menuProvider.id)}
+          ><Icon name="edit" size={15} />Rename…</button
+        >
+      {/if}
       <button type="button" role="menuitem" onclick={() => onOpenProviderCustomize(menuProvider.id)}
         ><Icon name="sliders" size={15} />Customize…</button
       >

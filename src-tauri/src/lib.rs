@@ -10,6 +10,7 @@ mod pacing;
 mod policy;
 mod popup;
 mod pricing;
+mod provider_environment;
 mod providers;
 mod refresh_loop;
 mod service;
@@ -45,9 +46,9 @@ use crate::{
     pacing::NotificationEvaluator,
     pricing::PricingStore,
     providers::{
-        antigravity::AntigravityProvider, claude::ClaudeProvider,
-        codex::reset_claim::CodexResetClaimService, codex::CodexProvider, copilot::CopilotProvider,
-        cursor::CursorProvider, detect_local_credentials, devin::DevinProvider, grok::GrokProvider,
+        antigravity::AntigravityProvider, claude, codex::reset_claim::CodexResetClaimService,
+        codex::CodexProvider, copilot::CopilotProvider, cursor::CursorProvider,
+        detect_local_credentials, devin::DevinProvider, grok::GrokProvider,
         opencode::OpenCodeProvider, openrouter::OpenRouterProvider, zai::ZaiProvider,
         ProviderRegistry, UsageProvider,
     },
@@ -218,23 +219,27 @@ pub fn run() {
             let app_data_dir = app.path().app_data_dir()?;
             let database_path = app_data_dir.join("openquota.db");
             let storage = Arc::new(Storage::open(&database_path)?);
+            provider_environment::initialize(storage.load_provider_environment()?);
+            provider_environment::refresh_for_next_launch(storage.clone());
             app.manage(Arc::new(PanelResizeSession::new(storage.clone())));
             app_debug!("cache", "application database opened");
             let pricing = Arc::new(PricingStore::new(app_data_dir.join("pricing"))?);
-            let providers: Vec<Arc<dyn UsageProvider>> = vec![
-                Arc::new(ClaudeProvider::new(storage.clone(), pricing.clone())?),
-                Arc::new(CodexProvider::new(storage.clone(), pricing.clone())?),
-                Arc::new(CursorProvider::new(pricing.clone())?),
+            let mut providers = claude::runtimes(storage.clone(), pricing.clone())?;
+            providers.extend(vec![
+                Arc::new(CodexProvider::new(storage.clone(), pricing.clone())?)
+                    as Arc<dyn UsageProvider>,
+                Arc::new(CursorProvider::new(pricing.clone())?) as Arc<dyn UsageProvider>,
                 Arc::new(AntigravityProvider::new(
                     app_data_dir.join("antigravity").join("auth.json"),
-                )?),
-                Arc::new(CopilotProvider::new()?),
-                Arc::new(DevinProvider::new()?),
-                Arc::new(GrokProvider::new(storage.clone(), pricing.clone())?),
-                Arc::new(OpenCodeProvider::new(pricing.clone())),
-                Arc::new(OpenRouterProvider::new()?),
-                Arc::new(ZaiProvider::new()?),
-            ];
+                )?) as Arc<dyn UsageProvider>,
+                Arc::new(CopilotProvider::new()?) as Arc<dyn UsageProvider>,
+                Arc::new(DevinProvider::new()?) as Arc<dyn UsageProvider>,
+                Arc::new(GrokProvider::new(storage.clone(), pricing.clone())?)
+                    as Arc<dyn UsageProvider>,
+                Arc::new(OpenCodeProvider::new(pricing.clone())) as Arc<dyn UsageProvider>,
+                Arc::new(OpenRouterProvider::new()?) as Arc<dyn UsageProvider>,
+                Arc::new(ZaiProvider::new()?) as Arc<dyn UsageProvider>,
+            ]);
             let registry = Arc::new(ProviderRegistry::new(providers)?);
             let service = Arc::new(ProviderService::new(registry.clone(), storage.clone()));
             let (settings_service, credential_detection_plan) =

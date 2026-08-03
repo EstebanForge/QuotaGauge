@@ -5,14 +5,18 @@
   import type { AppSettings, MetricLayout, MetricSection, ProviderLayout } from './types';
   import Icon from './Icon.svelte';
   import ProviderApiKeySection from './ProviderApiKeySection.svelte';
+  import ProviderNameSection from './ProviderNameSection.svelte';
   import { reorderFlip } from './motion';
   import { pointerReorder } from './pointerReorder';
+  import { canRenameProvider } from './providerNames';
 
   interface Props {
     settings: AppSettings;
     providerId: string;
     catalog: ProviderCatalogIndex;
+    renamableProviderIds: string[];
     onChange: (settings: AppSettings) => void;
+    onNameChange: (settings: AppSettings) => void;
     onReorderStart: () => void;
     onReorderEnd: (moved: boolean, cancelled?: boolean) => void;
     reducedMotion: boolean;
@@ -21,13 +25,15 @@
     settings,
     providerId,
     catalog,
+    renamableProviderIds,
     onChange,
+    onNameChange,
     onReorderStart,
     onReorderEnd,
     reducedMotion,
   }: Props = $props();
   const metricDefinition = (id: string) => catalog.metric(id);
-  const providerDisplayName = (id: string) => catalog.displayName(id);
+  const providerDisplayName = (id: string) => catalog.displayName(id, settings.providerNames);
   let message = $state('');
   let messageKind = $state<'success' | 'denied'>('success');
   let messageTimer: ReturnType<typeof setTimeout> | undefined;
@@ -116,6 +122,9 @@
     class="screen customize-detail"
     aria-label={`Customize ${providerDisplayName(provider.id)}`}
   >
+    {#if canRenameProvider(provider.id, renamableProviderIds)}
+      <ProviderNameSection {settings} {provider} {catalog} onChange={onNameChange} />
+    {/if}
     {#each ['alwaysVisible', 'onDemand'] as section (section)}
       {@const sectionMetrics = provider.metrics.filter((metric) => metric.section === section)}
       <div

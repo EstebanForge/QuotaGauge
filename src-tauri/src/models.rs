@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -673,6 +675,7 @@ pub struct AppSettings {
     pub schema_version: u32,
     pub providers: Vec<ProviderLayout>,
     pub known_provider_ids: Vec<String>,
+    pub provider_names: BTreeMap<String, String>,
     pub show_total_spend: bool,
     pub theme: ThemePreference,
     pub density: DensityPreference,
@@ -696,9 +699,10 @@ pub struct AppSettings {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
-            schema_version: 5,
+            schema_version: 6,
             providers: Vec::new(),
             known_provider_ids: Vec::new(),
+            provider_names: BTreeMap::new(),
             show_total_spend: true,
             theme: ThemePreference::System,
             density: DensityPreference::Default,
@@ -721,10 +725,20 @@ impl Default for AppSettings {
     }
 }
 
+impl AppSettings {
+    pub fn provider_display_name<'a>(&'a self, definition: &'a ProviderDefinition) -> &'a str {
+        self.provider_names
+            .get(&definition.id)
+            .map(String::as_str)
+            .unwrap_or(&definition.display_name)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsViewState {
     pub settings: AppSettings,
+    pub renamable_provider_ids: Vec<String>,
     pub notification_permission: String,
     pub integration_error: Option<String>,
     pub standalone_window: bool,
@@ -745,9 +759,11 @@ mod tests {
         object.remove("dismissedUpdateVersion");
         object.remove("lastUpdateCheckAt");
         object.remove("logLevel");
+        object.remove("providerNames");
 
         let settings: AppSettings = serde_json::from_value(value).unwrap();
         assert_eq!(settings.dismissed_update_version, None);
+        assert!(settings.provider_names.is_empty());
         assert_eq!(settings.last_update_check_at, None);
         assert_eq!(settings.log_level, LogLevel::Info);
     }

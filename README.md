@@ -41,8 +41,8 @@ OpenQuota checks for updates automatically. Installable updates are cryptographi
 
 ## Supported providers
 
-- **[Claude Code](docs/providers/claude.md)** — session and weekly limits, model-specific usage,
-  token history, and estimated spend
+- **[Claude Code](docs/providers/claude.md)** — multiple accounts, session and weekly limits,
+  model-specific usage, token history, and estimated spend
 - **[Codex](docs/providers/codex.md)** — session and weekly limits, credits, token history, model
   breakdown, and estimated spend
 - **[Cursor](docs/providers/cursor.md)** — total, Auto and API usage, credits, token history, and

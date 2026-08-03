@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use reqwest::StatusCode;
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::{
@@ -161,6 +162,7 @@ impl From<crate::storage::StorageError> for CodexError {
 }
 
 pub struct CodexProvider {
+    account_identity: Option<String>,
     storage: Arc<Storage>,
     pricing: Arc<PricingStore>,
     client: CodexClient,
@@ -168,7 +170,13 @@ pub struct CodexProvider {
 
 impl CodexProvider {
     pub fn new(storage: Arc<Storage>, pricing: Arc<PricingStore>) -> Result<Self, CodexError> {
+        let account_identity = CodexAuthState::observed_account_identity()
+            .map(|identity| format!("{:x}", Sha256::digest(identity.as_bytes())));
+        if let Some(identity) = account_identity.as_deref() {
+            crate::providers::remember_default_account(&storage, "codex", identity)?;
+        }
         Ok(Self {
+            account_identity,
             storage,
             pricing,
             client: CodexClient::new()?,
@@ -239,6 +247,7 @@ impl CodexProvider {
         let usage = scan_or_cached_usage(
             &self.storage,
             "codex",
+            crate::providers::CacheIdentity::Unscoped,
             "Codex",
             || scan_local_usage(&self.storage, now, &pricing),
             &mut warnings,
@@ -297,6 +306,14 @@ impl crate::providers::UsageProvider for CodexProvider {
 
     fn has_local_credentials(&self) -> bool {
         CodexAuthState::has_local_credentials()
+    }
+
+    fn supports_account_names(&self) -> bool {
+        true
+    }
+
+    fn account_identity(&self) -> Option<&str> {
+        self.account_identity.as_deref()
     }
 
     fn refresh(&self) -> Result<ProviderSnapshot, crate::providers::ProviderError> {

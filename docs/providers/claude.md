@@ -19,6 +19,18 @@ Sign in with Claude Code by running `claude`. OpenQuota reuses the credentials m
 CLI, including `CLAUDE_CONFIG_DIR` when it is set. Refreshed CLI credentials are saved back to the
 same source when possible.
 
+## Multiple accounts
+
+When separate Claude Code logins are kept in custom `CLAUDE_CONFIG_DIR` homes, OpenQuota discovers
+them at launch and gives each account its own card, limits, plan, and local usage history. It checks
+dot-directories directly under your home directory and directories under `~/.config`; each home must
+contain Claude's account identity and valid CLI credentials.
+
+A custom home signed into the same account as the default login is folded into the default card so
+its local history is counted without creating a duplicate. If an extra login disappears, its card is
+hidden while its customization is retained for the next time it is found. Detected Claude account
+cards can be renamed from Customize or from the dashboard card's context menu.
+
 Live subscription limits currently require a Claude Code login. On macOS, OpenQuota can recognize
 that Claude Desktop is installed, but it does not reuse Desktop's encrypted session. Run `claude`
 and sign in once if Desktop is your only Claude login.

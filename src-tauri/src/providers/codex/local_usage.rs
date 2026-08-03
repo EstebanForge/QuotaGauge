@@ -43,8 +43,8 @@ pub fn scan_local_usage(
     pricing: &ModelPricing,
 ) -> Result<UsageHistory, CodexError> {
     let home = home_directory();
-    let configured_home = std::env::var_os("CODEX_HOME");
-    let homes = codex_homes(configured_home.as_deref(), &home);
+    let configured_home = crate::provider_environment::value("CODEX_HOME");
+    let homes = codex_homes(configured_home.as_deref().map(OsStr::new), &home);
     let since_date = now
         .with_timezone(&Local)
         .date_naive()
