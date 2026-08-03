@@ -22,15 +22,34 @@ pub(super) struct ClaudeAccountDiscovery {
     pub accounts: Vec<ClaudeAccount>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub(super) struct ClaudeAccount {
     pub id: String,
     pub display_name: String,
-    #[serde(default)]
     pub label: Option<String>,
     pub identity: String,
     pub credential_scope: ClaudeCredentialScope,
     pub log_roots: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+struct DiscoveredClaudeAccounts {
+    default_account: Option<DiscoveredClaudeAccount>,
+    accounts: Vec<DiscoveredClaudeAccount>,
+}
+
+#[derive(Debug, Clone)]
+struct DiscoveredClaudeAccount {
+    label: Option<String>,
+    identity: String,
+    credential_scope: ClaudeCredentialScope,
+    log_roots: Vec<PathBuf>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct StoredClaudeAccountPayload {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    label: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,15 +110,32 @@ pub(super) fn discover(storage: &Storage) -> Result<ClaudeAccountDiscovery, Stor
     )
 }
 
+pub(super) fn identity_for_scope(scope: &ClaudeCredentialScope) -> Option<String> {
+    let home = home_directory();
+    let identity = match scope {
+        ClaudeCredentialScope::Standard => {
+            match observe_default(&home, env_text("CLAUDE_CONFIG_DIR").as_deref()) {
+                DefaultAccount::Resolved { identity, .. } => Some(identity),
+                DefaultAccount::Unresolved | DefaultAccount::Absent => None,
+            }
+        }
+        ClaudeCredentialScope::ConfigDir { path, .. } => fs::read(path.join(".claude.json"))
+            .ok()
+            .and_then(|bytes| parse_identity(&bytes))
+            .map(|(identity, _)| identity),
+    };
+    identity.map(|identity| identity_stamp(&identity))
+}
+
 fn reconcile_accounts(
     storage: &Storage,
-    mut discovery: ClaudeAccountDiscovery,
+    discovery: DiscoveredClaudeAccounts,
 ) -> Result<ClaudeAccountDiscovery, StorageError> {
     let stored = storage.load_provider_account_records("claude")?;
     let records = stored
         .into_iter()
         .map(|(identity, provider_id, payload)| {
-            let label = serde_json::from_str::<ClaudeAccount>(&payload)
+            let label = serde_json::from_str::<StoredClaudeAccountPayload>(&payload)
                 .ok()
                 .and_then(|account| account.label);
             (identity, StoredAccountRecord { provider_id, label })
@@ -109,48 +145,63 @@ fn reconcile_accounts(
         .values()
         .map(|record| record.provider_id.clone())
         .collect::<HashSet<_>>();
-    // A card ID belongs to the account, not to the place where it is signed in. An existing account
-    // therefore keeps its ID when it moves between the default home and a custom config directory.
-    // Only a newly observed default-home account may claim the legacy bare `claude` ID.
-    // Claude can temporarily omit its descriptive label while still exposing the same identity; in
-    // that case keep the last derived label instead of degrading a stable card to its hash ID.
-    if let Some(account) = discovery.default_account.as_mut() {
-        if let Some(record) = records.get(&account.identity) {
-            account.label = account.label.take().or_else(|| record.label.clone());
-        }
-        account.id = records
-            .get(&account.identity)
-            .map(|record| record.provider_id.clone())
-            .unwrap_or_else(|| {
-                if occupied.contains("claude") {
-                    allocate_account_id(&account.identity, &occupied)
-                } else {
-                    "claude".to_owned()
-                }
-            });
-        account.display_name = account_display_name_for_id(account.label.as_deref(), &account.id);
-        occupied.insert(account.id.clone());
-        let payload = serde_json::to_string(account)?;
-        storage.save_provider_account_record("claude", &account.identity, &account.id, &payload)?;
-    }
-    for account in &mut discovery.accounts {
-        if let Some(record) = records.get(&account.identity) {
-            account.label = account.label.take().or_else(|| record.label.clone());
-        }
-        account.id = records
-            .get(&account.identity)
-            .map(|record| record.provider_id.clone())
-            .unwrap_or_else(|| allocate_account_id(&account.identity, &occupied));
-        account.display_name = account_display_name_for_id(account.label.as_deref(), &account.id);
-        occupied.insert(account.id.clone());
-        let payload = serde_json::to_string(account)?;
-        storage.save_provider_account_record("claude", &account.identity, &account.id, &payload)?;
-    }
-
-    discovery
+    let default_account = discovery
+        .default_account
+        .map(|account| reconcile_account(storage, account, &records, &mut occupied, true))
+        .transpose()?;
+    let mut accounts = discovery
         .accounts
-        .sort_by(|left, right| left.id.cmp(&right.id));
-    Ok(discovery)
+        .into_iter()
+        .map(|account| reconcile_account(storage, account, &records, &mut occupied, false))
+        .collect::<Result<Vec<_>, _>>()?;
+    accounts.sort_by(|left, right| left.id.cmp(&right.id));
+    Ok(ClaudeAccountDiscovery {
+        default_account,
+        accounts,
+    })
+}
+
+fn reconcile_account(
+    storage: &Storage,
+    account: DiscoveredClaudeAccount,
+    records: &BTreeMap<String, StoredAccountRecord>,
+    occupied: &mut HashSet<String>,
+    may_claim_default_id: bool,
+) -> Result<ClaudeAccount, StorageError> {
+    // IDs belong to accounts rather than credential locations. Existing accounts keep their ID
+    // when they move, and only a newly observed default-home account may claim the bare ID.
+    let record = records.get(&account.identity);
+    let label = account
+        .label
+        .or_else(|| record.and_then(|record| record.label.clone()));
+    let id = record
+        .map(|record| record.provider_id.clone())
+        .unwrap_or_else(|| {
+            if may_claim_default_id && !occupied.contains("claude") {
+                "claude".to_owned()
+            } else {
+                allocate_account_id(&account.identity, occupied)
+            }
+        });
+    occupied.insert(id.clone());
+    let reconciled = ClaudeAccount {
+        display_name: account_display_name_for_id(label.as_deref(), &id),
+        id,
+        label,
+        identity: account.identity,
+        credential_scope: account.credential_scope,
+        log_roots: account.log_roots,
+    };
+    let payload = serde_json::to_string(&StoredClaudeAccountPayload {
+        label: reconciled.label.clone(),
+    })?;
+    storage.save_provider_account_record(
+        "claude",
+        &reconciled.identity,
+        &reconciled.id,
+        &payload,
+    )?;
+    Ok(reconciled)
 }
 
 fn allocate_account_id(identity_stamp: &str, occupied: &HashSet<String>) -> String {
@@ -176,7 +227,7 @@ fn discover_in(
     config: Option<&str>,
     xdg: Option<&str>,
     budget: Duration,
-) -> ClaudeAccountDiscovery {
+) -> DiscoveredClaudeAccounts {
     let default = observe_default(home, config);
     let default_identity = match &default {
         DefaultAccount::Resolved { identity, .. } => Some(identity.clone()),
@@ -187,7 +238,7 @@ fn discover_in(
             "config",
             "claude extra-account discovery skipped because the default login identity is unreadable"
         );
-        return ClaudeAccountDiscovery {
+        return DiscoveredClaudeAccounts {
             default_account: None,
             accounts: Vec::new(),
         };
@@ -235,11 +286,7 @@ fn discover_in(
         let Some(primary) = findings.first() else {
             continue;
         };
-        let id = account_id(&identity);
-        let display_name = account_display_name(primary.label.as_deref(), &id);
-        accounts.push(ClaudeAccount {
-            id,
-            display_name,
+        accounts.push(DiscoveredClaudeAccount {
             label: primary.label.clone(),
             identity: identity_stamp(&identity),
             credential_scope: ClaudeCredentialScope::ConfigDir {
@@ -249,7 +296,6 @@ fn discover_in(
             log_roots: findings.into_iter().map(|finding| finding.root).collect(),
         });
     }
-    accounts.sort_by(|left, right| left.id.cmp(&right.id));
     default_extra_log_roots.sort();
     default_extra_log_roots.dedup();
 
@@ -262,9 +308,7 @@ fn discover_in(
         );
     }
     let default_account = match default {
-        DefaultAccount::Resolved { identity, label } => Some(ClaudeAccount {
-            id: "claude".into(),
-            display_name: "Claude".into(),
+        DefaultAccount::Resolved { identity, label } => Some(DiscoveredClaudeAccount {
             label,
             identity: identity_stamp(&identity),
             credential_scope: ClaudeCredentialScope::Standard,
@@ -272,7 +316,7 @@ fn discover_in(
         }),
         DefaultAccount::Unresolved | DefaultAccount::Absent => None,
     };
-    ClaudeAccountDiscovery {
+    DiscoveredClaudeAccounts {
         default_account,
         accounts,
     }
@@ -315,16 +359,18 @@ fn inspect_candidate(home: &Path, root: &Path, deadline: Instant) -> Option<Find
         .is_some_and(|bytes| auth::credentials_have_access_token(&bytes));
 
     let mut matched_literal = None;
-    for literal in keychain_literals(home, root) {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            break;
-        }
-        let service = auth::scoped_keychain_service_name(&literal);
-        let exists = generic_password_service_exists(&service, remaining) == Some(true);
-        if exists {
-            matched_literal = Some(literal);
-            break;
+    if should_probe_credential_store(file_backed) {
+        for literal in keychain_literals(home, root) {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            let service = auth::scoped_keychain_service_name(&literal);
+            let exists = generic_password_service_exists(&service, remaining) == Some(true);
+            if exists {
+                matched_literal = Some(literal);
+                break;
+            }
         }
     }
     if !file_backed && matched_literal.is_none() {
@@ -336,6 +382,10 @@ fn inspect_candidate(home: &Path, root: &Path, deadline: Instant) -> Option<Find
         root: canonical(root),
         keychain_literal: matched_literal.unwrap_or_else(|| root.to_string_lossy().into_owned()),
     })
+}
+
+fn should_probe_credential_store(file_backed: bool) -> bool {
+    cfg!(target_os = "macos") || !file_backed
 }
 
 fn parse_identity(bytes: &[u8]) -> Option<(String, Option<String>)> {
@@ -385,10 +435,6 @@ fn account_display_name_for_id(label: Option<&str>, id: &str) -> String {
     } else {
         account_display_name(label, id)
     }
-}
-
-fn account_id(identity: &str) -> String {
-    format!("claude@{}", &identity_stamp(identity)[..8])
 }
 
 fn identity_stamp(identity: &str) -> String {
@@ -513,8 +559,9 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        account_id, allocate_account_id, canonical, discover_in, identity_stamp, keychain_literals,
-        reconcile_accounts, ClaudeAccount, ClaudeAccountDiscovery,
+        allocate_account_id, canonical, discover_in, identity_stamp, keychain_literals,
+        reconcile_accounts, should_probe_credential_store, DiscoveredClaudeAccount,
+        DiscoveredClaudeAccounts,
     };
     use crate::{providers::claude::auth::ClaudeCredentialScope, storage::Storage};
 
@@ -561,8 +608,14 @@ mod tests {
         let default = discovery.default_account.as_ref().unwrap();
         assert_eq!(default.log_roots, [canonical(&home.join(".claude-copy"))]);
         assert_eq!(discovery.accounts.len(), 1);
-        assert_eq!(discovery.accounts[0].id, account_id("account-b|org-b"));
-        assert_eq!(discovery.accounts[0].display_name, "Claude — Org org-b");
+        assert_eq!(
+            discovery.accounts[0].identity,
+            identity_stamp("account-b|org-b")
+        );
+        assert_eq!(
+            discovery.accounts[0].label.as_deref(),
+            Some("b@example.com (Org org-b)")
+        );
         assert_eq!(
             discovery.accounts[0].log_roots,
             [canonical(&home.join(".claude-work"))]
@@ -620,8 +673,11 @@ mod tests {
 
     #[test]
     fn account_id_is_stable_and_does_not_expose_identity() {
-        let id = account_id("Account-A|Org-A");
-        assert_eq!(id, account_id("account-a|org-a"));
+        let id = allocate_account_id(&identity_stamp("Account-A|Org-A"), &HashSet::new());
+        assert_eq!(
+            id,
+            allocate_account_id(&identity_stamp("account-a|org-a"), &HashSet::new())
+        );
         assert!(id.starts_with("claude@"));
         assert_eq!(id.len(), "claude@".len() + 8);
         assert!(!id.contains("account"));
@@ -647,9 +703,7 @@ mod tests {
         let directory = tempdir().unwrap();
         let storage = Storage::open(&directory.path().join("openquota.db")).unwrap();
         let root = directory.path().join("account");
-        let account = |label: &str| ClaudeAccount {
-            id: "throwaway".into(),
-            display_name: "throwaway".into(),
+        let account = |label: &str| DiscoveredClaudeAccount {
             label: Some(label.into()),
             identity: "1234567890abcdef".into(),
             credential_scope: ClaudeCredentialScope::ConfigDir {
@@ -658,7 +712,7 @@ mod tests {
             },
             log_roots: vec![root.clone()],
         };
-        let discovery = |account| ClaudeAccountDiscovery {
+        let discovery = |account| DiscoveredClaudeAccounts {
             default_account: None,
             accounts: vec![account],
         };
@@ -676,7 +730,7 @@ mod tests {
 
         let absent = reconcile_accounts(
             &storage,
-            ClaudeAccountDiscovery {
+            DiscoveredClaudeAccounts {
                 default_account: None,
                 accounts: Vec::new(),
             },
@@ -689,9 +743,7 @@ mod tests {
     fn default_account_keeps_its_last_descriptive_label() {
         let directory = tempdir().unwrap();
         let storage = Storage::open(&directory.path().join("openquota.db")).unwrap();
-        let account = |label| ClaudeAccount {
-            id: "throwaway".into(),
-            display_name: "throwaway".into(),
+        let account = |label| DiscoveredClaudeAccount {
             label,
             identity: "1234567890abcdef".into(),
             credential_scope: ClaudeCredentialScope::Standard,
@@ -700,7 +752,7 @@ mod tests {
 
         reconcile_accounts(
             &storage,
-            ClaudeAccountDiscovery {
+            DiscoveredClaudeAccounts {
                 default_account: Some(account(Some("Personal".into()))),
                 accounts: Vec::new(),
             },
@@ -708,7 +760,7 @@ mod tests {
         .unwrap();
         let without_label = reconcile_accounts(
             &storage,
-            ClaudeAccountDiscovery {
+            DiscoveredClaudeAccounts {
                 default_account: Some(account(None)),
                 accounts: Vec::new(),
             },
@@ -722,19 +774,50 @@ mod tests {
     }
 
     #[test]
+    fn legacy_account_payload_is_read_and_rewritten_without_runtime_paths() {
+        let directory = tempdir().unwrap();
+        let storage = Storage::open(&directory.path().join("openquota.db")).unwrap();
+        let identity = identity_stamp("account-a");
+        storage
+            .save_provider_account_record(
+                "claude",
+                &identity,
+                "claude@1234abcd",
+                r#"{"id":"claude@1234abcd","display_name":"Claude — Saved","label":"Saved","log_roots":["/private/path"]}"#,
+            )
+            .unwrap();
+
+        let reconciled = reconcile_accounts(
+            &storage,
+            DiscoveredClaudeAccounts {
+                default_account: None,
+                accounts: vec![DiscoveredClaudeAccount {
+                    label: None,
+                    identity,
+                    credential_scope: ClaudeCredentialScope::Standard,
+                    log_roots: Vec::new(),
+                }],
+            },
+        )
+        .unwrap();
+
+        assert_eq!(reconciled.accounts[0].display_name, "Claude — Saved");
+        let records = storage.load_provider_account_records("claude").unwrap();
+        assert_eq!(records[0].2, r#"{"label":"Saved"}"#);
+    }
+
+    #[test]
     fn account_ids_survive_default_and_config_dir_swaps() {
         let directory = tempdir().unwrap();
         let storage = Storage::open(&directory.path().join("openquota.db")).unwrap();
         let root = directory.path().join("account");
-        let standard = |identity: &str, label: &str| ClaudeAccount {
-            id: "throwaway".into(),
-            display_name: "throwaway".into(),
+        let standard = |identity: &str, label: &str| DiscoveredClaudeAccount {
             label: Some(label.into()),
             identity: identity_stamp(identity),
             credential_scope: ClaudeCredentialScope::Standard,
             log_roots: Vec::new(),
         };
-        let scoped = |identity: &str, label: &str| ClaudeAccount {
+        let scoped = |identity: &str, label: &str| DiscoveredClaudeAccount {
             credential_scope: ClaudeCredentialScope::ConfigDir {
                 path: root.clone(),
                 keychain_literal: root.to_string_lossy().into_owned(),
@@ -745,7 +828,7 @@ mod tests {
 
         let first = reconcile_accounts(
             &storage,
-            ClaudeAccountDiscovery {
+            DiscoveredClaudeAccounts {
                 default_account: Some(standard("account-a", "Personal")),
                 accounts: Vec::new(),
             },
@@ -755,7 +838,7 @@ mod tests {
 
         let swapped = reconcile_accounts(
             &storage,
-            ClaudeAccountDiscovery {
+            DiscoveredClaudeAccounts {
                 default_account: Some(standard("account-b", "Work")),
                 accounts: vec![scoped("account-a", "Personal")],
             },
@@ -768,7 +851,7 @@ mod tests {
 
         let restored = reconcile_accounts(
             &storage,
-            ClaudeAccountDiscovery {
+            DiscoveredClaudeAccounts {
                 default_account: Some(standard("account-a", "Personal")),
                 accounts: vec![scoped("account-b", "Work")],
             },
@@ -785,11 +868,9 @@ mod tests {
         let root = directory.path().join("account");
         let discovery = reconcile_accounts(
             &storage,
-            ClaudeAccountDiscovery {
+            DiscoveredClaudeAccounts {
                 default_account: None,
-                accounts: vec![ClaudeAccount {
-                    id: "throwaway".into(),
-                    display_name: "throwaway".into(),
+                accounts: vec![DiscoveredClaudeAccount {
                     label: Some("Work".into()),
                     identity: identity_stamp("account-b"),
                     credential_scope: ClaudeCredentialScope::ConfigDir {
@@ -816,5 +897,14 @@ mod tests {
 
         assert!(literals.contains(&root.to_string_lossy().into_owned()));
         assert!(literals.contains(&"~/.claude-work".to_owned()));
+    }
+
+    #[test]
+    fn file_credentials_skip_non_macos_credential_store_discovery() {
+        assert_eq!(
+            should_probe_credential_store(true),
+            cfg!(target_os = "macos")
+        );
+        assert!(should_probe_credential_store(false));
     }
 }

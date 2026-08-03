@@ -96,7 +96,7 @@ impl CodexAuthState {
             .find_map(|state| state.account_identity())
     }
 
-    fn account_identity(&self) -> Option<String> {
+    pub(super) fn account_identity(&self) -> Option<String> {
         self.account_id
             .as_deref()
             .and_then(nonempty_lowercase)

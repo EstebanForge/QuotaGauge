@@ -30,7 +30,7 @@ pub fn provider_family(provider_id: &str) -> &str {
         .unwrap_or(provider_id)
 }
 
-pub fn is_persisted_account_provider_id(provider_id: &str) -> bool {
+pub fn is_claude_account_provider_id(provider_id: &str) -> bool {
     provider_id.strip_prefix("claude@").is_some_and(|suffix| {
         suffix.len() == 8 && suffix.bytes().all(|byte| byte.is_ascii_hexdigit())
     })

@@ -325,23 +325,43 @@ fn load_candidates_with_environment(
     scope: &ClaudeCredentialScope,
     environment_token: Option<String>,
 ) -> Vec<ClaudeCredential> {
-    let mut stored = Vec::new();
-    for (service, account) in keychain_candidates(scope) {
-        let Ok(Some(bytes)) = read_generic_password(&service, &account) else {
-            continue;
-        };
-        if let Some(credential) = parse_candidate(
-            &bytes,
-            CredentialSource::Keychain { service, account },
-            false,
-        ) {
-            stored.push(credential);
-            break;
+    let file = {
+        let path = credential_path(scope);
+        fs::read(&path)
+            .ok()
+            .and_then(|bytes| parse_candidate(&bytes, CredentialSource::File(path), false))
+    };
+    let load_keychain = || {
+        let mut candidate = None;
+        for (service, account) in keychain_candidates(scope) {
+            let Ok(Some(bytes)) = read_generic_password(&service, &account) else {
+                continue;
+            };
+            if let Some(credential) = parse_candidate(
+                &bytes,
+                CredentialSource::Keychain { service, account },
+                false,
+            ) {
+                candidate = Some(credential);
+                break;
+            }
         }
+        candidate
+    };
+
+    let mut stored = Vec::new();
+    #[cfg(target_os = "macos")]
+    if let Some(credential) = load_keychain() {
+        stored.push(credential);
     }
-    let path = credential_path(scope);
-    if let Ok(bytes) = fs::read(&path) {
-        if let Some(credential) = parse_candidate(&bytes, CredentialSource::File(path), false) {
+    #[cfg(not(target_os = "macos"))]
+    let needs_keychain_fallback = file.is_none();
+    if let Some(credential) = file {
+        stored.push(credential);
+    }
+    #[cfg(not(target_os = "macos"))]
+    if needs_keychain_fallback {
+        if let Some(credential) = load_keychain() {
             stored.push(credential);
         }
     }

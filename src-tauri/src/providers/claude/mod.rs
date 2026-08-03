@@ -152,6 +152,8 @@ pub enum ClaudeError {
     AuthWrite,
     #[error("Claude login changed during refresh. Refresh again.")]
     CredentialsChanged,
+    #[error("The Claude account changed while OpenQuota was running. Restart OpenQuota to reconnect it safely.")]
+    AccountChanged,
     #[error("Claude usage request failed (HTTP {0}).")]
     RequestFailed(u16),
     #[error("Claude returned an invalid usage response.")]
@@ -310,7 +312,11 @@ impl ClaudeProvider {
                         "credential source changed during refresh; reloading current login"
                     );
                 }
-                result => return result,
+                Ok(snapshot) => {
+                    self.ensure_account_identity_current()?;
+                    return Ok(snapshot);
+                }
+                Err(error) => return Err(error),
             }
         }
     }
@@ -319,6 +325,7 @@ impl ClaudeProvider {
         &self,
         config: &auth::ClaudeOAuthConfig,
     ) -> Result<ProviderSnapshot, ClaudeError> {
+        self.ensure_account_identity_current()?;
         let candidates = load_candidates(&self.credential_scope);
         if candidates.is_empty() {
             crate::app_info!("auth:claude", "no reusable CLI credentials found");
@@ -357,6 +364,15 @@ impl ClaudeProvider {
             }
         }
         Err(last_auth_error.unwrap_or(ClaudeError::NotLoggedIn))
+    }
+
+    fn ensure_account_identity_current(&self) -> Result<(), ClaudeError> {
+        let Some(expected) = self.account_identity.as_deref() else {
+            return Ok(());
+        };
+        (accounts::identity_for_scope(&self.credential_scope).as_deref() == Some(expected))
+            .then_some(())
+            .ok_or(ClaudeError::AccountChanged)
     }
 
     fn refresh_candidate(
@@ -697,7 +713,8 @@ impl crate::providers::UsageProvider for ClaudeProvider {
                 | ClaudeError::DesktopAppOnly
                 | ClaudeError::SessionExpired
                 | ClaudeError::TokenExpired
-                | ClaudeError::CredentialsChanged => Kind::Authentication,
+                | ClaudeError::CredentialsChanged
+                | ClaudeError::AccountChanged => Kind::Authentication,
                 ClaudeError::InvalidOAuthUrl | ClaudeError::InvalidResponse => {
                     Kind::InvalidResponse
                 }
@@ -733,11 +750,11 @@ mod tests {
     };
 
     use super::{
-        accounts::{ClaudeAccount, ClaudeAccountDiscovery},
+        accounts::{self, ClaudeAccount, ClaudeAccountDiscovery},
         auth::{ClaudeCredentialScope, ClaudeOAuthConfig},
         client::ClaudeClient,
-        definition, definition_for, rate_limit_notice, runtime_configs, ClaudeProvider,
-        ClaudeRuntimeConfig,
+        definition, definition_for, rate_limit_notice, runtime_configs, ClaudeError,
+        ClaudeProvider, ClaudeRuntimeConfig,
     };
 
     fn credential_json(access: &str, refresh: &str, plan: &str) -> String {
@@ -888,14 +905,20 @@ mod tests {
     }
 
     #[test]
-    fn login_changed_during_usage_request_is_reloaded_before_publishing() {
+    fn login_changed_during_usage_request_is_not_published_under_the_old_card() {
         let directory = tempdir().unwrap();
         let account_root = directory.path().join("account");
         fs::create_dir_all(&account_root).unwrap();
         let credential_path = account_root.join(".credentials.json");
+        let identity_path = account_root.join(".claude.json");
         fs::write(
             &credential_path,
             credential_json("account-a", "refresh-a", "pro"),
+        )
+        .unwrap();
+        fs::write(
+            &identity_path,
+            r#"{"oauthAccount":{"accountUuid":"account-a"}}"#,
         )
         .unwrap();
 
@@ -904,38 +927,33 @@ mod tests {
         let (first_request_tx, first_request_rx) = mpsc::sync_channel(0);
         let (first_response_tx, first_response_rx) = mpsc::sync_channel(0);
         let server = thread::spawn(move || {
-            let mut authorizations = Vec::new();
-            for index in 0..2 {
-                let (mut stream, _) = listener.accept().unwrap();
-                let mut bytes = [0_u8; 4096];
-                let length = stream.read(&mut bytes).unwrap();
-                let request = String::from_utf8_lossy(&bytes[..length]);
-                let authorization = request
-                    .lines()
-                    .find(|line| line.to_ascii_lowercase().starts_with("authorization:"))
-                    .and_then(|line| line.split_once(':'))
-                    .map(|(_, value)| value.trim().to_owned())
-                    .unwrap();
-                authorizations.push(authorization);
-                if index == 0 {
-                    first_request_tx.send(()).unwrap();
-                    first_response_rx.recv().unwrap();
-                }
-                write_http_response(&mut stream, if index == 0 { 25 } else { 75 });
-            }
-            authorizations
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut bytes = [0_u8; 4096];
+            let length = stream.read(&mut bytes).unwrap();
+            let request = String::from_utf8_lossy(&bytes[..length]);
+            let authorization = request
+                .lines()
+                .find(|line| line.to_ascii_lowercase().starts_with("authorization:"))
+                .and_then(|line| line.split_once(':'))
+                .map(|(_, value)| value.trim().to_owned())
+                .unwrap();
+            first_request_tx.send(()).unwrap();
+            first_response_rx.recv().unwrap();
+            write_http_response(&mut stream, 25);
+            authorization
         });
 
         let storage = Arc::new(Storage::open(&directory.path().join("openquota.db")).unwrap());
         let pricing = Arc::new(PricingStore::new(directory.path().join("pricing")).unwrap());
+        let credential_scope = ClaudeCredentialScope::ConfigDir {
+            path: account_root.clone(),
+            keychain_literal: account_root.to_string_lossy().into_owned(),
+        };
         let provider = Arc::new(ClaudeProvider::new_scoped(
             ClaudeRuntimeConfig {
                 definition: definition(),
-                credential_scope: ClaudeCredentialScope::ConfigDir {
-                    path: account_root.clone(),
-                    keychain_literal: account_root.to_string_lossy().into_owned(),
-                },
-                account_identity: Some("identity-a".into()),
+                account_identity: accounts::identity_for_scope(&credential_scope),
+                credential_scope,
                 log_roots: vec![account_root],
                 include_standard_logs: false,
                 include_pi: false,
@@ -959,22 +977,16 @@ mod tests {
             credential_json("account-b", "refresh-b", "max"),
         )
         .unwrap();
+        fs::write(
+            &identity_path,
+            r#"{"oauthAccount":{"accountUuid":"account-b"}}"#,
+        )
+        .unwrap();
         first_response_tx.send(()).unwrap();
 
-        let snapshot = refresh.join().unwrap().unwrap();
-        let authorizations = server.join().unwrap();
-        assert_eq!(snapshot.plan.as_deref(), Some("Max"));
-        assert_eq!(
-            snapshot
-                .quotas
-                .iter()
-                .find(|quota| quota.id == "session")
-                .map(|quota| quota.used_percent),
-            Some(75.0)
-        );
-        assert_eq!(
-            authorizations,
-            ["Bearer account-a".to_owned(), "Bearer account-b".to_owned()]
-        );
+        let error = refresh.join().unwrap().unwrap_err();
+        let authorization = server.join().unwrap();
+        assert!(matches!(error, ClaudeError::AccountChanged));
+        assert_eq!(authorization, "Bearer account-a");
     }
 }

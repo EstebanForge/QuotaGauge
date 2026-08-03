@@ -441,7 +441,6 @@ fn normalize_with_persisted_accounts(
     settings.provider_names.retain(|provider_id, name| {
         if !registry.supports_account_names(provider_id)
             && !persisted_accounts.contains(provider_id)
-            && !crate::providers::is_persisted_account_provider_id(provider_id)
         {
             return false;
         }
@@ -460,9 +459,7 @@ fn normalize_with_persisted_accounts(
     let mut normalized = Vec::new();
     for mut provider in settings.providers.clone() {
         let Some(definition) = registry.definition(&provider.id) else {
-            if persisted_accounts.contains(&provider.id)
-                || crate::providers::is_persisted_account_provider_id(&provider.id)
-            {
+            if persisted_accounts.contains(&provider.id) {
                 provider.detected = false;
                 normalized.push(provider);
             }
@@ -501,7 +498,7 @@ fn normalize_with_persisted_accounts(
         let mut provider = default_provider(definition, is_detected);
         provider.enabled = !was_known && is_detected;
         settings.known_provider_ids.push(definition.id.clone());
-        if crate::providers::is_persisted_account_provider_id(&provider.id) {
+        if crate::providers::is_claude_account_provider_id(&provider.id) {
             let family = crate::providers::provider_family(&provider.id);
             let index = normalized
                 .iter()
@@ -1219,7 +1216,8 @@ mod tests {
         account.metrics.reverse();
         let expected_metrics = account.metrics.clone();
 
-        normalize(&catalog(), &mut settings, &HashSet::new());
+        let persisted = HashSet::from(["claude@1234abcd".to_owned()]);
+        normalize_with_persisted_accounts(&catalog(), &mut settings, &HashSet::new(), &persisted);
         let unavailable = settings
             .providers
             .iter()
@@ -1240,6 +1238,27 @@ mod tests {
         assert!(!restored.enabled);
         assert!(restored.expanded);
         assert_eq!(restored.metrics, expected_metrics);
+    }
+
+    #[test]
+    fn account_shaped_layout_without_a_persisted_record_is_removed() {
+        let account_catalog = catalog_with_claude_account();
+        let mut settings = default_settings(
+            &account_catalog,
+            &HashSet::from(["claude@1234abcd".to_owned()]),
+        );
+
+        normalize_with_persisted_accounts(
+            &catalog(),
+            &mut settings,
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+
+        assert!(!settings
+            .providers
+            .iter()
+            .any(|provider| provider.id == "claude@1234abcd"));
     }
 
     #[test]
@@ -1321,6 +1340,9 @@ mod tests {
         settings
             .provider_names
             .insert("claude@invalid".into(), "Invalid".into());
+        settings
+            .provider_names
+            .insert("claude@deadbeef".into(), "Never observed".into());
 
         normalize(
             &registry,
