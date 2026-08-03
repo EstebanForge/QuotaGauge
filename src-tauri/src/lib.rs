@@ -241,10 +241,14 @@ pub fn run() {
                 Arc::new(ZaiProvider::new()?) as Arc<dyn UsageProvider>,
             ]);
             let registry = Arc::new(ProviderRegistry::new(providers)?);
-            let service = Arc::new(ProviderService::new(registry.clone(), storage.clone()));
             let (settings_service, credential_detection_plan) =
                 SettingsService::new_deferred(storage.clone(), registry.clone())?;
             let settings = Arc::new(settings_service);
+            let service = Arc::new(ProviderService::new_with_settings(
+                registry.clone(),
+                storage.clone(),
+                settings.clone(),
+            ));
             logging::set_level(settings.get().log_level);
             app_info!(
                 "config",

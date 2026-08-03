@@ -264,6 +264,7 @@ describe('OpenQuota dashboard', () => {
 
     await waitFor(() =>
       expect(mocks.invoke).toHaveBeenCalledWith('save_app_settings', {
+        expectedAccountRevision: 0,
         settings: expect.objectContaining({ providerNames: { claude: 'Personal' } }),
       }),
     );
@@ -351,6 +352,7 @@ describe('OpenQuota dashboard', () => {
 
     expect(await screen.findByRole('heading', { name: 'Client' })).toBeInTheDocument();
     expect(mocks.invoke).toHaveBeenCalledWith('save_app_settings', {
+      expectedAccountRevision: 0,
       settings: expect.objectContaining({ providerNames: { [providerId]: 'Client' } }),
     });
   });

@@ -1,10 +1,13 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc, RwLock,
     },
 };
+
+use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
 
 use crate::{
     models::{
@@ -12,7 +15,7 @@ use crate::{
         ProviderDefinition, ProviderLayout, SettingsViewState,
     },
     providers::{CredentialProbeResults, CredentialProbeStatus, ProviderRegistry},
-    storage::{Storage, StorageError},
+    storage::{ProviderAccountUpdate, Storage, StorageError},
 };
 
 pub const MAX_PINS_PER_PROVIDER: usize = 2;
@@ -43,6 +46,8 @@ pub struct SettingsService {
     settings: RwLock<AppSettings>,
     enablement_revision: AtomicU64,
     credential_revision: AtomicU64,
+    account_revision: AtomicU64,
+    active_account_identities: RwLock<HashMap<String, String>>,
 }
 
 impl SettingsService {
@@ -58,13 +63,17 @@ impl SettingsService {
         let persisted_accounts = persisted_account_provider_ids(&storage)?;
         normalize_with_persisted_accounts(&registry, &mut settings, detected, &persisted_accounts);
         storage.save_settings(&settings)?;
-        Ok(Self {
+        let service = Self {
             storage,
             registry,
             settings: RwLock::new(settings),
             enablement_revision: AtomicU64::new(0),
             credential_revision: AtomicU64::new(0),
-        })
+            account_revision: AtomicU64::new(0),
+            active_account_identities: RwLock::new(HashMap::new()),
+        };
+        service.activate_launch_accounts()?;
+        Ok(service)
     }
 
     /// Loads settings immediately and returns a plan for non-blocking credential detection.
@@ -116,7 +125,10 @@ impl SettingsService {
             settings: RwLock::new(settings),
             enablement_revision: AtomicU64::new(0),
             credential_revision: AtomicU64::new(0),
+            account_revision: AtomicU64::new(0),
+            active_account_identities: RwLock::new(HashMap::new()),
         };
+        service.activate_launch_accounts()?;
         let plan = CredentialDetectionPlan {
             provider_ids,
             auto_enable_provider_ids,
@@ -134,7 +146,157 @@ impl SettingsService {
             .unwrap_or_default()
     }
 
+    fn get_with_account_revision(&self) -> (AppSettings, u64) {
+        self.settings
+            .read()
+            .map(|settings| {
+                (
+                    settings.clone(),
+                    self.account_revision.load(Ordering::SeqCst),
+                )
+            })
+            .unwrap_or_else(|_| (AppSettings::default(), self.account_revision()))
+    }
+
+    fn activate_launch_accounts(&self) -> Result<(), StorageError> {
+        let identity = self
+            .registry
+            .cache_identity("codex")
+            .resolved_value()
+            .map(str::to_owned);
+        if let Some(identity) = identity {
+            self.activate_account("codex", "codex", &identity)?;
+        }
+        Ok(())
+    }
+
+    pub fn activate_account(
+        &self,
+        family: &str,
+        provider_id: &str,
+        identity: &str,
+    ) -> Result<bool, StorageError> {
+        let mut settings = self.settings.write().map_err(|_| StorageError::Poisoned)?;
+        let mut active_accounts = self
+            .active_account_identities
+            .write()
+            .map_err(|_| StorageError::Poisoned)?;
+        let previous_identity = active_accounts.get(provider_id).cloned();
+        if previous_identity.as_deref() == Some(identity) {
+            return Ok(false);
+        }
+
+        let records = self.storage.load_provider_account_records(family)?;
+        let (record_id, mut payload) = account_record(&records, family, identity);
+        let current_name = settings.provider_names.get(provider_id).map(String::as_str);
+        let mut account_updates = Vec::new();
+
+        // Before account-aware names existed, the visible card held the only saved name. Preserve
+        // that name on the original bare-id account before projecting a different active account.
+        if previous_identity.is_none() {
+            if let Some((legacy_identity, _, legacy_payload)) = records
+                .iter()
+                .find(|(_, record_provider_id, _)| record_provider_id == provider_id)
+            {
+                let mut legacy_payload = serde_json::from_str(legacy_payload)
+                    .unwrap_or_else(|_| Value::Object(Map::new()));
+                if legacy_identity != identity
+                    && account_custom_name(&legacy_payload).is_none()
+                    && current_name.is_some()
+                {
+                    set_account_custom_name(&mut legacy_payload, current_name);
+                    account_updates.push(ProviderAccountUpdate {
+                        provider_family: family.to_owned(),
+                        identity_key: legacy_identity.clone(),
+                        provider_id: provider_id.to_owned(),
+                        payload: serde_json::to_string(&legacy_payload)?,
+                    });
+                }
+            }
+        }
+        if account_custom_name(&payload).is_none()
+            && record_id == provider_id
+            && previous_identity.is_none()
+        {
+            set_account_custom_name(&mut payload, current_name);
+        }
+
+        let mut next = settings.clone();
+        match account_custom_name(&payload) {
+            Some(name) => {
+                next.provider_names.insert(provider_id.to_owned(), name);
+            }
+            None => {
+                next.provider_names.remove(provider_id);
+            }
+        }
+
+        account_updates.push(ProviderAccountUpdate {
+            provider_family: family.to_owned(),
+            identity_key: identity.to_owned(),
+            provider_id: record_id,
+            payload: serde_json::to_string(&payload)?,
+        });
+        self.storage
+            .save_settings_with_account_updates(&next, &account_updates)?;
+        settings.clone_from(&next);
+        active_accounts.insert(provider_id.to_owned(), identity.to_owned());
+        self.account_revision.fetch_add(1, Ordering::SeqCst);
+        Ok(true)
+    }
+
+    pub fn account_revision(&self) -> u64 {
+        self.account_revision.load(Ordering::SeqCst)
+    }
+
+    fn active_account_name_updates(
+        &self,
+        settings: &AppSettings,
+    ) -> Result<Vec<ProviderAccountUpdate>, StorageError> {
+        let active = self
+            .active_account_identities
+            .read()
+            .map_err(|_| StorageError::Poisoned)?
+            .clone();
+        let mut updates = Vec::new();
+        for (provider_id, identity) in active {
+            let family = crate::providers::provider_family(&provider_id);
+            let records = self.storage.load_provider_account_records(family)?;
+            let (record_id, mut payload) = account_record(&records, family, &identity);
+            set_account_custom_name(
+                &mut payload,
+                settings
+                    .provider_names
+                    .get(&provider_id)
+                    .map(String::as_str),
+            );
+            updates.push(ProviderAccountUpdate {
+                provider_family: family.to_owned(),
+                identity_key: identity,
+                provider_id: record_id,
+                payload: serde_json::to_string(&payload)?,
+            });
+        }
+        Ok(updates)
+    }
+
     pub fn update(&self, mut settings: AppSettings) -> Result<AppSettings, String> {
+        self.update_internal(&mut settings, None)
+    }
+
+    pub fn update_from_view(
+        &self,
+        mut settings: AppSettings,
+        expected_account_revision: u64,
+    ) -> Result<AppSettings, String> {
+        self.update_internal(&mut settings, Some(expected_account_revision))
+    }
+
+    fn update_internal(
+        &self,
+        settings: &mut AppSettings,
+        expected_account_revision: Option<u64>,
+    ) -> Result<AppSettings, String> {
         let mut current = self
             .settings
             .write()
@@ -148,21 +310,35 @@ impl SettingsService {
             .collect::<HashSet<_>>();
         let persisted_accounts = persisted_account_provider_ids(&self.storage)
             .map_err(|_| "OpenQuota account settings could not be loaded.".to_owned())?;
-        normalize_with_persisted_accounts(
-            &self.registry,
-            &mut settings,
-            &detected,
-            &persisted_accounts,
-        );
+        normalize_with_persisted_accounts(&self.registry, settings, &detected, &persisted_accounts);
+        if expected_account_revision != Some(self.account_revision.load(Ordering::SeqCst)) {
+            let active_provider_ids = self
+                .active_account_identities
+                .read()
+                .map_err(|_| "OpenQuota account names are temporarily unavailable.".to_owned())?
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>();
+            for provider_id in active_provider_ids {
+                if let Some(name) = current.provider_names.get(&provider_id) {
+                    settings.provider_names.insert(provider_id, name.clone());
+                } else {
+                    settings.provider_names.remove(&provider_id);
+                }
+            }
+        }
+        let account_updates = self
+            .active_account_name_updates(settings)
+            .map_err(|_| "OpenQuota account names could not be saved.".to_owned())?;
         self.storage
-            .save_settings(&settings)
+            .save_settings_with_account_updates(settings, &account_updates)
             .map_err(|_| "OpenQuota settings could not be saved.".to_owned())?;
-        let enablement_changed = enabled_provider_set(&settings) != enabled_before;
-        current.clone_from(&settings);
+        let enablement_changed = enabled_provider_set(settings) != enabled_before;
+        current.clone_from(settings);
         if enablement_changed {
             self.enablement_revision.fetch_add(1, Ordering::SeqCst);
         }
-        Ok(settings)
+        Ok(settings.clone())
     }
 
     pub fn reset_detection_plan(&self) -> CredentialDetectionPlan {
@@ -345,7 +521,7 @@ impl SettingsService {
         standalone_window: bool,
         platform_summary: Option<String>,
     ) -> SettingsViewState {
-        let settings = self.get();
+        let (settings, account_revision) = self.get_with_account_revision();
         let mut renamable_provider_ids = self.registry.observed_account_provider_ids();
         if let Ok(stored_ids) = self.storage.load_observed_account_provider_ids() {
             for provider_id in stored_ids {
@@ -358,6 +534,7 @@ impl SettingsService {
         }
         SettingsViewState {
             settings,
+            account_revision,
             renamable_provider_ids,
             notification_permission: notification_permission.into(),
             integration_error,
@@ -532,6 +709,83 @@ fn persisted_account_provider_ids(storage: &Storage) -> Result<HashSet<String>, 
         .collect())
 }
 
+fn account_record(
+    records: &[(String, String, String)],
+    family: &str,
+    identity: &str,
+) -> (String, Value) {
+    if let Some((_, provider_id, payload)) = records
+        .iter()
+        .find(|(known_identity, _, _)| known_identity == identity)
+    {
+        return (
+            provider_id.clone(),
+            serde_json::from_str(payload).unwrap_or_else(|_| Value::Object(Map::new())),
+        );
+    }
+
+    let provider_id = if records.is_empty() {
+        family.to_owned()
+    } else {
+        allocate_account_provider_id(records, family, identity)
+    };
+    (provider_id, Value::Object(Map::new()))
+}
+
+fn allocate_account_provider_id(
+    records: &[(String, String, String)],
+    family: &str,
+    identity: &str,
+) -> String {
+    let occupied = records
+        .iter()
+        .map(|(_, provider_id, _)| provider_id.as_str())
+        .collect::<HashSet<_>>();
+    for salt in 0_u32.. {
+        let suffix = if salt == 0
+            && identity.len() >= 8
+            && identity.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            identity[..8].to_ascii_lowercase()
+        } else {
+            format!(
+                "{:x}",
+                Sha256::digest(format!("{identity}:{salt}").as_bytes())
+            )[..8]
+                .to_owned()
+        };
+        let candidate = format!("{family}@{suffix}");
+        if !occupied.contains(candidate.as_str()) {
+            return candidate;
+        }
+    }
+    unreachable!()
+}
+
+fn account_custom_name(payload: &Value) -> Option<String> {
+    payload
+        .get("customName")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+}
+
+fn set_account_custom_name(payload: &mut Value, name: Option<&str>) {
+    if !payload.is_object() {
+        *payload = Value::Object(Map::new());
+    }
+    let object = payload
+        .as_object_mut()
+        .expect("account payload was initialized as an object");
+    let name = name.map(str::trim).filter(|name| !name.is_empty());
+    if let Some(name) = name {
+        object.insert("customName".into(), Value::String(name.to_owned()));
+    } else {
+        object.remove("customName");
+    }
+}
+
 fn default_provider(definition: &ProviderDefinition, detected: bool) -> ProviderLayout {
     ProviderLayout {
         id: definition.id.clone(),
@@ -606,7 +860,7 @@ mod tests {
     use tempfile::tempdir;
 
     use crate::{
-        models::{MetricSection, ProviderDefinition, ProviderSnapshot},
+        models::{MetricSection, ProviderDefinition, ProviderSnapshot, ThemePreference},
         providers::{
             antigravity, claude, codex, cursor, openrouter, CredentialProbeResults,
             CredentialProbeStatus, ProviderError, ProviderRegistry, UsageProvider,
@@ -950,7 +1204,9 @@ mod tests {
         settings
             .provider_names
             .insert("claude".into(), "Personal".into());
-        first.update(settings).unwrap();
+        first
+            .update_from_view(settings, first.account_revision())
+            .unwrap();
         drop(first);
 
         let (second, _) = SettingsService::new_deferred(storage, registry).unwrap();
@@ -965,6 +1221,179 @@ mod tests {
             Some("Personal")
         );
         assert!(state.renamable_provider_ids.contains(&"claude".to_owned()));
+    }
+
+    #[test]
+    fn codex_names_follow_accounts_when_the_active_login_changes() {
+        let directory = tempdir().unwrap();
+        let storage = Arc::new(Storage::open(&directory.path().join("openquota.db")).unwrap());
+        let service = SettingsService::new_for_test(
+            storage.clone(),
+            catalog(),
+            &HashSet::from(["codex".to_owned()]),
+        )
+        .unwrap();
+
+        service
+            .activate_account("codex", "codex", "aaaaaaaa11111111")
+            .unwrap();
+        let mut settings = service.get();
+        settings.provider_names.insert("codex".into(), "GPT".into());
+        service
+            .update_from_view(settings, service.account_revision())
+            .unwrap();
+
+        service
+            .activate_account("codex", "codex", "bbbbbbbb22222222")
+            .unwrap();
+        assert!(!service.get().provider_names.contains_key("codex"));
+
+        let mut settings = service.get();
+        settings
+            .provider_names
+            .insert("codex".into(), "Work".into());
+        service
+            .update_from_view(settings, service.account_revision())
+            .unwrap();
+
+        service
+            .activate_account("codex", "codex", "aaaaaaaa11111111")
+            .unwrap();
+        assert_eq!(
+            service
+                .get()
+                .provider_names
+                .get("codex")
+                .map(String::as_str),
+            Some("GPT")
+        );
+        service
+            .activate_account("codex", "codex", "bbbbbbbb22222222")
+            .unwrap();
+        assert_eq!(
+            service
+                .get()
+                .provider_names
+                .get("codex")
+                .map(String::as_str),
+            Some("Work")
+        );
+
+        let records = storage.load_provider_account_records("codex").unwrap();
+        assert_eq!(records.len(), 2);
+        assert!(records
+            .iter()
+            .any(|(identity, provider_id, _)| identity == "aaaaaaaa11111111"
+                && provider_id == "codex"));
+        assert!(records
+            .iter()
+            .any(|(identity, provider_id, _)| identity == "bbbbbbbb22222222"
+                && provider_id == "codex@bbbbbbbb"));
+    }
+
+    #[test]
+    fn account_revision_only_changes_when_the_active_identity_changes() {
+        let directory = tempdir().unwrap();
+        let storage = Arc::new(Storage::open(&directory.path().join("openquota.db")).unwrap());
+        let service =
+            SettingsService::new_for_test(storage, catalog(), &HashSet::from(["codex".to_owned()]))
+                .unwrap();
+        let initial_revision = service.account_revision();
+
+        assert!(service
+            .activate_account("codex", "codex", "aaaaaaaa11111111")
+            .unwrap());
+        assert_eq!(service.account_revision(), initial_revision + 1);
+        assert!(!service
+            .activate_account("codex", "codex", "aaaaaaaa11111111")
+            .unwrap());
+        assert_eq!(service.account_revision(), initial_revision + 1);
+        assert!(service
+            .activate_account("codex", "codex", "bbbbbbbb22222222")
+            .unwrap());
+        assert_eq!(service.account_revision(), initial_revision + 2);
+    }
+
+    #[test]
+    fn stale_settings_save_cannot_move_a_name_to_the_new_active_account() {
+        let directory = tempdir().unwrap();
+        let storage = Arc::new(Storage::open(&directory.path().join("openquota.db")).unwrap());
+        let service =
+            SettingsService::new_for_test(storage, catalog(), &HashSet::from(["codex".to_owned()]))
+                .unwrap();
+        service
+            .activate_account("codex", "codex", "aaaaaaaa11111111")
+            .unwrap();
+        let mut named = service.get();
+        named.provider_names.insert("codex".into(), "GPT".into());
+        service
+            .update_from_view(named, service.account_revision())
+            .unwrap();
+
+        let stale_revision = service.account_revision();
+        let mut stale_settings = service.get();
+        service
+            .activate_account("codex", "codex", "bbbbbbbb22222222")
+            .unwrap();
+        stale_settings.theme = ThemePreference::Dark;
+        stale_settings
+            .provider_names
+            .insert("claude".into(), "Personal".into());
+        let updated = service
+            .update_from_view(stale_settings, stale_revision)
+            .unwrap();
+
+        assert_eq!(updated.theme, ThemePreference::Dark);
+        assert!(!updated.provider_names.contains_key("codex"));
+        assert_eq!(
+            updated.provider_names.get("claude").map(String::as_str),
+            Some("Personal")
+        );
+        service
+            .activate_account("codex", "codex", "aaaaaaaa11111111")
+            .unwrap();
+        assert_eq!(
+            service
+                .get()
+                .provider_names
+                .get("codex")
+                .map(String::as_str),
+            Some("GPT")
+        );
+    }
+
+    #[test]
+    fn codex_name_migration_keeps_the_original_accounts_name_after_an_offline_swap() {
+        let directory = tempdir().unwrap();
+        let storage = Arc::new(Storage::open(&directory.path().join("openquota.db")).unwrap());
+        storage
+            .save_provider_account_record("codex", "aaaaaaaa11111111", "codex", "{}")
+            .unwrap();
+        let mut saved = default_settings(&catalog(), &HashSet::from(["codex".to_owned()]));
+        saved.provider_names.insert("codex".into(), "GPT".into());
+        storage.save_settings(&saved).unwrap();
+        let service = SettingsService::new_for_test(
+            storage.clone(),
+            catalog(),
+            &HashSet::from(["codex".to_owned()]),
+        )
+        .unwrap();
+
+        service
+            .activate_account("codex", "codex", "bbbbbbbb22222222")
+            .unwrap();
+        assert!(!service.get().provider_names.contains_key("codex"));
+        service
+            .activate_account("codex", "codex", "aaaaaaaa11111111")
+            .unwrap();
+        assert_eq!(
+            service
+                .get()
+                .provider_names
+                .get("codex")
+                .map(String::as_str),
+            Some("GPT")
+        );
     }
 
     #[test]

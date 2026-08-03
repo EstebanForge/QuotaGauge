@@ -6,22 +6,24 @@ export class SettingsController {
   #saveQueue: Promise<void> = Promise.resolve();
   #revision = 0;
   #pendingSaves = 0;
+  #externalRefreshPending = false;
 
   constructor(private readonly onError: (message: string) => void) {}
 
   setState(state: SettingsViewState) {
-    this.state = state;
+    if (!this.state || state.accountRevision >= this.state.accountRevision) this.state = state;
   }
 
   acceptExternalState(state: SettingsViewState) {
-    if (this.#pendingSaves === 0) this.state = state;
+    if (this.#pendingSaves === 0) this.setState(state);
+    else this.#externalRefreshPending = true;
   }
 
   async refreshIfIdle() {
     if (this.#pendingSaves !== 0) return;
     try {
       const state = await getAppSettings();
-      if (this.#pendingSaves === 0) this.state = state;
+      if (this.#pendingSaves === 0) this.setState(state);
     } catch {
       // Focus refresh is best-effort; the last known settings remain usable.
     }
@@ -31,24 +33,29 @@ export class SettingsController {
     const current = this.state;
     if (!current) return;
     const revision = ++this.#revision;
+    const expectedAccountRevision = current.accountRevision;
     this.#pendingSaves += 1;
     this.state = { ...current, settings: next };
     this.#saveQueue = this.#saveQueue
       .then(async () => {
-        const saved = await saveAppSettings(next);
-        if (revision === this.#revision) this.state = saved;
+        const saved = await saveAppSettings(next, expectedAccountRevision);
+        if (revision === this.#revision) this.setState(saved);
       })
       .catch(async (error: unknown) => {
         if (revision !== this.#revision) return;
         this.onError(typeof error === 'string' ? error : 'Settings could not be saved.');
         try {
-          this.state = await getAppSettings();
+          this.setState(await getAppSettings());
         } catch {
           this.onError('Settings could not be saved or reloaded.');
         }
       })
       .finally(() => {
         this.#pendingSaves -= 1;
+        if (this.#pendingSaves === 0 && this.#externalRefreshPending) {
+          this.#externalRefreshPending = false;
+          void this.refreshIfIdle();
+        }
       });
   }
 }

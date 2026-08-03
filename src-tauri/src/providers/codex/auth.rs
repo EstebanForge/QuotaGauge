@@ -134,7 +134,21 @@ impl CodexAuthState {
             .is_some_and(|date| now.signed_duration_since(date.to_utc()).num_days() > 8)
     }
 
-    pub fn update_and_save(
+    pub(super) fn update_and_save_if_current(
+        &mut self,
+        access_token: String,
+        refresh_token: Option<String>,
+        id_token: Option<String>,
+        now: DateTime<Utc>,
+    ) -> Result<(), CodexError> {
+        let current = self.reload().map_err(|_| CodexError::AccountChanged)?;
+        if current.document != self.document {
+            return Err(CodexError::AccountChanged);
+        }
+        self.update_and_save(access_token, refresh_token, id_token, now)
+    }
+
+    fn update_and_save(
         &mut self,
         access_token: String,
         refresh_token: Option<String>,
@@ -463,5 +477,42 @@ mod tests {
         assert!(matches!(error, CodexError::AuthWrite));
         assert!(!error.to_string().contains("secret-access"));
         assert!(!error.to_string().contains("secret-refresh"));
+    }
+
+    #[test]
+    fn refreshed_tokens_do_not_overwrite_credentials_changed_during_refresh() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("auth.json");
+        let original = json!({
+            "tokens": {
+                "access_token": "account-a-access",
+                "refresh_token": "account-a-refresh",
+                "account_id": "account-a"
+            }
+        });
+        let replacement = json!({
+            "tokens": {
+                "access_token": "account-b-access",
+                "refresh_token": "account-b-refresh",
+                "account_id": "account-b"
+            }
+        });
+        fs::write(&path, serde_json::to_vec(&original).unwrap()).unwrap();
+        let mut state = super::load_from_path(&path).unwrap();
+        fs::write(&path, serde_json::to_vec(&replacement).unwrap()).unwrap();
+
+        let error = state
+            .update_and_save_if_current(
+                "rotated-account-a-access".into(),
+                Some("rotated-account-a-refresh".into()),
+                None,
+                Utc::now(),
+            )
+            .unwrap_err();
+
+        assert!(matches!(error, CodexError::AccountChanged));
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert_eq!(persisted, replacement);
     }
 }

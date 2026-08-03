@@ -29,6 +29,13 @@ pub struct Storage {
     connection: Mutex<Connection>,
 }
 
+pub struct ProviderAccountUpdate {
+    pub provider_family: String,
+    pub identity_key: String,
+    pub provider_id: String,
+    pub payload: String,
+}
+
 impl Storage {
     pub fn open(path: &Path) -> Result<Self, StorageError> {
         if let Some(parent) = path.parent() {
@@ -287,12 +294,39 @@ impl Storage {
     }
 
     pub fn save_settings(&self, settings: &AppSettings) -> Result<(), StorageError> {
+        self.save_settings_with_account_updates(settings, &[])
+    }
+
+    pub fn save_settings_with_account_updates(
+        &self,
+        settings: &AppSettings,
+        account_updates: &[ProviderAccountUpdate],
+    ) -> Result<(), StorageError> {
         let payload = serde_json::to_string(settings)?;
-        self.connection()?.execute(
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction()?;
+        for update in account_updates {
+            transaction.execute(
+                "INSERT INTO provider_account_records(
+                   provider_family, identity_key, provider_id, payload
+                 ) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(provider_family, identity_key) DO UPDATE SET
+                   provider_id = excluded.provider_id,
+                   payload = excluded.payload",
+                params![
+                    update.provider_family,
+                    update.identity_key,
+                    update.provider_id,
+                    update.payload,
+                ],
+            )?;
+        }
+        transaction.execute(
             "INSERT INTO app_settings(id, payload) VALUES (1, ?1)
              ON CONFLICT(id) DO UPDATE SET payload = excluded.payload",
             [payload],
         )?;
+        transaction.commit()?;
         Ok(())
     }
 
@@ -447,7 +481,7 @@ mod tests {
     use rusqlite::Connection;
     use tempfile::tempdir;
 
-    use super::Storage;
+    use super::{ProviderAccountUpdate, Storage};
     use crate::models::{
         AppSettings, DailyUsage, ModelUsageBreakdown, ModelUsageEntry, ProviderSnapshot,
         QuotaFormat, QuotaWindow, UsageHistory, UsagePeriod,
@@ -572,6 +606,46 @@ mod tests {
             storage.load_observed_account_provider_ids().unwrap(),
             ["claude@12345678"]
         );
+    }
+
+    #[test]
+    fn account_records_and_settings_roll_back_together() {
+        let directory = tempdir().unwrap();
+        let storage = Storage::open(&directory.path().join("openquota.db")).unwrap();
+        let original = AppSettings {
+            theme: crate::models::ThemePreference::Light,
+            ..AppSettings::default()
+        };
+        storage.save_settings(&original).unwrap();
+        storage
+            .save_provider_account_record("codex", "identity-a", "codex", r#"{"name":"old"}"#)
+            .unwrap();
+        let changed = AppSettings {
+            theme: crate::models::ThemePreference::Dark,
+            ..original.clone()
+        };
+        let updates = [
+            ProviderAccountUpdate {
+                provider_family: "codex".into(),
+                identity_key: "identity-a".into(),
+                provider_id: "codex".into(),
+                payload: r#"{"name":"changed"}"#.into(),
+            },
+            ProviderAccountUpdate {
+                provider_family: "codex".into(),
+                identity_key: "identity-b".into(),
+                provider_id: "codex".into(),
+                payload: "{}".into(),
+            },
+        ];
+
+        assert!(storage
+            .save_settings_with_account_updates(&changed, &updates)
+            .is_err());
+        assert_eq!(storage.load_settings().unwrap(), Some(original));
+        let records = storage.load_provider_account_records("codex").unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].2, r#"{"name":"old"}"#);
     }
 
     #[test]

@@ -64,6 +64,18 @@ pub enum CacheIdentity<'a> {
     Unresolved,
 }
 
+pub struct AccountRefresh {
+    pub family: &'static str,
+    pub provider_id: &'static str,
+    pub identity: String,
+}
+
+pub struct ProviderRefresh {
+    pub snapshot: ProviderSnapshot,
+    pub cache_identity: Option<String>,
+    pub account: Option<AccountRefresh>,
+}
+
 impl<'a> CacheIdentity<'a> {
     pub fn resolved_value(self) -> Option<&'a str> {
         match self {
@@ -101,6 +113,15 @@ pub trait UsageProvider: Send + Sync {
     fn definition(&self) -> ProviderDefinition;
     fn has_local_credentials(&self) -> bool;
     fn refresh(&self) -> Result<ProviderSnapshot, ProviderError>;
+
+    fn refresh_for_service(&self) -> Result<ProviderRefresh, ProviderError> {
+        let snapshot = self.refresh()?;
+        Ok(ProviderRefresh {
+            snapshot,
+            cache_identity: self.cache_identity().resolved_value().map(str::to_owned),
+            account: None,
+        })
+    }
 
     fn cache_identity(&self) -> CacheIdentity<'_> {
         CacheIdentity::Unscoped

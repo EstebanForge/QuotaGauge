@@ -1,4 +1,10 @@
-use std::{collections::HashSet, sync::Arc};
+use std::{
+    collections::HashSet,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+};
 
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
@@ -33,6 +39,7 @@ pub async fn save_app_settings(
     settings_service: State<'_, Arc<SettingsService>>,
     notifications: State<'_, Arc<NotificationEvaluator>>,
     settings: AppSettings,
+    expected_account_revision: u64,
 ) -> Result<SettingsViewState, String> {
     let previous = settings_service.get();
     let next_shortcut = settings.global_shortcut.clone();
@@ -52,7 +59,7 @@ pub async fn save_app_settings(
             return Err(error);
         }
     }
-    let updated = match settings_service.update(settings) {
+    let updated = match settings_service.update_from_view(settings, expected_account_revision) {
         Ok(settings) => settings,
         Err(error) => {
             crate::app_error!("config", "settings could not be persisted");
@@ -279,4 +286,15 @@ pub(crate) fn settings_view_state(app: &AppHandle, service: &SettingsService) ->
         app.state::<DesktopIntegration>().standalone_window,
         app.state::<DesktopIntegration>().platform_summary(),
     )
+}
+
+pub(crate) fn emit_settings_if_account_changed(
+    app: &AppHandle,
+    service: &SettingsService,
+    observed_revision: &AtomicU64,
+) {
+    let revision = service.account_revision();
+    if observed_revision.swap(revision, Ordering::SeqCst) != revision {
+        let _ = app.emit("settings-state", settings_view_state(app, service));
+    }
 }

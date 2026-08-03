@@ -246,6 +246,7 @@ export interface UpdateFailure {
 
 export interface SettingsViewState {
   settings: AppSettings;
+  accountRevision: number;
   renamableProviderIds: string[];
   notificationPermission: 'granted' | 'denied' | 'prompt' | 'unavailable';
   integrationError: string | null;

@@ -738,6 +738,7 @@ impl AppSettings {
 #[serde(rename_all = "camelCase")]
 pub struct SettingsViewState {
     pub settings: AppSettings,
+    pub account_revision: u64,
     pub renamable_provider_ids: Vec<String>,
     pub notification_permission: String,
     pub integration_error: Option<String>,
