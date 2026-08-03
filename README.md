@@ -20,7 +20,7 @@ into one compact panel. See session and weekly limits, reset times, token usage,
 spend at a glance.
 
 <p align="center">
-  <img src="assets/screenshot.png" alt="OpenQuota dashboard showing AI provider quotas, usage, and estimated spend" width="420">
+  <img src="assets/openquota-demo.gif" alt="OpenQuota dashboard showing animated AI usage in light and dark themes" width="840">
 </p>
 
 ## Download
