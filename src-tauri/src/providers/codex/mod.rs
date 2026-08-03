@@ -274,7 +274,7 @@ impl CodexProvider {
         let usage = scan_or_cached_usage(
             &self.storage,
             "codex",
-            crate::providers::CacheIdentity::Unscoped,
+            crate::providers::UsageProvider::cache_identity(self),
             "Codex",
             || scan_local_usage(&self.storage, now, &pricing),
             &mut warnings,
@@ -350,6 +350,13 @@ impl crate::providers::UsageProvider for CodexProvider {
         CodexAuthState::has_local_credentials()
     }
 
+    fn cache_identity(&self) -> crate::providers::CacheIdentity<'_> {
+        self.account_identity
+            .as_deref()
+            .map(crate::providers::CacheIdentity::Resolved)
+            .unwrap_or(crate::providers::CacheIdentity::Unresolved)
+    }
+
     fn supports_account_names(&self) -> bool {
         true
     }
@@ -385,7 +392,16 @@ impl crate::providers::UsageProvider for CodexProvider {
 
 #[cfg(test)]
 mod account_tests {
-    use super::{validate_account_identity, CodexError};
+    use std::sync::Arc;
+
+    use tempfile::tempdir;
+
+    use super::{validate_account_identity, CodexClient, CodexError, CodexProvider};
+    use crate::{
+        pricing::PricingStore,
+        providers::{CacheIdentity, UsageProvider},
+        storage::Storage,
+    };
 
     #[test]
     fn pinned_account_rejects_a_different_or_unreadable_login() {
@@ -399,5 +415,33 @@ mod account_tests {
             Err(CodexError::AccountChanged)
         ));
         assert!(validate_account_identity(None, Some("account-b")).is_ok());
+    }
+
+    #[test]
+    fn cache_identity_tracks_the_launch_resolved_account() {
+        let directory = tempdir().unwrap();
+        let storage = Arc::new(Storage::open(&directory.path().join("openquota.db")).unwrap());
+        let pricing = Arc::new(PricingStore::new(directory.path().join("pricing")).unwrap());
+        let provider = CodexProvider {
+            account_identity: Some("account-a".into()),
+            storage: storage.clone(),
+            pricing: pricing.clone(),
+            client: CodexClient::new().unwrap(),
+        };
+        let unresolved = CodexProvider {
+            account_identity: None,
+            storage,
+            pricing,
+            client: CodexClient::new().unwrap(),
+        };
+
+        assert_eq!(
+            UsageProvider::cache_identity(&provider),
+            CacheIdentity::Resolved("account-a")
+        );
+        assert_eq!(
+            UsageProvider::cache_identity(&unresolved),
+            CacheIdentity::Unresolved
+        );
     }
 }
