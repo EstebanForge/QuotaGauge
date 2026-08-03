@@ -1304,6 +1304,24 @@ describe('OpenQuota dashboard', () => {
     expect(document.querySelector('.context-menu')).toBeNull();
   });
 
+  it('does not preselect a context-menu item after a pointer invocation', async () => {
+    render(App);
+    await screen.findByText('Plus');
+    await fireEvent.contextMenu(screen.getByRole('group', { name: 'Codex provider' }), {
+      button: 2,
+      clientX: 120,
+      clientY: 180,
+    });
+    const hide = screen.getByRole('menuitem', { name: 'Hide Codex' });
+    const menu = hide.closest<HTMLElement>('[role="menu"]');
+    if (!menu) throw new Error('Context menu was not rendered.');
+    await waitFor(() => expect(menu).toHaveFocus());
+    expect(hide).not.toHaveFocus();
+
+    await fireEvent.keyDown(menu, { key: 'ArrowDown' });
+    expect(hide).toHaveFocus();
+  });
+
   it('hides a dashboard metric without removing its menu bar star', async () => {
     render(App);
     await screen.findByText('Plus');

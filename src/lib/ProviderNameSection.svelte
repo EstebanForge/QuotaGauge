@@ -77,7 +77,12 @@
     background: var(--card);
   }
 
+  .provider-name-card:focus-within {
+    box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--meter-fill) 65%, transparent);
+  }
+
   input {
+    display: block;
     width: 100%;
     min-width: 0;
     box-sizing: border-box;
@@ -93,10 +98,6 @@
   input::placeholder {
     color: var(--tertiary);
     opacity: 1;
-  }
-
-  input:focus-visible {
-    box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--meter-fill) 65%, transparent);
   }
 
   :global(:root[data-density='compact']) input {

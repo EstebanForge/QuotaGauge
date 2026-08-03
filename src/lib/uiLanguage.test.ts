@@ -5,6 +5,7 @@ import tokensCss from '../styles/tokens.css?raw';
 import customizeDetail from './CustomizeProviderDetail.svelte?raw';
 import customizeList from './CustomizeProviderList.svelte?raw';
 import dashboard from './Dashboard.svelte?raw';
+import providerNameSection from './ProviderNameSection.svelte?raw';
 import settings from './SettingsScreen.svelte?raw';
 import { coLocatedComponentCss } from './uiStyleSources';
 
@@ -91,5 +92,16 @@ describe('native UI language contract', () => {
     expect(dashboard).not.toContain('Starter Provider');
     expect(dashboard).not.toContain("Expand'} On Demand");
     expect(dashboard).not.toContain('>×</button');
+  });
+
+  it('keeps interactive highlights in the component layer that owns their base style', () => {
+    expect(providerNameSection).toMatch(
+      /\.provider-name-card:focus-within\s*{[^}]*box-shadow: inset 0 0 0 2px/s,
+    );
+    expect(providerNameSection).toMatch(/input\s*{[^}]*display: block;/s);
+    expect(dashboard).toMatch(
+      /\.context-menu button:not\(:disabled\):hover,[\s\S]*background: var\(--button-hover\);/,
+    );
+    expect(sharedComponentCss).not.toContain('.context-menu button:hover');
   });
 });

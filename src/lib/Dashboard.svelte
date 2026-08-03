@@ -220,6 +220,7 @@
   function openProviderMenu(event: MouseEvent, providerId: string) {
     event.preventDefault();
     metricMenu = null;
+    const focusFirstItem = event.button !== 2;
     const provider = settings.providers.find((item) => item.id === providerId);
     const menuHeight = provider && canRenameProvider(provider.id, renamableProviderIds) ? 204 : 174;
     providerMenu = {
@@ -227,22 +228,25 @@
       x: Math.max(6, Math.min(event.clientX, window.innerWidth - 196)),
       y: Math.max(6, Math.min(event.clientY, window.innerHeight - menuHeight)),
     };
-    queueMicrotask(focusFirstMenuItem);
+    queueMicrotask(() => focusContextMenu(focusFirstItem));
   }
   function openMetricMenu(event: MouseEvent, providerId: string, metricId: string) {
     event.preventDefault();
     event.stopPropagation();
     providerMenu = null;
+    const focusFirstItem = event.button !== 2;
     metricMenu = {
       providerId,
       metricId,
       x: Math.max(6, Math.min(event.clientX, window.innerWidth - 196)),
       y: Math.max(6, Math.min(event.clientY, window.innerHeight - 154)),
     };
-    queueMicrotask(focusFirstMenuItem);
+    queueMicrotask(() => focusContextMenu(focusFirstItem));
   }
-  function focusFirstMenuItem() {
-    document.querySelector<HTMLButtonElement>('.context-menu button:not(:disabled)')?.focus();
+  function focusContextMenu(focusFirstItem: boolean) {
+    const menu = document.querySelector<HTMLElement>('.context-menu');
+    if (focusFirstItem) menu?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
+    else menu?.focus({ preventScroll: true });
   }
   function handleContextMenuKey(event: KeyboardEvent) {
     const menu = event.currentTarget as HTMLElement;
@@ -256,15 +260,19 @@
     }
     if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key) || items.length === 0) return;
     event.preventDefault();
-    const current = Math.max(0, items.indexOf(document.activeElement as HTMLButtonElement));
+    const current = items.indexOf(document.activeElement as HTMLButtonElement);
     const next =
       event.key === 'Home'
         ? 0
         : event.key === 'End'
           ? items.length - 1
           : event.key === 'ArrowDown'
-            ? (current + 1) % items.length
-            : (current - 1 + items.length) % items.length;
+            ? current < 0
+              ? 0
+              : (current + 1) % items.length
+            : current < 0
+              ? items.length - 1
+              : (current - 1 + items.length) % items.length;
     items[next].focus();
   }
   function patchMetric(providerId: string, metricId: string, patch: Partial<MetricLayout>) {
@@ -1169,6 +1177,10 @@
       animation: menu-in 180ms ease-out both;
     }
 
+    .context-menu:focus {
+      outline: none;
+    }
+
     .context-menu button {
       display: flex;
       width: 100%;
@@ -1185,6 +1197,12 @@
 
     .context-menu button.danger {
       color: var(--meter-critical);
+    }
+
+    .context-menu button:not(:disabled):hover,
+    .context-menu button:not(:disabled):focus-visible {
+      outline: none;
+      background: var(--button-hover);
     }
 
     .context-menu button:disabled {
