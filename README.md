@@ -114,6 +114,11 @@ corepack pnpm tauri build --bundles dmg   # macOS
 Issues and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) before contributing,
 and report security problems privately as described in [SECURITY.md](SECURITY.md).
 
+## Acknowledgements
+
+OpenQuota was inspired by [OpenUsage](https://github.com/robinebers/openusage) and developed as a
+cross-platform alternative for Windows, Linux, and macOS.
+
 ## License
 
 [MIT](LICENSE)
