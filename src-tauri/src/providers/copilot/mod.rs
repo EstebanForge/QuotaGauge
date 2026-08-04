@@ -396,7 +396,12 @@ mod tests {
     fn accept_before(listener: &TcpListener, deadline: Instant) -> Result<TcpStream, String> {
         loop {
             match listener.accept() {
-                Ok((stream, _)) => return Ok(stream),
+                Ok((stream, _)) => {
+                    stream.set_nonblocking(false).map_err(|error| {
+                        format!("could not configure test HTTP stream: {error}")
+                    })?;
+                    return Ok(stream);
+                }
                 Err(error)
                     if error.kind() == std::io::ErrorKind::WouldBlock
                         && Instant::now() < deadline =>
