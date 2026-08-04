@@ -307,7 +307,7 @@ pub fn apply_window_mode(
         .app_handle()
         .state::<PopupDismissGuard>()
         .cancel_pending();
-    let result = (|| {
+    let result = {
         crate::webview_memory::set_inactive(window, false);
         let _ = window.unminimize();
         if floating {
@@ -317,12 +317,12 @@ pub fn apply_window_mode(
         } else {
             position_popup(window);
         }
-        restore_manual_panel_height(window)?;
+        let _ = restore_manual_panel_height(window);
         window
             .show()
             .and_then(|_| window.set_focus())
             .map_err(|_| "OpenQuota window could not be shown.".to_owned())
-    })();
+    };
     if result.is_err() {
         integration.set_floating(previous_floating);
         let _ = set_window_chrome(window, previous_floating);
