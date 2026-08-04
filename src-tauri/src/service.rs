@@ -287,13 +287,13 @@ impl ProviderService {
                 failures.insert(provider_id.clone(), Instant::now());
             }
 
-            if let Ok(mut flight_state) = flight.state.lock() {
-                flight_state.completed_generation = generation;
-                flight_state.attempt_generation = None;
-            }
-            flight.completed_tx.send_replace(generation);
+            let run_follow_up = if let Some(worker) = late_worker {
+                if let Ok(mut flight_state) = flight.state.lock() {
+                    flight_state.completed_generation = generation;
+                    flight_state.attempt_generation = None;
+                }
+                flight.completed_tx.send_replace(generation);
 
-            if let Some(worker) = late_worker {
                 match worker.await {
                     Ok(_) => crate::app_debug!(
                         &tag,
@@ -304,19 +304,20 @@ impl ProviderService {
                         "timed-out refresh worker stopped; discarded late failure"
                     ),
                 }
-            }
 
-            let run_follow_up = if let Ok(mut flight_state) = flight.state.lock() {
-                if flight_state.requested_generation > flight_state.completed_generation {
-                    let generation = flight_state.completed_generation.saturating_add(1);
-                    flight_state.attempt_generation = Some(generation);
-                    true
+                if let Ok(mut flight_state) = flight.state.lock() {
+                    settle_completed_generation(&mut flight_state, generation)
                 } else {
-                    flight_state.runner_active = false;
                     false
                 }
             } else {
-                false
+                let run_follow_up = if let Ok(mut flight_state) = flight.state.lock() {
+                    settle_completed_generation(&mut flight_state, generation)
+                } else {
+                    false
+                };
+                flight.completed_tx.send_replace(generation);
+                run_follow_up
             };
             if !run_follow_up {
                 return;
@@ -507,6 +508,18 @@ struct RefreshFlightState {
     attempt_generation: Option<u64>,
     requested_generation: u64,
     completed_generation: u64,
+}
+
+fn settle_completed_generation(state: &mut RefreshFlightState, generation: u64) -> bool {
+    state.completed_generation = generation;
+    state.attempt_generation = None;
+    if state.requested_generation > state.completed_generation {
+        state.attempt_generation = Some(state.completed_generation.saturating_add(1));
+        true
+    } else {
+        state.runner_active = false;
+        false
+    }
 }
 
 impl RefreshFlight {
