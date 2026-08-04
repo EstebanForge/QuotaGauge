@@ -15,7 +15,7 @@ function settingsView(theme: AppSettings['theme'] = 'system'): SettingsViewState
     renamableProviderIds: [],
     notificationPermission: 'prompt',
     integrationError: null,
-    standaloneWindow: false,
+    trayAvailable: true,
     platformSummary: null,
     settings: {
       schemaVersion: 6,
@@ -25,6 +25,7 @@ function settingsView(theme: AppSettings['theme'] = 'system'): SettingsViewState
       showTotalSpend: true,
       theme,
       density: 'default',
+      windowMode: 'popup',
       menuBarStyle: 'text',
       usageDisplay: 'left',
       resetDisplay: 'countdown',

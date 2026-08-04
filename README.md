@@ -66,7 +66,8 @@ API-key-only sessions.
 
 ## Features
 
-- **Tray dashboard.** View all provider quotas and reset times in a compact popup.
+- **Tray or floating dashboard.** View quotas in a compact popup, or keep the panel open and move it
+  around your desktop.
 - **Pinned metrics.** Keep important values visible in the tray or macOS menu bar.
 - **Used or left.** Display how much quota you have consumed or how much remains.
 - **Usage history.** Review today, yesterday, and the last 30 days of token usage and estimated

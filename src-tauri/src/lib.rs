@@ -54,7 +54,8 @@ use crate::{
     },
     storage::Storage,
     window::{
-        handle_window_event, open_screen, show_popup, toggle_popup, PanelResizeSession, MAIN_WINDOW,
+        handle_window_event, open_screen, show_main_window, toggle_main_window, PanelResizeSession,
+        MAIN_WINDOW,
     },
 };
 
@@ -119,7 +120,7 @@ fn register_shortcut(app: &AppHandle, shortcut: &str) -> Result<(), String> {
     app.global_shortcut()
         .on_shortcut(shortcut, |app, _, event| {
             if event.state == ShortcutState::Released {
-                toggle_popup(app);
+                toggle_main_window(app);
             }
         })
         .map_err(|_| {
@@ -211,8 +212,8 @@ pub fn run() {
             let desktop_integration = DesktopIntegration::detect();
             app_info!(
                 "lifecycle",
-                "desktop integration detected (standalone={})",
-                desktop_integration.standalone_window
+                "desktop integration detected (tray={})",
+                desktop_integration.tray_available()
             );
             app.manage(desktop_integration.clone());
 
@@ -244,6 +245,7 @@ pub fn run() {
             let (settings_service, credential_detection_plan) =
                 SettingsService::new_deferred(storage.clone(), registry.clone())?;
             let settings = Arc::new(settings_service);
+            let floating_window = desktop_integration.apply_window_mode(settings.get().window_mode);
             let service = Arc::new(ProviderService::new_with_settings(
                 registry.clone(),
                 storage.clone(),
@@ -267,7 +269,7 @@ pub fn run() {
                 if window::apply_panel_surface(&window, settings.get().theme).is_err() {
                     app_warn!("window", "initial panel surface theme could not be applied");
                 }
-                if !desktop_integration.standalone_window {
+                if !floating_window {
                     webview_memory::set_inactive(&window, true);
                 }
             }
@@ -276,7 +278,7 @@ pub fn run() {
                 let _ = register_shortcut(app.handle(), &shortcut);
             }
 
-            if !desktop_integration.standalone_window {
+            if desktop_integration.tray_available() {
                 #[cfg(target_os = "macos")]
                 let menu = {
                     let settings_item =
@@ -318,7 +320,7 @@ pub fn run() {
                     "open" => {
                         app.state::<PopupDismissGuard>().cancel_pending();
                         if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
-                            show_popup(&window);
+                            show_main_window(&window);
                         }
                     }
                     "customize" => open_screen(app, "customize"),
@@ -343,19 +345,17 @@ pub fn run() {
                             ..
                         }
                     ) {
-                        toggle_popup(tray.app_handle());
+                        toggle_main_window(tray.app_handle());
                     }
                 });
                 tray.build(app)?;
                 app_info!("lifecycle", "system tray integration ready");
             }
 
-            if desktop_integration.standalone_window {
+            if floating_window {
                 if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
-                    let _ = window.set_skip_taskbar(false);
-                    let _ = window.set_always_on_top(false);
-                    let _ = window.set_decorations(true);
-                    show_popup(&window);
+                    window::apply_window_mode(&window, settings.get().window_mode, true)
+                        .map_err(std::io::Error::other)?;
                 }
             }
 

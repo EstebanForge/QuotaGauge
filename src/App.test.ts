@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
   listen: vi.fn(),
   currentMonitor: vi.fn(),
+  startDragging: vi.fn(),
   startResizeDragging: vi.fn(),
 }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
@@ -30,6 +31,7 @@ vi.mock('@tauri-apps/api/window', () => ({
   getCurrentWindow: () => ({
     scaleFactor: () => Promise.resolve(1),
     innerSize: () => Promise.resolve({ width: 320, height: 600 }),
+    startDragging: mocks.startDragging,
     startResizeDragging: mocks.startResizeDragging,
   }),
 }));
@@ -64,6 +66,7 @@ describe('OpenQuota dashboard', () => {
       workArea: { size: { width: 1280, height: 700 } },
     });
     mocks.listen.mockReset().mockResolvedValue(vi.fn());
+    mocks.startDragging.mockReset().mockResolvedValue(undefined);
     mocks.startResizeDragging.mockReset().mockResolvedValue(undefined);
     mocks.invoke.mockReset();
     mockInvoke((command: string, args?: InvokeArgs) => {
@@ -124,6 +127,130 @@ describe('OpenQuota dashboard', () => {
       '$3.84 · Estimated locally, so it may be off',
     );
     expect(screen.getByText(`OpenQuota ${import.meta.env.APP_VERSION}`)).toBeInTheDocument();
+    expect(container.querySelector('.floating-chrome')).not.toBeInTheDocument();
+  });
+
+  it('toggles floating window mode from the footer pin when a tray is available', async () => {
+    render(App);
+    await screen.findByText('Plus');
+
+    const pin = screen.getByRole('button', { name: 'Keep Window Open' });
+    expect(pin).toHaveAttribute('aria-pressed', 'false');
+    await fireEvent.click(pin);
+
+    await waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith(
+        'save_app_settings',
+        expect.objectContaining({
+          settings: expect.objectContaining({ windowMode: 'floating' }),
+        }),
+      ),
+    );
+    expect(screen.getByRole('button', { name: 'Return to Tray Popup' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Return to Tray Popup' }));
+    await waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith(
+        'save_app_settings',
+        expect.objectContaining({
+          settings: expect.objectContaining({ windowMode: 'popup' }),
+        }),
+      ),
+    );
+  });
+
+  it('provides a native drag surface and hide control in floating window mode', async () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      configurable: true,
+      value: {},
+    });
+    const userAgent = navigator.userAgent;
+    Object.defineProperty(navigator, 'userAgent', {
+      configurable: true,
+      value: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+    });
+    const defaultInvoke = mocks.invoke.getMockImplementation()!;
+    mockInvoke((command: string, args?: InvokeArgs) => {
+      if (command === 'get_app_settings')
+        return Promise.resolve({
+          ...settingsState,
+          settings: { ...settingsState.settings, windowMode: 'floating' as const },
+        });
+      if (command === 'get_panel_resize_edge') return new Promise(() => undefined);
+      return defaultInvoke(command, args);
+    });
+
+    try {
+      const { container } = render(App);
+      await screen.findByText('Plus');
+      const dragSurface = container.querySelector<HTMLElement>('.floating-chrome__drag');
+      expect(dragSurface).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Hide OpenQuota' })).toBeInTheDocument();
+      expect(screen.getByRole('separator', { name: 'Resize panel height' })).toHaveClass(
+        'panel-resize-dragger--bottom',
+      );
+
+      await fireEvent.pointerDown(dragSurface!, { button: 0 });
+      expect(mocks.startDragging).toHaveBeenCalledOnce();
+    } finally {
+      delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+      Object.defineProperty(navigator, 'userAgent', { configurable: true, value: userAgent });
+    }
+  });
+
+  it('refreshes the resize edge after switching from floating window to tray popup', async () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      configurable: true,
+      value: {},
+    });
+    const userAgent = navigator.userAgent;
+    Object.defineProperty(navigator, 'userAgent', {
+      configurable: true,
+      value: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+    });
+    let appliedMode: AppSettings['windowMode'] = 'floating';
+    const defaultInvoke = mocks.invoke.getMockImplementation()!;
+    mockInvoke((command: string, args?: InvokeArgs) => {
+      if (command === 'get_app_settings')
+        return Promise.resolve({
+          ...settingsState,
+          settings: { ...settingsState.settings, windowMode: 'floating' as const },
+        });
+      if (command === 'save_app_settings') {
+        appliedMode = args?.settings?.windowMode ?? appliedMode;
+        return Promise.resolve({
+          ...settingsState,
+          settings: args?.settings ?? settingsState.settings,
+        });
+      }
+      if (command === 'get_panel_resize_edge')
+        return Promise.resolve(appliedMode === 'floating' ? 'bottom' : 'top');
+      return defaultInvoke(command, args);
+    });
+
+    try {
+      render(App);
+      await screen.findByText('Plus');
+      expect(screen.getByRole('separator', { name: 'Resize panel height' })).toHaveClass(
+        'panel-resize-dragger--bottom',
+      );
+      await fireEvent.click(screen.getByLabelText('Open options'));
+      await fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+      await fireEvent.click(screen.getByRole('combobox', { name: 'Window Mode' }));
+      await fireEvent.click(screen.getByRole('option', { name: 'Tray Popup' }));
+
+      await waitFor(() =>
+        expect(screen.getByRole('separator', { name: 'Resize panel height' })).toHaveClass(
+          'panel-resize-dragger--top',
+        ),
+      );
+    } finally {
+      delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+      Object.defineProperty(navigator, 'userAgent', { configurable: true, value: userAgent });
+    }
   });
 
   it('renders Claude and Antigravity independently with provider-specific quota formats', async () => {
@@ -679,7 +806,7 @@ describe('OpenQuota dashboard', () => {
       if (command === 'get_app_settings')
         return Promise.resolve({
           ...settingsState,
-          standaloneWindow: true,
+          trayAvailable: false,
           platformSummary: 'GNOME · Wayland · standalone window',
         });
       if (command === 'check_for_updates')
@@ -695,9 +822,13 @@ describe('OpenQuota dashboard', () => {
     });
     render(App);
     await screen.findByText('Plus');
+    expect(screen.getByRole('button', { name: 'Close OpenQuota' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Keep Window Open' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Return to Tray Popup' })).not.toBeInTheDocument();
     await fireEvent.click(screen.getByLabelText('Open options'));
     await fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
     expect(screen.getByText('GNOME · Wayland · standalone window')).toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: 'Window Mode' })).not.toBeInTheDocument();
   });
 
   it('records a global shortcut and requests notification permission', async () => {
@@ -1103,11 +1234,11 @@ describe('OpenQuota dashboard', () => {
   });
 
   it('resets native Options and Share details when the popup is hidden', async () => {
-    let emitPopupHidden: (() => void) | undefined;
+    let emitMainWindowHidden: (() => void) | undefined;
     mocks.listen.mockImplementation(
       (eventName: string, handler: (event: { payload: unknown }) => void) => {
-        if (eventName === 'popup-hidden') {
-          emitPopupHidden = () => handler({ payload: undefined });
+        if (eventName === 'main-window-hidden') {
+          emitMainWindowHidden = () => handler({ payload: undefined });
         }
         return Promise.resolve(vi.fn());
       },
@@ -1127,8 +1258,8 @@ describe('OpenQuota dashboard', () => {
       expect(within(shareMenu).getByRole('button', { name: 'Codex' })).toBeInTheDocument(),
     );
 
-    await waitFor(() => expect(emitPopupHidden).toBeTypeOf('function'));
-    emitPopupHidden!();
+    await waitFor(() => expect(emitMainWindowHidden).toBeTypeOf('function'));
+    emitMainWindowHidden!();
 
     await waitFor(() => {
       expect(optionsMenu).not.toHaveAttribute('open');
@@ -1234,6 +1365,18 @@ describe('OpenQuota dashboard', () => {
       await screen.findByText('Plus');
       await fireEvent.click(screen.getByLabelText('Open options'));
       await fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+      const windowMode = screen.getByRole('combobox', { name: 'Window Mode' });
+      await fireEvent.click(windowMode);
+      await fireEvent.click(screen.getByRole('option', { name: 'Floating Window' }));
+      await waitFor(() =>
+        expect(mocks.invoke).toHaveBeenCalledWith(
+          'save_app_settings',
+          expect.objectContaining({
+            settings: expect.objectContaining({ windowMode: 'floating' }),
+          }),
+        ),
+      );
+
       const heightMode = screen.getByRole('combobox', { name: 'Panel Height' });
       await waitFor(() => expect(heightMode).toHaveTextContent('Manual'));
 

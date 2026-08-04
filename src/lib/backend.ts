@@ -144,8 +144,8 @@ export function onOpenScreen(handler: PayloadHandler<string>) {
   return onEvent('open-screen', handler);
 }
 
-export function onPopupHidden(handler: PayloadHandler<void>) {
-  return onEvent('popup-hidden', handler);
+export function onMainWindowHidden(handler: PayloadHandler<void>) {
+  return onEvent('main-window-hidden', handler);
 }
 
 export function onUpdateProgress(handler: PayloadHandler<UpdateProgress>) {

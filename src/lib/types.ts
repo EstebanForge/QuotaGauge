@@ -204,6 +204,7 @@ export interface AppSettings {
   showTotalSpend: boolean;
   theme: 'system' | 'light' | 'dark';
   density: 'default' | 'compact';
+  windowMode: 'popup' | 'floating';
   menuBarStyle: 'text' | 'bars';
   usageDisplay: 'used' | 'left';
   resetDisplay: 'countdown' | 'exact';
@@ -250,7 +251,7 @@ export interface SettingsViewState {
   renamableProviderIds: string[];
   notificationPermission: 'granted' | 'denied' | 'prompt' | 'unavailable';
   integrationError: string | null;
-  standaloneWindow: boolean;
+  trayAvailable: boolean;
   platformSummary: string | null;
 }
 

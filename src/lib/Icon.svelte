@@ -14,6 +14,8 @@
     | 'grip-dots'
     | 'grip-lines'
     | 'lock'
+    | 'pin'
+    | 'pin-filled'
     | 'external-link'
     | 'eye'
     | 'eye-off'
@@ -92,6 +94,14 @@
     /><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" />
   {:else if name === 'lock'}
     <rect x="5" y="10" width="14" height="10" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3" />
+  {:else if name === 'pin'}
+    <path d="M9 3h6v4.2c0 1.7.7 3.1 2 4.3V13H7v-1.5c1.3-1.2 2-2.6 2-4.3V3Z" /><path d="M12 13v8" />
+  {:else if name === 'pin-filled'}
+    <path
+      d="M8 2h8v5.2c0 1.5.7 2.8 2 3.8a1 1 0 0 1-.6 1.8H6.6A1 1 0 0 1 6 11c1.3-1 2-2.3 2-3.8V2Z"
+      fill="currentColor"
+      stroke="none"
+    /><path d="M12 13v9" />
   {:else if name === 'about'}
     <circle cx="12" cy="12" r="9" /><path d="M12 11v6" /><path d="M12 7h.01" />
   {:else if name === 'power'}

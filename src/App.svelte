@@ -10,7 +10,7 @@
     getPanelResizeEdge,
     lockPanelResizeAxis,
     onOpenScreen,
-    onPopupHidden,
+    onMainWindowHidden,
     onSettingsState,
     onUpdateProgress,
     onUsageState,
@@ -86,10 +86,15 @@
   const shortcuts = shortcutLabels(platform);
   const settingsController = new SettingsController((message) => (settingsError = message));
   const settingsState = $derived(settingsController.state);
+  const floatingWindow = $derived(
+    !!settingsState &&
+      (!settingsState.trayAvailable || settingsState.settings.windowMode === 'floating'),
+  );
   const providerDisplayName = (id: string) =>
     catalog.displayName(id, settingsState?.settings.providerNames);
   const updates = new UpdateController();
   let resizeEdge = $state<PanelResizeEdge>(platform === 'windows' ? 'top' : 'bottom');
+  const renderedResizeEdge = $derived(floatingWindow ? 'bottom' : resizeEdge);
   let panelHeightMode = $state<PanelHeightMode>('automatic');
   let panelHeightModeRequest = 0;
   let renameCard = $state<{ id: string; initialValue: string } | null>(null);
@@ -134,7 +139,7 @@
     windowController.beginContentMorph();
   }
 
-  function closePopup() {
+  function closeMainWindow() {
     resetTransientUi();
     navigate('dashboard');
     void dismissMainWindow();
@@ -166,12 +171,25 @@
   function back() {
     if (screen.startsWith('provider:')) navigate('customize');
     else if (screen !== 'dashboard') navigate('dashboard');
-    else closePopup();
+    else closeMainWindow();
   }
   function saveSettings(next: AppSettings) {
     settingsError = null;
-    settingsController.save(next);
+    const windowModeChanged = settingsState?.settings.windowMode !== next.windowMode;
+    if (windowModeChanged) beginContentMorph();
+    const save = settingsController.save(next);
+    if (windowModeChanged) void save.finally(updatePanelResizeEdge);
   }
+
+  function toggleFloatingWindow() {
+    const current = settingsState;
+    if (!current?.trayAvailable) return;
+    saveSettings({
+      ...current.settings,
+      windowMode: floatingWindow ? 'popup' : 'floating',
+    });
+  }
+
   function cloneSettings(value: AppSettings): AppSettings {
     return JSON.parse(JSON.stringify(value)) as AppSettings;
   }
@@ -420,6 +438,12 @@
   }
   function handleWindowPointerDown(event: PointerEvent) {
     if (
+      event.target instanceof Element &&
+      event.target.closest('.floating-chrome__drag') !== null
+    ) {
+      handleFloatingWindowPointerDown(event);
+    }
+    if (
       optionsMenuElement?.open &&
       event.target instanceof Node &&
       !optionsMenuElement.contains(event.target)
@@ -485,6 +509,13 @@
     void operation.finally(() => {
       if (panelResizeOperation === operation) panelResizeOperation = null;
     });
+  }
+  function handleFloatingWindowPointerDown(event: PointerEvent) {
+    if (event.button !== 0 || !('__TAURI_INTERNALS__' in window)) return;
+    event.preventDefault();
+    void getCurrentWindow()
+      .startDragging()
+      .catch(() => (settingsError = 'OpenQuota window could not be moved.'));
   }
   async function changePanelHeightMode(mode: PanelHeightMode) {
     if (!('__TAURI_INTERNALS__' in window)) return;
@@ -554,7 +585,9 @@
     const observePanelParts = () => {
       resizeObserver?.disconnect();
       document
-        .querySelectorAll<HTMLElement>('.screen-page, .screen-header, .footer, .notice')
+        .querySelectorAll<HTMLElement>(
+          '.floating-chrome, .screen-page, .screen-header, .footer, .notice',
+        )
         .forEach((element) => resizeObserver?.observe(element));
       scheduleWindowFit();
     };
@@ -614,7 +647,7 @@
       onOpenScreen((target) => navigate(target === 'settings' ? 'settings' : 'customize')),
     );
     listeners.add(
-      onPopupHidden(() => {
+      onMainWindowHidden(() => {
         resetTransientUi();
         navigate('dashboard');
       }),
@@ -651,13 +684,15 @@
 
 <main
   class="popover"
+  class:popover--floating={floatingWindow}
+  class:popover--macos={floatingWindow && platform === 'macos'}
   aria-label="OpenQuota usage dashboard"
   oncontextmenu={(event) => event.preventDefault()}
 >
   <p id="reorder-instructions" class="sr-only">
     Drag to reorder. With a keyboard, use Alt plus Up Arrow or Alt plus Down Arrow.
   </p>
-  {#if resizeEdge === 'top'}
+  {#if renderedResizeEdge === 'top'}
     <div
       class="panel-resize-dragger panel-resize-dragger--top"
       role="separator"
@@ -665,6 +700,22 @@
       aria-orientation="horizontal"
       onpointerdown={handlePanelResizePointerDown}
     ></div>
+  {/if}
+  {#if floatingWindow}
+    <header class="floating-chrome" aria-label="OpenQuota window controls">
+      <div class="floating-chrome__drag">
+        <OpenQuotaMark size={14} />
+        <span>OpenQuota</span>
+      </div>
+      <button
+        class="floating-chrome__close"
+        type="button"
+        aria-label={settingsState?.trayAvailable ? 'Hide OpenQuota' : 'Close OpenQuota'}
+        onclick={closeMainWindow}
+      >
+        <Icon name="close" size={12} strokeWidth={2.1} />
+      </button>
+    </header>
   {/if}
   {#if settingsState}
     {#if screen !== 'dashboard'}
@@ -800,72 +851,93 @@
           >
         </button>
         {#if screen === 'dashboard'}
-          <details class="options-menu" bind:this={optionsMenuElement}>
-            <summary aria-label="Open options" onkeydown={handleOptionsKey}
-              ><span>Options</span><Icon name="chevron-down" size={11} strokeWidth={2.2} /></summary
-            >
-            <div
-              class="options-menu__panel"
-              role="menu"
-              aria-label="Options menu"
-              tabindex="-1"
-              onkeydown={handleOptionsKey}
-              onclick={(event) => {
-                if (event.target instanceof Element && event.target.closest('button')) {
-                  closeOptionsMenu();
-                }
-              }}
-            >
+          <div class="footer-actions">
+            {#if settingsState.trayAvailable}
               <button
-                class="menu-item"
+                class="window-mode-toggle"
+                class:window-mode-toggle--active={floatingWindow}
                 type="button"
-                aria-label="Customize"
-                onclick={() => navigate('customize')}
-                ><Icon name="sliders" /><span>Customize</span><kbd>↩</kbd></button
+                aria-label={floatingWindow ? 'Return to Tray Popup' : 'Keep Window Open'}
+                aria-pressed={floatingWindow}
+                data-tooltip={floatingWindow ? 'Return to Tray Popup' : 'Keep Window Open'}
+                onclick={toggleFloatingWindow}
               >
-              <button
-                class="menu-item"
-                type="button"
-                aria-label="Settings"
-                onclick={() => navigate('settings')}
-                ><Icon name="gear" /><span>Settings</span><kbd>{shortcuts.settings}</kbd></button
+                <Icon name={floatingWindow ? 'pin-filled' : 'pin'} size={14} strokeWidth={1.9} />
+              </button>
+            {/if}
+            <details class="options-menu" bind:this={optionsMenuElement}>
+              <summary aria-label="Open options" onkeydown={handleOptionsKey}
+                ><span>Options</span><Icon
+                  name="chevron-down"
+                  size={11}
+                  strokeWidth={2.2}
+                /></summary
               >
-              <hr />
-              <details
-                bind:this={shareMenuElement}
-                class="share-menu"
-                ontoggle={(event) => (shareMenuOpen = event.currentTarget.open)}
+              <div
+                class="options-menu__panel"
+                role="menu"
+                aria-label="Options menu"
+                tabindex="-1"
+                onkeydown={handleOptionsKey}
+                onclick={(event) => {
+                  if (event.target instanceof Element && event.target.closest('button')) {
+                    closeOptionsMenu();
+                  }
+                }}
               >
-                <summary
-                  ><span class="share-menu__direction"><Icon name="chevron-left" size={12} /></span
-                  ><span>Share Screenshot</span></summary
+                <button
+                  class="menu-item"
+                  type="button"
+                  aria-label="Customize"
+                  onclick={() => navigate('customize')}
+                  ><Icon name="sliders" /><span>Customize</span><kbd>↩</kbd></button
                 >
-                <div>
-                  {#if shareMenuOpen}
-                    {#each settingsState.settings.providers.filter((provider) => provider.enabled && catalog.provider(provider.id)) as provider (provider.id)}
-                      <button type="button" onclick={() => shareProvider(provider.id)}
-                        >{providerDisplayName(provider.id)}</button
-                      >
-                    {/each}
-                  {/if}
-                </div>
-              </details>
-              <button class="menu-item" type="button" onclick={() => void checkForUpdates(true)}
-                ><Icon name="refresh" /><span>Check for Updates…</span></button
-              >
-              <hr />
-              <button class="menu-item" type="button" onclick={() => (showAbout = true)}
-                ><Icon name="about" /><span>About OpenQuota</span></button
-              >
-              <button
-                class="menu-item menu-item--danger"
-                type="button"
-                aria-label="Quit OpenQuota"
-                onclick={quitApp}
-                ><Icon name="power" /><span>Quit OpenQuota</span><kbd>{shortcuts.quit}</kbd></button
-              >
-            </div>
-          </details>
+                <button
+                  class="menu-item"
+                  type="button"
+                  aria-label="Settings"
+                  onclick={() => navigate('settings')}
+                  ><Icon name="gear" /><span>Settings</span><kbd>{shortcuts.settings}</kbd></button
+                >
+                <hr />
+                <details
+                  bind:this={shareMenuElement}
+                  class="share-menu"
+                  ontoggle={(event) => (shareMenuOpen = event.currentTarget.open)}
+                >
+                  <summary
+                    ><span class="share-menu__direction"
+                      ><Icon name="chevron-left" size={12} /></span
+                    ><span>Share Screenshot</span></summary
+                  >
+                  <div>
+                    {#if shareMenuOpen}
+                      {#each settingsState.settings.providers.filter((provider) => provider.enabled && catalog.provider(provider.id)) as provider (provider.id)}
+                        <button type="button" onclick={() => shareProvider(provider.id)}
+                          >{providerDisplayName(provider.id)}</button
+                        >
+                      {/each}
+                    {/if}
+                  </div>
+                </details>
+                <button class="menu-item" type="button" onclick={() => void checkForUpdates(true)}
+                  ><Icon name="refresh" /><span>Check for Updates…</span></button
+                >
+                <hr />
+                <button class="menu-item" type="button" onclick={() => (showAbout = true)}
+                  ><Icon name="about" /><span>About OpenQuota</span></button
+                >
+                <button
+                  class="menu-item menu-item--danger"
+                  type="button"
+                  aria-label="Quit OpenQuota"
+                  onclick={quitApp}
+                  ><Icon name="power" /><span>Quit OpenQuota</span><kbd>{shortcuts.quit}</kbd
+                  ></button
+                >
+              </div>
+            </details>
+          </div>
         {/if}
       </footer>
     {/if}
@@ -927,7 +999,7 @@
       {/if}
     </div>
   {/if}
-  {#if resizeEdge === 'bottom'}
+  {#if renderedResizeEdge === 'bottom'}
     <div
       class="panel-resize-dragger panel-resize-dragger--bottom"
       role="separator"
@@ -951,6 +1023,84 @@
       background: var(--tray);
       isolation: isolate;
       user-select: none;
+    }
+
+    .floating-chrome {
+      position: relative;
+      z-index: 30;
+      display: grid;
+      width: 100%;
+      height: 32px;
+      flex: 0 0 32px;
+      grid-template-columns: 32px 1fr 32px;
+      align-items: center;
+      border-bottom: 1px solid var(--separator);
+      background: color-mix(in srgb, var(--text) 3%, var(--tray));
+    }
+
+    .floating-chrome__drag {
+      grid-row: 1;
+      grid-column: 1 / -1;
+      display: flex;
+      height: 100%;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      color: var(--secondary);
+      cursor: grab;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.01em;
+      touch-action: none;
+    }
+
+    .floating-chrome__drag:active {
+      cursor: grabbing;
+    }
+
+    .floating-chrome__drag > * {
+      pointer-events: none;
+    }
+
+    .floating-chrome__close {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      width: 24px;
+      height: 24px;
+      grid-row: 1;
+      grid-column: 3;
+      align-items: center;
+      justify-self: center;
+      padding: 0;
+      border: 0;
+      border-radius: 7px;
+      color: var(--secondary);
+      background: transparent;
+      cursor: default;
+      place-items: center;
+      transition:
+        color 120ms ease,
+        background-color 120ms ease,
+        transform 80ms ease;
+    }
+
+    .popover--macos .floating-chrome__close {
+      grid-column: 1;
+    }
+
+    .floating-chrome__close:hover {
+      color: var(--text);
+      background: color-mix(in srgb, var(--text) 9%, transparent);
+    }
+
+    .floating-chrome__close:active {
+      transform: scale(0.92);
+    }
+
+    .floating-chrome__close:focus-visible {
+      outline: 2px solid color-mix(in srgb, var(--meter-fill) 55%, transparent);
+      outline-offset: -1px;
     }
 
     .panel-resize-dragger {
@@ -1177,6 +1327,64 @@
 
     .identity:disabled {
       cursor: default;
+    }
+
+    .footer-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-left: auto;
+    }
+
+    .footer-actions .options-menu {
+      margin-left: 0;
+    }
+
+    .window-mode-toggle {
+      display: grid;
+      width: 26px;
+      height: 26px;
+      padding: 0;
+      border: 0;
+      border-radius: 8px;
+      color: var(--secondary);
+      background: transparent;
+      cursor: pointer;
+      place-items: center;
+      transition:
+        color 120ms ease,
+        background-color 120ms ease,
+        transform 80ms ease;
+    }
+
+    .window-mode-toggle:hover {
+      color: var(--text);
+      background: var(--button-hover);
+    }
+
+    .window-mode-toggle--active {
+      color: var(--meter-fill);
+    }
+
+    .window-mode-toggle:active {
+      transform: scale(0.92);
+    }
+
+    .window-mode-toggle:focus-visible {
+      outline: 2px solid color-mix(in srgb, var(--meter-fill) 55%, transparent);
+      outline-offset: 1px;
+    }
+
+    .window-mode-toggle::after {
+      top: auto;
+      bottom: calc(100% + 7px);
+      transform: translate(-50%, 2px) scale(0.97);
+      transform-origin: bottom center;
+    }
+
+    .window-mode-toggle:hover::after,
+    .window-mode-toggle:focus-visible::after {
+      transform: translate(-50%, 0) scale(1);
     }
 
     .options-menu {

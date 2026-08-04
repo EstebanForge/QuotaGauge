@@ -338,7 +338,7 @@ export const settingsState: SettingsViewState = {
   renamableProviderIds: ['claude', 'codex'],
   notificationPermission: 'prompt',
   integrationError: null,
-  standaloneWindow: false,
+  trayAvailable: true,
   platformSummary: null,
   settings: {
     schemaVersion: 6,
@@ -347,6 +347,7 @@ export const settingsState: SettingsViewState = {
     showTotalSpend: true,
     theme: 'system',
     density: 'default',
+    windowMode: 'popup',
     menuBarStyle: 'text',
     usageDisplay: 'left',
     resetDisplay: 'countdown',

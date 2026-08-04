@@ -31,7 +31,7 @@ export class SettingsController {
 
   save(next: AppSettings) {
     const current = this.state;
-    if (!current) return;
+    if (!current) return Promise.resolve();
     const revision = ++this.#revision;
     const expectedAccountRevision = current.accountRevision;
     this.#pendingSaves += 1;
@@ -57,5 +57,6 @@ export class SettingsController {
           void this.refreshIfIdle();
         }
       });
+    return this.#saveQueue;
   }
 }

@@ -518,7 +518,7 @@ impl SettingsService {
         &self,
         notification_permission: impl Into<String>,
         integration_error: Option<String>,
-        standalone_window: bool,
+        tray_available: bool,
         platform_summary: Option<String>,
     ) -> SettingsViewState {
         let (settings, account_revision) = self.get_with_account_revision();
@@ -538,7 +538,7 @@ impl SettingsService {
             renamable_provider_ids,
             notification_permission: notification_permission.into(),
             integration_error,
-            standalone_window,
+            tray_available,
             platform_summary,
         }
     }
@@ -1566,6 +1566,7 @@ mod tests {
             SettingsService::new_for_test(storage.clone(), catalog.clone(), &detected).unwrap();
         let mut settings = first.get();
         settings.density = crate::models::DensityPreference::Compact;
+        settings.window_mode = crate::models::WindowMode::Floating;
         settings.dismissed_update_version = Some("0.2.0".to_owned());
         settings.last_update_check_at = Some(chrono::Utc::now());
         settings.providers.rotate_left(1);

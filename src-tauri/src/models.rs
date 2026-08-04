@@ -661,6 +661,15 @@ pub enum UsagePeriodSelection {
     Last30Days,
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum WindowMode {
+    Floating,
+    #[default]
+    #[serde(other)]
+    Popup,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct NotificationPreferences {
@@ -679,6 +688,7 @@ pub struct AppSettings {
     pub show_total_spend: bool,
     pub theme: ThemePreference,
     pub density: DensityPreference,
+    pub window_mode: WindowMode,
     pub menu_bar_style: MenuBarStyle,
     pub usage_display: UsageDisplay,
     pub reset_display: ResetDisplay,
@@ -706,6 +716,7 @@ impl Default for AppSettings {
             show_total_spend: true,
             theme: ThemePreference::System,
             density: DensityPreference::Default,
+            window_mode: WindowMode::Popup,
             menu_bar_style: MenuBarStyle::Text,
             usage_display: UsageDisplay::Left,
             reset_display: ResetDisplay::Countdown,
@@ -742,7 +753,7 @@ pub struct SettingsViewState {
     pub renamable_provider_ids: Vec<String>,
     pub notification_permission: String,
     pub integration_error: Option<String>,
-    pub standalone_window: bool,
+    pub tray_available: bool,
     pub platform_summary: Option<String>,
 }
 
@@ -750,7 +761,7 @@ pub struct SettingsViewState {
 mod tests {
     use super::{
         ApiKeyStatus, AppSettings, LogLevel, ProviderApiKeyState, ProviderErrorKind, ProviderLink,
-        ProviderSnapshot, ProviderViewState, UsagePeriod,
+        ProviderSnapshot, ProviderViewState, UsagePeriod, WindowMode,
     };
 
     #[test]
@@ -761,12 +772,14 @@ mod tests {
         object.remove("lastUpdateCheckAt");
         object.remove("logLevel");
         object.remove("providerNames");
+        object.remove("windowMode");
 
         let settings: AppSettings = serde_json::from_value(value).unwrap();
         assert_eq!(settings.dismissed_update_version, None);
         assert!(settings.provider_names.is_empty());
         assert_eq!(settings.last_update_check_at, None);
         assert_eq!(settings.log_level, LogLevel::Info);
+        assert_eq!(settings.window_mode, WindowMode::Popup);
     }
 
     #[test]
@@ -775,6 +788,14 @@ mod tests {
         value["logLevel"] = serde_json::json!("trace");
         let settings: AppSettings = serde_json::from_value(value).unwrap();
         assert_eq!(settings.log_level, LogLevel::Info);
+    }
+
+    #[test]
+    fn unknown_persisted_window_modes_fall_back_to_popup() {
+        let mut value = serde_json::to_value(AppSettings::default()).unwrap();
+        value["windowMode"] = serde_json::json!("detached");
+        let settings: AppSettings = serde_json::from_value(value).unwrap();
+        assert_eq!(settings.window_mode, WindowMode::Popup);
     }
 
     #[test]

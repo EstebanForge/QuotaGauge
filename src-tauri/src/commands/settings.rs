@@ -44,6 +44,7 @@ pub async fn save_app_settings(
     let previous = settings_service.get();
     let next_shortcut = settings.global_shortcut.clone();
     let autostart_changed = previous.launch_at_login != settings.launch_at_login;
+    let window_mode_changed = previous.window_mode != settings.window_mode;
     apply_shortcut_change(
         &app,
         previous.global_shortcut.as_deref(),
@@ -51,6 +52,30 @@ pub async fn save_app_settings(
     )?;
     if autostart_changed {
         if let Err(error) = set_autostart(&app, settings.launch_at_login) {
+            let _ = apply_shortcut_change(
+                &app,
+                settings.global_shortcut.as_deref(),
+                previous.global_shortcut.as_deref(),
+            );
+            return Err(error);
+        }
+    }
+    if window_mode_changed {
+        let Some(window) = app.get_webview_window(crate::window::MAIN_WINDOW) else {
+            if autostart_changed {
+                let _ = set_autostart(&app, previous.launch_at_login);
+            }
+            let _ = apply_shortcut_change(
+                &app,
+                settings.global_shortcut.as_deref(),
+                previous.global_shortcut.as_deref(),
+            );
+            return Err("OpenQuota window is unavailable.".to_owned());
+        };
+        if let Err(error) = crate::window::apply_window_mode(&window, settings.window_mode, true) {
+            if autostart_changed {
+                let _ = set_autostart(&app, previous.launch_at_login);
+            }
             let _ = apply_shortcut_change(
                 &app,
                 settings.global_shortcut.as_deref(),
@@ -71,6 +96,11 @@ pub async fn save_app_settings(
                 next_shortcut.as_deref(),
                 previous.global_shortcut.as_deref(),
             );
+            if window_mode_changed {
+                if let Some(window) = app.get_webview_window(crate::window::MAIN_WINDOW) {
+                    let _ = crate::window::apply_window_mode(&window, previous.window_mode, false);
+                }
+            }
             return Err(error);
         }
     };
@@ -203,7 +233,7 @@ pub fn request_notification_permission(
     settings.view_state(
         notification_permission(&app),
         error,
-        app.state::<DesktopIntegration>().standalone_window,
+        app.state::<DesktopIntegration>().tray_available(),
         app.state::<DesktopIntegration>().platform_summary(),
     )
 }
@@ -283,7 +313,7 @@ pub(crate) fn settings_view_state(app: &AppHandle, service: &SettingsService) ->
     service.view_state(
         notification_permission(app),
         integration_error,
-        app.state::<DesktopIntegration>().standalone_window,
+        app.state::<DesktopIntegration>().tray_available(),
         app.state::<DesktopIntegration>().platform_summary(),
     )
 }
