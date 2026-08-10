@@ -179,7 +179,7 @@
       position: relative;
       display: flex;
       padding: 2px;
-      border-radius: 7px;
+      border-radius: 999px;
       background: var(--meter-track);
     }
 
