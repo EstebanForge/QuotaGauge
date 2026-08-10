@@ -48,9 +48,9 @@ use crate::{
     providers::{
         antigravity::AntigravityProvider, claude, codex::reset_claim::CodexResetClaimService,
         codex::CodexProvider, copilot::CopilotProvider, cursor::CursorProvider,
-        detect_local_credentials, devin::DevinProvider, grok::GrokProvider,
-        opencode::OpenCodeProvider, openrouter::OpenRouterProvider, zai::ZaiProvider,
-        ProviderRegistry, UsageProvider,
+        detect_local_credentials, devin::DevinProvider, grok::GrokProvider, kimi::KimiProvider,
+        minimax::MiniMaxProvider, opencode::OpenCodeProvider, openrouter::OpenRouterProvider,
+        zai::ZaiProvider, ProviderRegistry, UsageProvider,
     },
     storage::Storage,
     window::{
@@ -240,6 +240,8 @@ pub fn run() {
                 Arc::new(OpenCodeProvider::new(pricing.clone())) as Arc<dyn UsageProvider>,
                 Arc::new(OpenRouterProvider::new()?) as Arc<dyn UsageProvider>,
                 Arc::new(ZaiProvider::new()?) as Arc<dyn UsageProvider>,
+                Arc::new(KimiProvider::new()?) as Arc<dyn UsageProvider>,
+                Arc::new(MiniMaxProvider::new()?) as Arc<dyn UsageProvider>,
             ]);
             let registry = Arc::new(ProviderRegistry::new(providers)?);
             let (settings_service, credential_detection_plan) =
