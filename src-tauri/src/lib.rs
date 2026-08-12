@@ -36,7 +36,7 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
-    AppHandle, Emitter, Manager,
+    App, AppHandle, Emitter, Manager,
 };
 #[cfg(not(target_os = "linux"))]
 use tauri_plugin_autostart::ManagerExt as AutostartExt;
@@ -59,6 +59,144 @@ use crate::{
         MAIN_WINDOW,
     },
 };
+
+fn install_tray(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(target_os = "macos")]
+    let menu = {
+        let settings_item =
+            MenuItem::with_id(app, "settings", "Settings", true, Some("CmdOrCtrl+,"))?;
+        let separator = PredefinedMenuItem::separator(app)?;
+        let quit = MenuItem::with_id(app, "quit", "Quit OpenQuota", true, Some("CmdOrCtrl+Q"))?;
+        Menu::with_items(app, &[&settings_item, &separator, &quit])?
+    };
+    #[cfg(not(target_os = "macos"))]
+    let menu = {
+        let open = MenuItem::with_id(app, "open", "Open OpenQuota", true, None::<&str>)?;
+        let customize = MenuItem::with_id(app, "customize", "Customize…", true, None::<&str>)?;
+        let settings_item = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
+        let separator = PredefinedMenuItem::separator(app)?;
+        let quit = MenuItem::with_id(app, "quit", "Quit OpenQuota", true, None::<&str>)?;
+        Menu::with_items(app, &[&open, &customize, &settings_item, &separator, &quit])?
+    };
+
+    let icon = app
+        .default_window_icon()
+        .ok_or_else(|| std::io::Error::other("OpenQuota application icon is unavailable"))?
+        .clone();
+    let tray = TrayIconBuilder::with_id("openquota-tray")
+        .icon(icon)
+        .menu(&menu);
+    #[cfg(not(target_os = "linux"))]
+    let tray = tray.tooltip("OpenQuota").show_menu_on_left_click(false);
+    let tray = tray.on_menu_event(|app, event| match event.id.as_ref() {
+        "open" => {
+            app.state::<PopupDismissGuard>().cancel_pending();
+            if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
+                show_main_window(&window);
+            }
+        }
+        "customize" => open_screen(app, "customize"),
+        "settings" => open_screen(app, "settings"),
+        "quit" => {
+            if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
+                window::finish_native_panel_resize(&window);
+            }
+            app.exit(0);
+        }
+        _ => {}
+    });
+    #[cfg(not(target_os = "linux"))]
+    let tray = tray.on_tray_icon_event(|tray, event| {
+        tauri_plugin_positioner::on_tray_event(tray.app_handle(), &event);
+
+        if matches!(
+            event,
+            TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            }
+        ) {
+            toggle_main_window(tray.app_handle());
+        }
+    });
+    tray.build(app)?;
+    Ok(())
+}
+
+fn show_standalone_window_fallback(window: &tauri::WebviewWindow) {
+    window
+        .app_handle()
+        .state::<DesktopIntegration>()
+        .set_floating(true);
+    let _ = window.set_resizable(false);
+    let _ = window.set_skip_taskbar(false);
+    let _ = window.set_always_on_top(false);
+    let _ = window.center();
+    show_main_window(window);
+}
+
+#[cfg(target_os = "linux")]
+fn apply_linux_tray_fallback(app: &AppHandle) {
+    let integration = app.state::<DesktopIntegration>();
+    if !integration.disable_tray() {
+        return;
+    }
+    app_warn!(
+        "lifecycle",
+        "system tray became unavailable; using standalone window"
+    );
+    let _ = app.remove_tray_by_id("openquota-tray");
+    app.state::<PopupDismissGuard>().cancel_pending();
+
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
+        let mode = app.state::<Arc<SettingsService>>().get().window_mode;
+        match window::apply_window_mode(&window, mode, true) {
+            Ok(()) => show_main_window(&window),
+            Err(error) => {
+                app_warn!(
+                    "window",
+                    "standalone fallback could not apply window mode: {error}"
+                );
+                show_standalone_window_fallback(&window);
+            }
+        }
+    }
+
+    let settings = app.state::<Arc<SettingsService>>();
+    let state = commands::settings::settings_view_state(app, settings.inner().as_ref());
+    let _ = app.emit("settings-state", state);
+}
+
+#[cfg(target_os = "linux")]
+fn spawn_status_notifier_monitor(app: AppHandle) {
+    if desktop_integration::status_notifier_monitor_forced_off() {
+        return;
+    }
+    let monitor_app = app.clone();
+    if std::thread::Builder::new()
+        .name("openquota-tray-monitor".to_owned())
+        .spawn(move || {
+            if let Err(error) = desktop_integration::wait_for_status_notifier_loss() {
+                app_warn!("lifecycle", "system tray monitor stopped: {error}");
+            }
+            let fallback_app = monitor_app.clone();
+            if monitor_app
+                .run_on_main_thread(move || apply_linux_tray_fallback(&fallback_app))
+                .is_err()
+            {
+                app_warn!(
+                    "lifecycle",
+                    "standalone tray fallback could not be scheduled"
+                );
+            }
+        })
+        .is_err()
+    {
+        app_warn!("lifecycle", "system tray monitor could not be started");
+        apply_linux_tray_fallback(&app);
+    }
+}
 
 fn spawn_startup_credential_detection(
     app: AppHandle,
@@ -281,86 +419,46 @@ pub fn run() {
                 let _ = register_shortcut(app.handle(), &shortcut);
             }
 
-            if desktop_integration.tray_available() {
-                #[cfg(target_os = "macos")]
-                let menu = {
-                    let settings_item =
-                        MenuItem::with_id(app, "settings", "Settings", true, Some("CmdOrCtrl+,"))?;
-                    let separator = PredefinedMenuItem::separator(app)?;
-                    let quit = MenuItem::with_id(
-                        app,
-                        "quit",
-                        "Quit OpenQuota",
-                        true,
-                        Some("CmdOrCtrl+Q"),
-                    )?;
-                    Menu::with_items(app, &[&settings_item, &separator, &quit])?
-                };
-                #[cfg(not(target_os = "macos"))]
-                let menu = {
-                    let open =
-                        MenuItem::with_id(app, "open", "Open OpenQuota", true, None::<&str>)?;
-                    let customize =
-                        MenuItem::with_id(app, "customize", "Customize…", true, None::<&str>)?;
-                    let settings_item =
-                        MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
-                    let separator = PredefinedMenuItem::separator(app)?;
-                    let quit =
-                        MenuItem::with_id(app, "quit", "Quit OpenQuota", true, None::<&str>)?;
-                    Menu::with_items(app, &[&open, &customize, &settings_item, &separator, &quit])?
-                };
-
-                let tray = TrayIconBuilder::with_id("openquota-tray")
-                    .icon(
-                        app.default_window_icon()
-                            .expect("OpenQuota requires a bundled application icon")
-                            .clone(),
-                    )
-                    .menu(&menu);
-                #[cfg(not(target_os = "linux"))]
-                let tray = tray.tooltip("OpenQuota").show_menu_on_left_click(false);
-                let tray = tray.on_menu_event(|app, event| match event.id.as_ref() {
-                    "open" => {
-                        app.state::<PopupDismissGuard>().cancel_pending();
-                        if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
-                            show_main_window(&window);
-                        }
+            let tray_installed = if desktop_integration.tray_available() {
+                match install_tray(app) {
+                    Ok(()) => {
+                        app_info!("lifecycle", "system tray integration ready");
+                        true
                     }
-                    "customize" => open_screen(app, "customize"),
-                    "settings" => open_screen(app, "settings"),
-                    "quit" => {
-                        if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
-                            window::finish_native_panel_resize(&window);
-                        }
-                        app.exit(0);
+                    Err(error) => {
+                        app_warn!(
+                            "lifecycle",
+                            "system tray integration failed; using standalone window: {error}"
+                        );
+                        desktop_integration.disable_tray();
+                        let _ = app.remove_tray_by_id("openquota-tray");
+                        false
                     }
-                    _ => {}
-                });
-                #[cfg(not(target_os = "linux"))]
-                let tray = tray.on_tray_icon_event(|tray, event| {
-                    tauri_plugin_positioner::on_tray_event(tray.app_handle(), &event);
+                }
+            } else {
+                false
+            };
 
-                    if matches!(
-                        event,
-                        TrayIconEvent::Click {
-                            button: MouseButton::Left,
-                            button_state: MouseButtonState::Up,
-                            ..
-                        }
-                    ) {
-                        toggle_main_window(tray.app_handle());
-                    }
-                });
-                tray.build(app)?;
-                app_info!("lifecycle", "system tray integration ready");
-            }
-
-            if floating_window {
+            if desktop_integration.is_floating() {
                 if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
-                    window::apply_window_mode(&window, settings.get().window_mode, true)
-                        .map_err(std::io::Error::other)?;
+                    if let Err(error) =
+                        window::apply_window_mode(&window, settings.get().window_mode, true)
+                    {
+                        app_warn!(
+                            "window",
+                            "standalone startup mode could not be applied: {error}"
+                        );
+                        show_standalone_window_fallback(&window);
+                    }
                 }
             }
+
+            #[cfg(target_os = "linux")]
+            if tray_installed {
+                spawn_status_notifier_monitor(app.handle().clone());
+            }
+            #[cfg(not(target_os = "linux"))]
+            let _ = tray_installed;
 
             tray_presentation::update(
                 app.handle(),
