@@ -172,19 +172,29 @@ impl ProviderService {
                 flight_state.attempt_generation = Some(generation);
                 flight_state.requested_generation = generation;
                 (generation, true)
-            } else if force {
-                let generation = flight_state.attempt_generation.map_or_else(
-                    || flight_state.completed_generation.saturating_add(1),
-                    |active| active.saturating_add(1),
+            } else if flight_state.attempt_generation.is_none() {
+                crate::app_debug!(
+                    "refresh",
+                    "timed-out refresh worker is still draining for {provider_id}"
                 );
+                drop(flight_state);
+                return self.provider_state(provider_id);
+            } else if force {
+                let generation = flight_state
+                    .attempt_generation
+                    .expect("active refresh generation must exist")
+                    .saturating_add(1);
                 flight_state.requested_generation =
                     flight_state.requested_generation.max(generation);
                 crate::app_debug!("refresh", "queued forced follow-up for {provider_id}");
                 (flight_state.requested_generation, false)
-            } else if let Some(generation) = flight_state.attempt_generation {
-                (generation, false)
             } else {
-                return self.provider_state(provider_id);
+                (
+                    flight_state
+                        .attempt_generation
+                        .expect("active refresh generation must exist"),
+                    false,
+                )
             }
         };
 
@@ -288,11 +298,15 @@ impl ProviderService {
             }
 
             let run_follow_up = if let Some(worker) = late_worker {
-                if let Ok(mut flight_state) = flight.state.lock() {
-                    flight_state.completed_generation = generation;
+                let completed_generation = if let Ok(mut flight_state) = flight.state.lock() {
+                    let completed = flight_state.requested_generation.max(generation);
+                    flight_state.completed_generation = completed;
                     flight_state.attempt_generation = None;
-                }
-                flight.completed_tx.send_replace(generation);
+                    completed
+                } else {
+                    generation.saturating_add(1)
+                };
+                flight.completed_tx.send_replace(completed_generation);
 
                 match worker.await {
                     Ok(_) => crate::app_debug!(
@@ -306,10 +320,10 @@ impl ProviderService {
                 }
 
                 if let Ok(mut flight_state) = flight.state.lock() {
-                    settle_completed_generation(&mut flight_state, generation)
-                } else {
-                    false
+                    flight_state.runner_active = false;
+                    flight_state.requested_generation = flight_state.completed_generation;
                 }
+                false
             } else {
                 let run_follow_up = if let Ok(mut flight_state) = flight.state.lock() {
                     settle_completed_generation(&mut flight_state, generation)
@@ -661,7 +675,7 @@ mod tests {
     use std::{
         sync::{
             atomic::{AtomicUsize, Ordering},
-            Arc, Mutex,
+            Arc, Condvar, Mutex,
         },
         thread,
         time::{Duration, Instant},
@@ -693,6 +707,14 @@ mod tests {
         active: Arc<AtomicUsize>,
         maximum: Arc<AtomicUsize>,
         delay: Duration,
+    }
+
+    struct GatedProvider {
+        id: &'static str,
+        calls: Arc<AtomicUsize>,
+        active: Arc<AtomicUsize>,
+        maximum: Arc<AtomicUsize>,
+        gate: Arc<(Mutex<bool>, Condvar)>,
     }
 
     struct SequenceProvider {
@@ -730,6 +752,34 @@ mod tests {
             thread::sleep(self.delay);
             self.active.fetch_sub(1, Ordering::SeqCst);
             Ok(test_snapshot(self.id))
+        }
+    }
+
+    impl UsageProvider for GatedProvider {
+        fn definition(&self) -> ProviderDefinition {
+            test_definition(self.id)
+        }
+
+        fn has_local_credentials(&self) -> bool {
+            true
+        }
+
+        fn refresh(&self) -> Result<ProviderSnapshot, ProviderError> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.maximum.fetch_max(active, Ordering::SeqCst);
+
+            let (released, signal) = &*self.gate;
+            let released = released.lock().unwrap();
+            let (released, _) = signal
+                .wait_timeout_while(released, Duration::from_secs(2), |released| !*released)
+                .unwrap();
+            drop(released);
+
+            self.active.fetch_sub(1, Ordering::SeqCst);
+            let mut snapshot = test_snapshot(self.id);
+            snapshot.plan = Some(format!("live-{call}"));
+            Ok(snapshot)
         }
     }
 
@@ -1115,7 +1165,7 @@ mod tests {
     }
 
     #[test]
-    fn timed_out_refresh_preserves_last_good_and_bounds_late_worker() {
+    fn timed_out_refresh_quarantines_the_late_worker_and_releases_waiters() {
         let directory = tempdir().unwrap();
         let storage = Arc::new(Storage::open(&directory.path().join("openquota.db")).unwrap());
         let mut cached = test_snapshot("slow");
@@ -1125,39 +1175,109 @@ mod tests {
         let active = Arc::new(AtomicUsize::new(0));
         let maximum = Arc::new(AtomicUsize::new(0));
         let calls = Arc::new(AtomicUsize::new(0));
-        let provider = Arc::new(SlowProvider {
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let provider = Arc::new(GatedProvider {
             id: "slow",
             calls: calls.clone(),
             active: active.clone(),
             maximum: maximum.clone(),
-            delay: Duration::from_millis(140),
+            gate: gate.clone(),
         }) as Arc<dyn UsageProvider>;
         let registry = Arc::new(ProviderRegistry::new(vec![provider]).unwrap());
         let service = Arc::new(ProviderService::with_refresh_timeout(
             registry,
             storage.clone(),
-            Duration::from_millis(25),
+            Duration::from_millis(250),
         ));
 
-        let timed_out = refresh_with_test_timeout(&service, "slow", true);
-        assert_eq!(
-            timed_out.error.as_deref(),
-            Some("Provider refresh timed out.")
-        );
-        assert_eq!(timed_out.error_kind, Some(ProviderErrorKind::Network));
-        assert!(!timed_out.stale);
-        assert_eq!(
-            timed_out
-                .snapshot
-                .as_ref()
-                .and_then(|snapshot| snapshot.plan.as_deref()),
-            Some("cached")
-        );
+        let (timed_out, queued) =
+            tauri::async_runtime::block_on(async {
+                let first_service = service.clone();
+                let first = tauri::async_runtime::spawn(async move {
+                    first_service.refresh("slow", true).await
+                });
+                tokio::time::timeout(TEST_WAIT_TIMEOUT, async {
+                    while active.load(Ordering::SeqCst) == 0 {
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .expect("first refresh should start");
+                let queued_service = service.clone();
+                let queued = tauri::async_runtime::spawn(async move {
+                    queued_service.refresh("slow", true).await
+                });
+                tokio::time::timeout(TEST_WAIT_TIMEOUT, async {
+                    loop {
+                        let queued = service
+                            .refresh_flights
+                            .get("slow")
+                            .and_then(|flight| flight.state.lock().ok())
+                            .is_some_and(|state| state.requested_generation >= 2);
+                        if queued && active.load(Ordering::SeqCst) == 1 {
+                            break;
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .expect("forced follow-up should be queued before timeout");
 
-        let follow_up = refresh_with_test_timeout(&service, "slow", true);
-        assert_eq!(follow_up.error, timed_out.error);
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
+                tokio::time::timeout(Duration::from_secs(1), async {
+                    (first.await.unwrap(), queued.await.unwrap())
+                })
+                .await
+                .expect("timeout should release active and queued waiters")
+            });
+
+        for state in [&timed_out, &queued] {
+            assert_eq!(state.error.as_deref(), Some("Provider refresh timed out."));
+            assert_eq!(state.error_kind, Some(ProviderErrorKind::Network));
+            assert!(!state.stale);
+            assert_eq!(
+                state
+                    .snapshot
+                    .as_ref()
+                    .and_then(|snapshot| snapshot.plan.as_deref()),
+                Some("cached")
+            );
+        }
+        {
+            let flight_state = service.refresh_flights["slow"].state.lock().unwrap();
+            assert!(flight_state.runner_active);
+            assert_eq!(flight_state.attempt_generation, None);
+            assert_eq!(flight_state.completed_generation, 2);
+            assert_eq!(flight_state.requested_generation, 2);
+        }
+
+        let quarantined = tauri::async_runtime::block_on(async {
+            let tasks = (0..32)
+                .map(|_| {
+                    let service = service.clone();
+                    tauri::async_runtime::spawn(async move { service.refresh("slow", true).await })
+                })
+                .collect::<Vec<_>>();
+            tokio::time::timeout(Duration::from_secs(1), async {
+                let mut states = Vec::with_capacity(tasks.len());
+                for task in tasks {
+                    states.push(task.await.unwrap());
+                }
+                states
+            })
+            .await
+            .expect("quarantined refresh calls should return immediately")
+        });
+        assert!(quarantined
+            .iter()
+            .all(|state| state.error == timed_out.error));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert_eq!(maximum.load(Ordering::SeqCst), 1);
+        assert_eq!(active.load(Ordering::SeqCst), 1);
+        assert!(!refresh_runner_is_idle(&service, "slow"));
+
+        let (released, signal) = &*gate;
+        *released.lock().unwrap() = true;
+        signal.notify_all();
 
         wait_until("timed-out refresh worker should drain", || {
             active.load(Ordering::SeqCst) == 0 && refresh_runner_is_idle(&service, "slow")
@@ -1179,6 +1299,18 @@ mod tests {
                 .unwrap()
                 .and_then(|snapshot| snapshot.plan),
             Some("cached".into())
+        );
+
+        let refreshed = refresh_with_test_timeout(&service, "slow", true);
+        assert!(refreshed.error.is_none());
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(maximum.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            refreshed
+                .snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.plan.as_deref()),
+            Some("live-2")
         );
     }
 
