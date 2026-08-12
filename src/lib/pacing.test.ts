@@ -51,9 +51,15 @@ describe('quota pacing', () => {
     expect(projection.runOutAt).toBeNull();
   });
 
-  it('keeps an unused rolling session untracked until it starts', () => {
-    expect(projectPace(quota(0, 0.5), now, true).severity).toBe('level');
-    expect(projectPace(quota(0, 0.5), now, false).severity).toBe('healthy');
+  it('keeps exact and clamped zero usage untracked', () => {
+    const untracked = {
+      severity: 'level',
+      projectedUsedPercent: null,
+      evenPacePercent: null,
+      runOutAt: null,
+    };
+    expect(projectPace(quota(0, 0.5), now)).toEqual(untracked);
+    expect(projectPace(quota(-0.1, 0.5), now)).toEqual(untracked);
   });
 
   it('shows only the flame when the projection lands at the limit or rounds to no spare', () => {

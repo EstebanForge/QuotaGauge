@@ -9,18 +9,14 @@ export interface PaceProjection {
   runOutAt: number | null;
 }
 
-export function projectPace(
-  window: QuotaWindow,
-  now: number,
-  isSessionWindow = false,
-): PaceProjection {
+export function projectPace(window: QuotaWindow, now: number): PaceProjection {
   const used = clamp(window.usedPercent, 0, 100);
   if (isVisiblySpent(window, used)) {
     return { severity: 'spent', projectedUsedPercent: 100, evenPacePercent: null, runOutAt: now };
   }
+  if (used <= 0) return level();
   const reset = window.resetsAt ? new Date(window.resetsAt).getTime() : Number.NaN;
   if (!Number.isFinite(reset) || reset <= now || window.periodSeconds <= 0) return level();
-  if (isFreshSessionWindow(window, now, isSessionWindow)) return level();
   const periodMs = window.periodSeconds * 1000;
   const start = reset - periodMs;
   const elapsed = Math.max(0, now - start);

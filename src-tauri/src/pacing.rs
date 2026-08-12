@@ -27,11 +27,7 @@ pub struct PaceProjection {
     pub run_out_at: Option<DateTime<Utc>>,
 }
 
-pub fn project(
-    window: &QuotaWindow,
-    now: DateTime<Utc>,
-    is_session_window: bool,
-) -> PaceProjection {
+pub fn project(window: &QuotaWindow, now: DateTime<Utc>) -> PaceProjection {
     let used = window.used_percent.clamp(0.0, 100.0);
     if is_visibly_spent(window, used) {
         return PaceProjection {
@@ -41,13 +37,13 @@ pub fn project(
             run_out_at: Some(now),
         };
     }
+    if used <= 0.0 {
+        return level_projection(used);
+    }
     let Some(resets_at) = window.resets_at else {
         return level_projection(used);
     };
     if window.period_seconds == 0 || resets_at <= now {
-        return level_projection(used);
-    }
-    if is_session_window && used <= 0.0 {
         return level_projection(used);
     }
     let period = Duration::seconds(window.period_seconds as i64);
@@ -244,8 +240,7 @@ impl NotificationEvaluator {
                 continue;
             }
             let metric_id = metric_definition.id.clone();
-            let is_session_window = metric_definition.source.session_window();
-            let projection = project(window, now, is_session_window);
+            let projection = project(window, now);
             let state = states.entry(metric_id.clone()).or_default();
             let previous_severity = state.previous;
             let previous_was_under_ten = state.was_under_ten;
@@ -405,15 +400,15 @@ mod tests {
     fn projection_colors_by_expected_usage_at_reset() {
         let now = Utc.timestamp_opt(1_800_000_000, 0).unwrap();
         assert_eq!(
-            project(&window(30.0, 0.5), now, false).severity,
+            project(&window(30.0, 0.5), now).severity,
             PaceSeverity::Healthy
         );
         assert_eq!(
-            project(&window(46.0, 0.5), now, false).severity,
+            project(&window(46.0, 0.5), now).severity,
             PaceSeverity::Close
         );
         assert_eq!(
-            project(&window(60.0, 0.5), now, false).severity,
+            project(&window(60.0, 0.5), now).severity,
             PaceSeverity::RunningOut
         );
     }
@@ -421,15 +416,15 @@ mod tests {
     #[test]
     fn projection_uses_reference_signal_and_low_usage_guards() {
         let now = Utc.timestamp_opt(1_800_000_000, 0).unwrap();
-        let ready = project(&window(1.0, 0.015), now, false);
+        let ready = project(&window(1.0, 0.015), now);
         assert_eq!(ready.severity, PaceSeverity::Healthy);
         assert!((ready.projected_used_percent.unwrap() - 66.666).abs() < 0.01);
         assert_eq!(
-            project(&window(1.0, 0.009), now, false).severity,
+            project(&window(1.0, 0.009), now).severity,
             PaceSeverity::Untracked
         );
         assert_eq!(
-            project(&window(4.0, 0.02), now, false).severity,
+            project(&window(4.0, 0.02), now).severity,
             PaceSeverity::Untracked
         );
     }
@@ -439,7 +434,7 @@ mod tests {
         let now = Utc.timestamp_millis_opt(1_800_000_000_500).unwrap();
         let mut value = window(1.0, 0.015);
         value.resets_at = Some(now + Duration::milliseconds(9_849_500));
-        let projection = project(&value, now, false);
+        let projection = project(&value, now);
         assert_eq!(projection.severity, PaceSeverity::Healthy);
         assert!((projection.projected_used_percent.unwrap() - 66.445).abs() < 0.01);
     }
@@ -448,29 +443,28 @@ mod tests {
     fn exact_limit_and_zero_spare_have_no_run_out_time() {
         let now = Utc.timestamp_opt(1_800_000_000, 0).unwrap();
         for used in [50.0, 49.8] {
-            let projection = project(&window(used, 0.5), now, false);
+            let projection = project(&window(used, 0.5), now);
             assert_eq!(projection.severity, PaceSeverity::RunningOut);
             assert_eq!(projection.run_out_at, None);
         }
     }
 
     #[test]
-    fn fresh_session_and_display_precision_match_the_visible_row() {
+    fn zero_usage_and_display_precision_match_the_visible_row() {
         let now = Utc.timestamp_opt(1_800_000_000, 0).unwrap();
-        assert_eq!(
-            project(&window(0.0, 0.5), now, true).severity,
-            PaceSeverity::Untracked
-        );
-        assert_eq!(
-            project(&window(0.0, 0.5), now, false).severity,
-            PaceSeverity::Healthy
-        );
+        for used in [-0.1, 0.0] {
+            let projection = project(&window(used, 0.5), now);
+            assert_eq!(projection.severity, PaceSeverity::Untracked);
+            assert_eq!(projection.projected_used_percent, None);
+            assert_eq!(projection.even_pace_percent, None);
+            assert_eq!(projection.run_out_at, None);
+        }
         assert_ne!(
-            project(&window(99.5, 0.5), now, false).severity,
+            project(&window(99.5, 0.5), now).severity,
             PaceSeverity::Spent
         );
         assert_eq!(
-            project(&window(99.51, 0.5), now, false).severity,
+            project(&window(99.51, 0.5), now).severity,
             PaceSeverity::Spent
         );
 
@@ -478,7 +472,7 @@ mod tests {
         dollars.format = crate::models::QuotaFormat::Dollars;
         dollars.used_value = Some(9.996);
         dollars.limit_value = Some(10.0);
-        assert_eq!(project(&dollars, now, false).severity, PaceSeverity::Spent);
+        assert_eq!(project(&dollars, now).severity, PaceSeverity::Spent);
     }
 
     #[test]

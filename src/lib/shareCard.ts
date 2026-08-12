@@ -123,7 +123,7 @@ export function buildProviderShareRows(
     if (source.kind === 'quota' || source.kind === 'quotaOrValue') {
       const quota = snapshot.quotas.find((item) => item.id === source.sourceId);
       if (quota) {
-        rows.push(quotaShareRow(quota, settings, now, source.sessionWindow));
+        rows.push(quotaShareRow(quota, settings, now));
       } else if (source.kind === 'quotaOrValue') {
         const valueMetric = snapshot.valueMetrics.find((item) => item.id === source.sourceId);
         rows.push({
@@ -310,12 +310,7 @@ export function renderTotalSpendShareCard(
   return canvas;
 }
 
-function quotaShareRow(
-  quota: QuotaWindow,
-  settings: AppSettings,
-  now: number,
-  sessionWindow: boolean,
-): ShareRow {
+function quotaShareRow(quota: QuotaWindow, settings: AppSettings, now: number): ShareRow {
   const used = clamp(quota.usedPercent, 0, 100);
   const remaining = Math.max(0, 100 - used);
   let reading = `${(settings.usageDisplay === 'used' ? used : remaining).toFixed(0)}% ${settings.usageDisplay}`;
@@ -338,7 +333,7 @@ function quotaShareRow(
     }
   }
 
-  const pace = projectPace(quota, now, sessionWindow);
+  const pace = projectPace(quota, now);
   const severity =
     pace.severity === 'spent' || pace.severity === 'runningOut'
       ? 'critical'

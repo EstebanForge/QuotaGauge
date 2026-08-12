@@ -39,6 +39,20 @@ function show(value: QuotaWindow, onToggleReset = vi.fn(), isSessionWindow = fal
   };
 }
 
+function showAlways(value: QuotaWindow) {
+  return render(QuotaMetric, {
+    quota: value,
+    now,
+    usageDisplay: 'left',
+    resetDisplay: 'countdown',
+    timeFormat: 'system',
+    alwaysShowPacing: true,
+    isSessionWindow: false,
+    onToggleUsage: vi.fn(),
+    onToggleReset: vi.fn(),
+  });
+}
+
 describe('quota pacing presentation', () => {
   it('shows the flame, run-out time, and projection tooltip', async () => {
     const onToggleReset = vi.fn();
@@ -90,6 +104,13 @@ describe('quota pacing presentation', () => {
       'Sessions start after you send your first message.',
     );
     expect(container.querySelector('.pace-warning')).not.toBeInTheDocument();
+    expect(container.querySelector('.meter-shell')).not.toHaveAttribute('data-tooltip');
+  });
+
+  it('does not decorate unused non-session quotas as healthy pacing', () => {
+    const { container } = showAlways(quota(0));
+    expect(screen.queryByText(/left at reset/)).not.toBeInTheDocument();
+    expect(container.querySelector('.meter__pace')).not.toBeInTheDocument();
     expect(container.querySelector('.meter-shell')).not.toHaveAttribute('data-tooltip');
   });
 

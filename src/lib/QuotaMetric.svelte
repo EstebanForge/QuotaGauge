@@ -83,7 +83,7 @@
     return Math.min(100, Math.max(0, Math.round(usageDisplay === 'used' ? used : remaining)));
   });
   const freshSession = $derived(isFreshSessionWindow(quota, now, isSessionWindow));
-  const pace = $derived(projectPace(quota, now, isSessionWindow));
+  const pace = $derived(projectPace(quota, now));
   const paceDetail = $derived(paceTooltip(pace));
   const roundedUsed = $derived(Math.round(used));
   const severity = $derived(

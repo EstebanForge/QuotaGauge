@@ -166,6 +166,27 @@ describe('share card layout', () => {
     expect(rows[0]).toMatchObject({ kind: 'quota', reading: '75 searches left' });
   });
 
+  it('omits pacing copy for an unused non-session quota', () => {
+    const now = Date.parse('2026-08-12T12:00:00Z');
+    const snapshot = structuredClone(codexState.snapshot!);
+    snapshot.quotas[1] = {
+      ...snapshot.quotas[1],
+      usedPercent: 0,
+      resetsAt: new Date(now + (snapshot.quotas[1].periodSeconds * 1000) / 2).toISOString(),
+    };
+    const rows = buildProviderShareRows(
+      'codex',
+      snapshot,
+      settingsState.settings.providers[0],
+      { ...settingsState.settings, alwaysShowPacing: true },
+      now,
+    );
+
+    expect(rows.find((row) => row.kind === 'quota' && row.label === 'Weekly')).toMatchObject({
+      paceLabel: null,
+    });
+  });
+
   it('exports customizable status metrics as text rows', () => {
     const catalog = new ProviderCatalogIndex({
       providers: [
