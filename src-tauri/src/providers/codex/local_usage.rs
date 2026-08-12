@@ -35,7 +35,7 @@ pub struct TokenEvent {
     pub is_fast: bool,
 }
 
-const LOG_CACHE_SCHEMA_VERSION: u8 = 2;
+const LOG_CACHE_SCHEMA_VERSION: u8 = 3;
 
 pub fn scan_local_usage(
     storage: &Storage,
@@ -296,7 +296,7 @@ pub fn parse_jsonl(content: &str) -> Vec<TokenEvent> {
             continue;
         }
         let parsed_model = model_name(Some(payload)).or_else(|| model_name(info));
-        let model = resolve_model(parsed_model, timestamp_raw, &mut current_model);
+        let model = resolve_model(parsed_model, &mut current_model);
         events.push(TokenEvent {
             timestamp,
             model,
@@ -449,38 +449,31 @@ fn model_name(value: Option<&Value>) -> Option<String> {
     })
 }
 
-fn resolve_model(
-    parsed: Option<String>,
-    timestamp: &str,
-    current_model: &mut Option<String>,
-) -> String {
+fn resolve_model(parsed: Option<String>, current_model: &mut Option<String>) -> String {
     if let Some(parsed) = parsed.as_ref() {
         *current_model = Some(parsed.clone());
     }
-    let model = parsed.or_else(|| current_model.clone()).unwrap_or_else(|| {
+    parsed.or_else(|| current_model.clone()).unwrap_or_else(|| {
         *current_model = Some("gpt-5".into());
         "gpt-5".into()
-    });
-    if model == "codex-auto-review" {
-        auto_review_fallback(timestamp).to_owned()
-    } else {
-        model
-    }
+    })
 }
 
-fn auto_review_fallback(timestamp: &str) -> &'static str {
-    let date = timestamp.get(..10).unwrap_or_default();
+fn auto_review_fallback(timestamp: &DateTime<Utc>) -> &'static str {
+    let date = timestamp.date_naive();
     [
-        ("2026-04-23", "gpt-5.5"),
-        ("2026-03-05", "gpt-5.4"),
-        ("2026-02-05", "gpt-5.3-codex"),
-        ("2025-12-11", "gpt-5.2-codex"),
-        ("2025-11-13", "gpt-5.1-codex"),
-        ("2025-09-15", "gpt-5-codex"),
-        ("2025-08-07", "gpt-5"),
+        ((2026, 4, 23), "gpt-5.5"),
+        ((2026, 3, 5), "gpt-5.4"),
+        ((2026, 2, 5), "gpt-5.3-codex"),
+        ((2025, 12, 11), "gpt-5.2-codex"),
+        ((2025, 11, 13), "gpt-5.1-codex"),
+        ((2025, 9, 15), "gpt-5-codex"),
+        ((2025, 8, 7), "gpt-5"),
     ]
     .into_iter()
-    .find(|(released, _)| date >= *released)
+    .find(|((year, month, day), _)| {
+        date >= NaiveDate::from_ymd_opt(*year, *month, *day).expect("valid release date")
+    })
     .map(|(_, model)| model)
     .unwrap_or("gpt-5")
 }
@@ -528,7 +521,12 @@ fn aggregate_into(
 }
 
 fn estimate_cost(event: &TokenEvent, pricing: &ModelPricing) -> Option<f64> {
-    let model = event.model.trim();
+    let display_model = event.model.trim();
+    let model = if display_model == "codex-auto-review" {
+        auto_review_fallback(&event.timestamp)
+    } else {
+        display_model
+    };
     let canonical = pricing.supplement.canonical_name(model).unwrap_or(model);
     let fast_base = canonical
         .strip_suffix("-fast")
@@ -628,10 +626,13 @@ mod tests {
         aggregate, codex_homes, codex_long_context_rates, codex_priority_multiplier,
         discover_session_files, estimate_cost, parse_jsonl, scan_codex_events, TokenEvent,
     };
-    use crate::pricing::{
-        test_bundled_pricing, ModelPricing, ModelRates, PricingCatalog, PricingSupplement,
+    use crate::{
+        pricing::{
+            test_bundled_pricing, ModelPricing, ModelRates, PricingCatalog, PricingSupplement,
+        },
+        providers::log_usage::LogFileFingerprint,
+        storage::Storage,
     };
-    use crate::storage::Storage;
 
     #[test]
     fn parses_last_usage_and_tracks_turn_model() {
@@ -655,11 +656,36 @@ mod tests {
     }
 
     #[test]
-    fn auto_review_model_uses_the_event_date() {
+    fn auto_review_keeps_its_model_name() {
         let content = r#"{"timestamp":"2026-03-10T08:00:00Z","type":"turn_context","payload":{"model":"codex-auto-review"}}
 {"timestamp":"2026-03-10T08:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}}}"#;
         let events = parse_jsonl(content);
-        assert_eq!(events[0].model, "gpt-5.4");
+        assert_eq!(events[0].model, "codex-auto-review");
+    }
+
+    #[test]
+    fn auto_review_uses_fallback_rates_but_keeps_its_breakdown_label() {
+        let now = Utc.with_ymd_and_hms(2026, 3, 10, 12, 0, 0).unwrap();
+        let content = r#"{"timestamp":"2026-03-10T08:00:00Z","type":"turn_context","payload":{"model":"codex-auto-review"}}
+{"timestamp":"2026-03-10T08:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100000,"output_tokens":100000,"total_tokens":200000}}}}"#;
+        let pricing = ModelPricing::new(
+            PricingSupplement::default(),
+            PricingCatalog {
+                entries: HashMap::from([("gpt-5.4".into(), ModelRates::new(2.0, 8.0))]),
+                retrieved_at: None,
+            },
+            PricingCatalog::default(),
+        );
+
+        let history = aggregate(parse_jsonl(content), now, &pricing);
+        let today = history.today.unwrap();
+        let breakdown = today.model_breakdown.unwrap();
+
+        assert_eq!(today.estimated_cost_usd, Some(1.0));
+        assert!(today.unknown_models.is_empty());
+        assert_eq!(breakdown.models.len(), 1);
+        assert_eq!(breakdown.models[0].model, "codex-auto-review");
+        assert_eq!(breakdown.models[0].cost_usd, Some(1.0));
     }
 
     #[test]
@@ -844,6 +870,51 @@ mod tests {
         assert_eq!(refreshed.len(), 2);
         assert_eq!(refreshed.iter().map(|event| event.total).sum::<u64>(), 195);
         assert!(refreshed.iter().all(|event| !event.is_fast));
+    }
+
+    #[test]
+    fn schema_upgrade_reparses_cached_auto_review_events() {
+        let directory = tempdir().unwrap();
+        let home = directory.path().join("codex");
+        let sessions = home.join("sessions");
+        let path = sessions.join("rollout.jsonl");
+        fs::create_dir_all(&sessions).unwrap();
+        fs::write(
+            &path,
+            r#"{"timestamp":"2026-03-10T08:00:00Z","type":"turn_context","payload":{"model":"codex-auto-review"}}
+{"timestamp":"2026-03-10T08:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}}}"#,
+        )
+        .unwrap();
+        let path = fs::canonicalize(path).unwrap();
+        let fingerprint = LogFileFingerprint::from_metadata(&fs::metadata(&path).unwrap()).unwrap();
+        let storage = Storage::open(&directory.path().join("openquota.db")).unwrap();
+        storage
+            .save_log_events(
+                "codex",
+                &path,
+                fingerprint.size,
+                fingerprint.modified_nanos,
+                r#"{"schema_version":2,"events":[{"timestamp":"2026-03-10T08:01:00Z","model":"gpt-5.4","input":10,"cached":0,"output":5,"reasoning":0,"total":15,"is_fast":false}]}"#,
+            )
+            .unwrap();
+
+        let events = scan_codex_events(
+            &storage,
+            &[home],
+            NaiveDate::from_ymd_opt(2026, 3, 1).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].model, "codex-auto-review");
+        let cached = storage
+            .load_log_events("codex", &path, fingerprint.size, fingerprint.modified_nanos)
+            .unwrap()
+            .unwrap();
+        let cached = serde_json::from_str::<serde_json::Value>(&cached).unwrap();
+        assert_eq!(cached["schema_version"], 3);
+        assert_eq!(cached["events"][0]["model"], "codex-auto-review");
+        assert!(cached["events"][0].get("pricing_model").is_none());
     }
 
     #[cfg(unix)]
