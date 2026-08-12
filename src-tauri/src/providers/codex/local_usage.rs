@@ -940,6 +940,23 @@ mod tests {
     }
 
     #[test]
+    fn daybreak_uses_sol_rates_without_losing_its_breakdown_identity() {
+        let now = Utc.with_ymd_and_hms(2026, 7, 10, 12, 0, 0).unwrap();
+        let content = r#"{"timestamp":"2026-07-10T08:00:00Z","type":"event_msg","payload":{"type":"token_count","model":"gpt-daybreak-blue-latest","info":{"last_token_usage":{"input_tokens":100,"output_tokens":10,"total_tokens":110}}}}"#;
+        let pricing = test_bundled_pricing();
+        let history = aggregate(parse_jsonl(content), now, &pricing);
+        let today = history.today.as_ref().unwrap();
+        assert_eq!(today.tokens, 110);
+        assert_eq!(today.estimated_cost_usd, Some(0.0008));
+        assert!(today.estimate_complete);
+        assert_eq!(
+            today.model_breakdown.as_ref().unwrap().models[0].model,
+            "gpt-daybreak-blue-latest"
+        );
+        assert!(history.unknown_models.is_empty());
+    }
+
+    #[test]
     fn period_breakdown_uses_model_names_and_excludes_unpriced_usage() {
         let now = Utc.with_ymd_and_hms(2026, 7, 10, 12, 0, 0).unwrap();
         let content = r#"{"timestamp":"2026-07-10T08:00:00Z","type":"event_msg","payload":{"type":"token_count","model":"gpt-5.4","info":{"last_token_usage":{"input_tokens":1000,"output_tokens":100,"total_tokens":1100}}}}

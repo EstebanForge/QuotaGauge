@@ -381,8 +381,17 @@ fn load_pricing(
 }
 
 fn supplement_is_newer(candidate: Option<&str>, current: Option<&str>) -> bool {
-    let parse = |value: Option<&str>| {
-        value.and_then(|value| NaiveDate::parse_from_str(value, "%Y-%m-%d").ok())
+    let parse = |value: Option<&str>| -> Option<DateTime<Utc>> {
+        let value = value?;
+        DateTime::parse_from_rfc3339(value)
+            .ok()
+            .map(|value| value.with_timezone(&Utc))
+            .or_else(|| {
+                NaiveDate::parse_from_str(value, "%Y-%m-%d")
+                    .ok()?
+                    .and_hms_opt(0, 0, 0)
+                    .map(|value| value.and_utc())
+            })
     };
     match (parse(candidate), parse(current)) {
         (Some(candidate), Some(current)) => candidate > current,
@@ -588,7 +597,7 @@ mod tests {
     }
 
     #[test]
-    fn supplement_selection_prefers_only_a_strictly_newer_valid_date() {
+    fn supplement_selection_prefers_only_a_strictly_newer_valid_revision() {
         let cases = [
             ("newer bundle", Some("2026-08-12"), Some("2026-08-11"), 1.0),
             ("newer cache", Some("2026-08-11"), Some("2026-08-12"), 9.0),
@@ -596,6 +605,30 @@ mod tests {
                 "equal date keeps cache",
                 Some("2026-08-12"),
                 Some("2026-08-12"),
+                9.0,
+            ),
+            (
+                "same-day newer bundle timestamp",
+                Some("2026-08-12T12:00:00Z"),
+                Some("2026-08-12T11:00:00Z"),
+                1.0,
+            ),
+            (
+                "same-day newer cache timestamp",
+                Some("2026-08-12T11:00:00Z"),
+                Some("2026-08-12T12:00:00Z"),
+                9.0,
+            ),
+            (
+                "timestamped bundle replaces legacy same-day cache",
+                Some("2026-08-12T12:00:00Z"),
+                Some("2026-08-12"),
+                1.0,
+            ),
+            (
+                "legacy date does not replace same-day timestamped cache",
+                Some("2026-08-12"),
+                Some("2026-08-12T12:00:00Z"),
                 9.0,
             ),
             (
@@ -665,11 +698,11 @@ mod tests {
         http.push(response(
             br#"{"x":{"models":{"fetched-dev":{"cost":{"input":1,"output":2}}}}}"#,
         ));
-        http.push(response(&supplement(Some("2026-08-11"), 9.0)));
-        let now = Utc.with_ymd_and_hms(2026, 8, 12, 10, 0, 0).unwrap();
+        http.push(response(&supplement(Some("2026-08-12T11:00:00Z"), 9.0)));
+        let now = Utc.with_ymd_and_hms(2026, 8, 12, 13, 0, 0).unwrap();
         let store = PricingStore::with_dependencies(
             directory.path().to_path_buf(),
-            bundled_with_supplement(Some("2026-08-12"), 1.0),
+            bundled_with_supplement(Some("2026-08-12T12:00:00Z"), 1.0),
             http,
             Arc::new(move || now),
         )
@@ -685,7 +718,7 @@ mod tests {
             &fs::read(directory.path().join(SourceId::Supplement.file_name())).unwrap(),
         )
         .unwrap();
-        assert_eq!(cached.updated_at.as_deref(), Some("2026-08-11"));
+        assert_eq!(cached.updated_at.as_deref(), Some("2026-08-12T11:00:00Z"));
     }
 
     #[test]
