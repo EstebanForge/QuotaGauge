@@ -84,7 +84,9 @@ describe('quota pacing', () => {
   it('supports countdown and exact reset modes', () => {
     const reset = new Date(now + 90 * 60_000).toISOString();
     expect(formatReset(reset, now, 'countdown')).toBe('Resets in 1h 30m');
-    expect(formatReset(reset, now, 'exact')).toContain('Resets today at');
+    const laterToday = new Date(now);
+    laterToday.setHours(23, 59, 0, 0);
+    expect(formatReset(laterToday.toISOString(), now, 'exact')).toContain('Resets today at');
     expect(formatLimit(now + 39 * 60_000, now, 'countdown')).toBe('Limit in 39m');
     expect(formatLimit(now + 5 * 60_000, now, 'countdown')).toBe('Limit soon');
     expect(formatReset(new Date(now + 60 * 60_000).toISOString(), now, 'countdown')).toBe(
