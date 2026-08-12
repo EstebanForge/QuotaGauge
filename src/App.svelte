@@ -264,6 +264,7 @@
   async function refresh() {
     if (anyRefreshing) return;
     viewState = {
+      ...viewState,
       providers: Object.fromEntries(
         Object.entries(viewState.providers).map(([id, state]) => [
           id,
@@ -275,6 +276,7 @@
       viewState = await refreshUsage();
     } catch {
       viewState = {
+        ...viewState,
         providers: Object.fromEntries(
           Object.entries(viewState.providers).map(([id, state]) => [
             id,
@@ -289,6 +291,7 @@
     const current = viewState.providers[providerId];
     if (!current || current.refreshing) return;
     viewState = {
+      ...viewState,
       providers: {
         ...viewState.providers,
         [providerId]: { ...current, refreshing: true, error: null },
@@ -300,6 +303,7 @@
       const failed = viewState.providers[providerId];
       if (failed) {
         viewState = {
+          ...viewState,
           providers: {
             ...viewState.providers,
             [providerId]: { ...failed, refreshing: false },

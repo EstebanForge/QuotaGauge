@@ -1001,6 +1001,29 @@ describe('OpenQuota dashboard', () => {
     expect(screen.getByText('Next update in 1m')).toBeInTheDocument();
   });
 
+  it('keeps the full-refresh schedule when a provider refresh fails to start', async () => {
+    const state = {
+      ...liveState,
+      lastFullRefreshAt: new Date(Date.now() - 240_000).toISOString(),
+    };
+    mockInvoke((command: string) => {
+      if (command === 'get_usage_state') return Promise.resolve(state);
+      if (command === 'get_app_settings') return Promise.resolve(settingsState);
+      if (command === 'refresh_provider_usage') return Promise.reject(new Error('offline'));
+      return Promise.resolve();
+    });
+
+    render(App);
+    const provider = await screen.findByRole('group', { name: 'Codex provider' });
+    expect(screen.getByText('Next update in 1m')).toBeInTheDocument();
+    await fireEvent.contextMenu(provider, { clientX: 120, clientY: 180 });
+    await fireEvent.click(await screen.findByRole('menuitem', { name: 'Refresh Codex' }));
+
+    expect(await screen.findByText('Codex usage could not be refreshed.')).toBeInTheDocument();
+    expect(within(provider).queryByLabelText('Refreshing')).not.toBeInTheDocument();
+    expect(screen.getByText('Next update in 1m')).toBeInTheDocument();
+  });
+
   it('keeps the Claude card structure stable while optional quota data refreshes', async () => {
     let finishRefresh: ((state: UsageViewState) => void) | undefined;
     const refreshResult = new Promise<UsageViewState>((resolve) => (finishRefresh = resolve));
@@ -1193,8 +1216,12 @@ describe('OpenQuota dashboard', () => {
   });
 
   it('restores stable provider chrome when a refresh request fails to start', async () => {
+    const state = {
+      ...liveState,
+      lastFullRefreshAt: new Date(Date.now() - 240_000).toISOString(),
+    };
     mockInvoke((command: string) => {
-      if (command === 'get_usage_state') return Promise.resolve(liveState);
+      if (command === 'get_usage_state') return Promise.resolve(state);
       if (command === 'get_app_settings') return Promise.resolve(settingsState);
       if (command === 'refresh_usage') return Promise.reject(new Error('offline'));
       return Promise.resolve();
@@ -1202,6 +1229,7 @@ describe('OpenQuota dashboard', () => {
     render(App);
     const provider = await screen.findByRole('group', { name: 'Codex provider' });
     const card = within(provider).getByRole('region', { name: 'Codex usage' });
+    expect(screen.getByText('Next update in 1m')).toBeInTheDocument();
     await fireEvent.click(screen.getByRole('button', { name: 'Refresh all provider usage' }));
     await waitFor(() =>
       expect(within(provider).queryByLabelText('Refreshing')).not.toBeInTheDocument(),
@@ -1209,6 +1237,7 @@ describe('OpenQuota dashboard', () => {
     expect(within(provider).getByRole('region', { name: 'Codex usage' })).toBe(card);
     expect(provider.querySelector('.provider-status-slot')).not.toHaveClass('active');
     expect(screen.getByText('OpenQuota could not start a provider refresh.')).toBeInTheDocument();
+    expect(screen.getByText('Next update in 1m')).toBeInTheDocument();
   });
 
   it('shows platform-correct Ctrl shortcuts and handles Ctrl+Q', async () => {
