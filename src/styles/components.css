@@ -365,6 +365,19 @@
     }
   }
 
+  :root[data-reduced-motion] *,
+  :root[data-reduced-motion] *::before,
+  :root[data-reduced-motion] *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  :root[data-reduced-motion] button:active {
+    transform: none !important;
+  }
+
   @keyframes detail-in {
     from {
       opacity: 0;

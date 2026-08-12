@@ -47,6 +47,11 @@ pub struct PanelResizeSession {
     storage: Arc<Storage>,
 }
 
+pub(crate) struct PanelResetToken {
+    previous_height: Option<u32>,
+    generation: u64,
+}
+
 impl PanelResizeSession {
     pub fn new(storage: Arc<Storage>) -> Self {
         let automatic = Arc::new(AtomicBool::new(
@@ -158,20 +163,58 @@ impl PanelResizeSession {
     }
 
     pub fn set_automatic(&self) -> Result<(), String> {
-        self.active.store(false, Ordering::SeqCst);
-        if let Ok(mut latest) = self.latest_height.lock() {
-            *latest = None;
-        }
+        self.begin_automatic_reset().map(|_| ())
+    }
+
+    pub(crate) fn begin_automatic_reset(&self) -> Result<PanelResetToken, String> {
+        let mut latest = self
+            .latest_height
+            .lock()
+            .map_err(|_| "OpenQuota panel state is unavailable.".to_owned())?;
         let _guard = self
             .persistence
             .lock()
             .map_err(|_| "OpenQuota panel state is unavailable.")?;
+        let previous_height = self
+            .storage
+            .load_panel_height()
+            .map_err(|_| "OpenQuota panel state could not be loaded.".to_owned())?;
         self.storage
             .clear_panel_height()
             .map_err(|_| "OpenQuota panel state could not be saved.".to_owned())?;
-        self.generation.fetch_add(1, Ordering::SeqCst);
+        self.active.store(false, Ordering::SeqCst);
+        *latest = None;
+        let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         self.automatic.store(true, Ordering::SeqCst);
-        Ok(())
+        Ok(PanelResetToken {
+            previous_height,
+            generation,
+        })
+    }
+
+    pub(crate) fn rollback_automatic_reset(&self, token: PanelResetToken) -> Result<bool, String> {
+        let _guard = self
+            .persistence
+            .lock()
+            .map_err(|_| "OpenQuota panel state is unavailable.")?;
+        if self.generation.load(Ordering::SeqCst) != token.generation
+            || !self.automatic.load(Ordering::SeqCst)
+        {
+            return Ok(false);
+        }
+        if let Some(height) = token.previous_height {
+            self.storage
+                .save_panel_height(height)
+                .map_err(|_| "OpenQuota panel state could not be restored.".to_owned())?;
+            self.automatic.store(false, Ordering::SeqCst);
+        } else {
+            self.storage
+                .clear_panel_height()
+                .map_err(|_| "OpenQuota panel state could not be restored.".to_owned())?;
+            self.automatic.store(true, Ordering::SeqCst);
+        }
+        self.generation.fetch_add(1, Ordering::SeqCst);
+        Ok(true)
     }
 
     fn saved_height(&self) -> Option<u32> {
@@ -824,6 +867,26 @@ mod tests {
         session.finish(Some(720));
         assert_eq!(session.mode(), PanelHeightMode::Automatic);
         assert_eq!(storage.load_panel_height().unwrap(), None);
+    }
+
+    #[test]
+    fn failed_settings_reset_only_restores_unchanged_panel_state() {
+        let directory = tempdir().unwrap();
+        let storage = Arc::new(Storage::open(&directory.path().join("openquota.db")).unwrap());
+        let session = PanelResizeSession::new(storage.clone());
+        session.set_manual(560).unwrap();
+
+        let reset = session.begin_automatic_reset().unwrap();
+        assert_eq!(session.mode(), PanelHeightMode::Automatic);
+        assert!(session.rollback_automatic_reset(reset).unwrap());
+        assert_eq!(session.mode(), PanelHeightMode::Manual);
+        assert_eq!(storage.load_panel_height().unwrap(), Some(560));
+
+        let stale_reset = session.begin_automatic_reset().unwrap();
+        session.set_manual(640).unwrap();
+        assert!(!session.rollback_automatic_reset(stale_reset).unwrap());
+        assert_eq!(session.mode(), PanelHeightMode::Manual);
+        assert_eq!(storage.load_panel_height().unwrap(), Some(640));
     }
 
     #[test]

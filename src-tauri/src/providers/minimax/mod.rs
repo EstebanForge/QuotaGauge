@@ -154,6 +154,10 @@ impl UsageProvider for MiniMaxProvider {
         Some(self.auth.status().map_err(ProviderError::from))
     }
 
+    fn supports_api_key_configuration(&self) -> bool {
+        true
+    }
+
     fn save_api_key(&self, value: &str) -> Result<(), ProviderError> {
         self.auth.save(value).map_err(ProviderError::from)
     }

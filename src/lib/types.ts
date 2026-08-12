@@ -161,6 +161,10 @@ export interface ProviderApiKeyState {
   status: ApiKeyStatus;
 }
 
+export interface ApiKeyMutationOutcome extends ProviderApiKeyState {
+  warning?: string;
+}
+
 export interface ProviderDefinition {
   id: string;
   displayName: string;
@@ -173,6 +177,7 @@ export interface ProviderDefinition {
 
 export interface ProviderCatalog {
   providers: ProviderDefinition[];
+  apiKeyProviderIds?: string[];
 }
 
 export interface MetricLayout {
@@ -204,6 +209,7 @@ export interface AppSettings {
   showTotalSpend: boolean;
   theme: 'system' | 'light' | 'dark';
   density: 'default' | 'compact';
+  reduceAnimations: boolean;
   windowMode: 'popup' | 'floating';
   menuBarStyle: 'text' | 'bars';
   usageDisplay: 'used' | 'left';
@@ -247,6 +253,7 @@ export interface UpdateFailure {
 
 export interface SettingsViewState {
   settings: AppSettings;
+  settingsRevision: number;
   accountRevision: number;
   renamableProviderIds: string[];
   notificationPermission: 'granted' | 'denied' | 'prompt' | 'unavailable';

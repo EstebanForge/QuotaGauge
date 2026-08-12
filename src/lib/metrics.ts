@@ -9,11 +9,13 @@ export class ProviderCatalogIndex {
   readonly providers: ProviderDefinition[];
   readonly #providersById: Map<string, ProviderDefinition>;
   readonly #metricsById: Map<string, MetricDefinition>;
+  readonly #apiKeyProviderIds: Set<string>;
 
   constructor(catalog: ProviderCatalog) {
     this.providers = catalog.providers;
     this.#providersById = new Map();
     this.#metricsById = new Map();
+    this.#apiKeyProviderIds = new Set(catalog.apiKeyProviderIds ?? []);
 
     for (const provider of catalog.providers) {
       if (this.#providersById.has(provider.id)) {
@@ -45,6 +47,10 @@ export class ProviderCatalogIndex {
 
   supportsSpend(id: string) {
     return this.provider(id)?.metrics.some((metric) => metric.source.kind === 'usage') ?? false;
+  }
+
+  supportsApiKeyConfiguration(id: string) {
+    return this.#apiKeyProviderIds.has(id);
   }
 
   localUsageSourceNote(id: string) {

@@ -156,6 +156,11 @@
     background: var(--meter-fill);
   }
 
+  .switch input:focus-visible + span {
+    outline: 2px solid var(--meter-fill);
+    outline-offset: 2px;
+  }
+
   .switch input:checked + span::after {
     transform: translateX(12px);
   }

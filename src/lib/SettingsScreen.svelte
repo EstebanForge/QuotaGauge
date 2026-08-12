@@ -24,6 +24,7 @@
     onCustomize: () => void;
     onCopyLogPath: () => Promise<void>;
     onOpenLogFolder: () => Promise<void>;
+    onResetAllSettings: () => void;
   }
   let {
     settingsView,
@@ -39,6 +40,7 @@
     onCustomize,
     onCopyLogPath,
     onOpenLogFolder,
+    onResetAllSettings,
   }: Props = $props();
   let recording = $state(false);
   let logActionError = $state<string | null>(null);
@@ -84,6 +86,10 @@
   }
   function record(event: KeyboardEvent) {
     if (!recording) return;
+    if (event.key === 'Tab') {
+      recording = false;
+      return;
+    }
     event.preventDefault();
     event.stopPropagation();
     if (event.key === 'Escape') {
@@ -152,9 +158,12 @@
         <button
           class:recording
           type="button"
+          aria-pressed={recording}
+          aria-describedby="shortcut-recording-help"
           data-tooltip="Open OpenQuota from anywhere"
           onclick={() => (recording = !recording)}
           onkeydown={record}
+          onblur={() => (recording = false)}
           >{recording ? 'Type Shortcut…' : (settings.globalShortcut ?? 'Record Shortcut')}</button
         >{#if settings.globalShortcut}<button
             type="button"
@@ -163,6 +172,10 @@
             ><Icon name="close" size={10} strokeWidth={2.2} /></button
           >{/if}
       </div>
+      <small id="shortcut-recording-help" class="sr-only"
+        >Activate to record. While recording, press a modifier shortcut to save it, Delete to clear
+        it, or Escape to cancel.</small
+      >
     </div>
   </div>
 
@@ -204,6 +217,13 @@
         onChange={(value) => patch({ density: value as AppSettings['density'] })}
       />
     </div>
+    <label class="setting-row"
+      ><span><b>Reduce Animations</b></span><input
+        type="checkbox"
+        checked={settings.reduceAnimations}
+        onchange={(event) => patch({ reduceAnimations: event.currentTarget.checked })}
+      /></label
+    >
     {#if settingsView.trayAvailable}
       <div class="setting-row">
         <span><b>Window Mode</b></span><SelectMenu
@@ -383,6 +403,13 @@
     {#if logActionError}<p class="settings-note log-action-error" role="alert">
         {logActionError}
       </p>{/if}
+    <div class="setting-row setting-row--button">
+      <button
+        class="secondary-button settings-wide-button settings-reset-button"
+        type="button"
+        onclick={onResetAllSettings}>Reset All Settings…</button
+      >
+    </div>
   </div>
 
   <div class="settings-section">
@@ -456,6 +483,15 @@
       width: 15px;
       height: 15px;
       accent-color: var(--meter-fill);
+    }
+
+    input[type='checkbox']:focus-visible {
+      outline: 2px solid var(--meter-fill);
+      outline-offset: 2px;
+    }
+
+    .settings-reset-button {
+      color: var(--error);
     }
 
     .shortcut-field {

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy } from 'svelte';
+  import { onDestroy, tick } from 'svelte';
   import { formatMetricValue } from './metricFormat';
   import { formatReset } from './pacing';
   import Icon from './Icon.svelte';
@@ -19,6 +19,8 @@
   let detailTop = $state(8);
   let showTimer: ReturnType<typeof setTimeout> | undefined;
   let hideTimer: ReturnType<typeof setTimeout> | undefined;
+  let detailTrigger = $state<HTMLButtonElement>();
+  let restoringTriggerFocus = false;
   const showsResetDetail = $derived(metric?.id === 'rateLimitResets');
   const hasEstimatedValue = $derived(metric?.values.some((value) => value.estimated) ?? false);
 
@@ -63,6 +65,10 @@
   });
 
   function scheduleShow(event: Event) {
+    if (restoringTriggerFocus) {
+      restoringTriggerFocus = false;
+      return;
+    }
     if (!showsResetDetail || detailOpen || showTimer) return;
     if (hideTimer) clearTimeout(hideTimer);
     const target = event.currentTarget as HTMLElement;
@@ -98,6 +104,13 @@
     showTimer = undefined;
     detailOpen = true;
   }
+  async function dismissDetail() {
+    detailOpen = false;
+    await tick();
+    restoringTriggerFocus = true;
+    detailTrigger?.focus();
+    restoringTriggerFocus = false;
+  }
   onDestroy(() => {
     if (showTimer) clearTimeout(showTimer);
     if (hideTimer) clearTimeout(hideTimer);
@@ -108,6 +121,7 @@
   <span>{label}</span>
   {#if showsResetDetail}
     <button
+      bind:this={detailTrigger}
       type="button"
       class="value-reading value-reading--interactive"
       aria-expanded={detailOpen}
@@ -155,7 +169,7 @@
     top={detailTop}
     onEnter={keepOpen}
     onLeave={scheduleHide}
-    onDismiss={() => (detailOpen = false)}
+    onDismiss={() => void dismissDetail()}
   />
 {/if}
 

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from 'svelte';
   import { SvelteMap } from 'svelte/reactivity';
   import { claimCodexResetCredit } from './backend';
   import { formatReset } from './pacing';
@@ -22,6 +23,8 @@
   let pendingExpiry = $state<string | null>(null);
   let result = $state<{ expiry: string; outcome: ResetClaimOutcome } | null>(null);
   let dialogElement: HTMLDivElement | undefined;
+  let cancelButton = $state<HTMLButtonElement>();
+  let claimTriggerIndex = $state<number | null>(null);
   const requestIds = new SvelteMap<string, string>();
 
   const entries = $derived(
@@ -68,15 +71,15 @@
     event.preventDefault();
     event.stopPropagation();
     if (confirmingExpiry) {
-      dialogElement?.focus();
-      confirmingExpiry = null;
+      void cancelClaim();
       return;
     }
     if (!pendingExpiry) onDismiss();
   }
 
-  function beginClaim(expiry: string) {
+  async function beginClaim(expiry: string, triggerIndex: number) {
     confirmingExpiry = expiry;
+    claimTriggerIndex = triggerIndex;
     result = null;
     if (!requestIds.has(expiry)) {
       requestIds.set(
@@ -84,6 +87,21 @@
         globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`,
       );
     }
+    await tick();
+    cancelButton?.focus();
+  }
+
+  async function cancelClaim() {
+    if (pendingExpiry) return;
+    const triggerIndex = claimTriggerIndex;
+    confirmingExpiry = null;
+    await tick();
+    if (triggerIndex !== null) {
+      dialogElement
+        ?.querySelector<HTMLButtonElement>(`[data-reset-trigger="${triggerIndex}"]`)
+        ?.focus();
+    }
+    claimTriggerIndex = null;
   }
 
   async function confirmClaim(expiry: string) {
@@ -99,7 +117,10 @@
     result = { expiry, outcome };
     pendingExpiry = null;
     confirmingExpiry = null;
+    claimTriggerIndex = null;
     if (outcome !== 'failed') requestIds.delete(expiry);
+    await tick();
+    dialogElement?.focus();
   }
 </script>
 
@@ -115,7 +136,9 @@
   onmouseenter={onEnter}
   onfocusin={onEnter}
   onmouseleave={() => {
-    if (!confirmingExpiry && !pendingExpiry) onLeave();
+    if (!confirmingExpiry && !pendingExpiry && !dialogElement?.contains(document.activeElement)) {
+      onLeave();
+    }
   }}
 >
   <div class="reset-detail-body">
@@ -139,9 +162,16 @@
             </div>
             <div class="reset-entry-content">
               {#if confirmingExpiry === entry.expiry}
-                <div class="reset-confirm">
-                  <strong>Use this reset?</strong>
-                  <span>Immediately reset your usage limits. This can't be undone.</span>
+                <div
+                  class="reset-confirm"
+                  role="group"
+                  aria-labelledby={`reset-confirm-title-${index}`}
+                  aria-describedby={`reset-confirm-message-${index}`}
+                >
+                  <strong id={`reset-confirm-title-${index}`}>Use this reset?</strong>
+                  <span id={`reset-confirm-message-${index}`}
+                    >Immediately reset your usage limits. This can't be undone.</span
+                  >
                   <div>
                     <button
                       class="reset-confirm-primary"
@@ -151,9 +181,10 @@
                       >{pendingExpiry === entry.expiry ? 'Resetting…' : 'Use reset'}</button
                     >
                     <button
+                      bind:this={cancelButton}
                       type="button"
                       disabled={pendingExpiry !== null}
-                      onclick={() => (confirmingExpiry = null)}>Cancel</button
+                      onclick={() => void cancelClaim()}>Cancel</button
                     >
                   </div>
                 </div>
@@ -165,9 +196,10 @@
                     <button
                       class="reset-use"
                       type="button"
+                      data-reset-trigger={index}
                       aria-label={`Use reset expiring ${entry.exact}`}
                       disabled={pendingExpiry !== null}
-                      onclick={() => beginClaim(entry.expiry)}>Use</button
+                      onclick={() => void beginClaim(entry.expiry, index)}>Use</button
                     >
                   </div>
                 </div>

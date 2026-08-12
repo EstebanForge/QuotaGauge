@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { deleteProviderApiKey, getProviderApiKeyState, saveProviderApiKey } from './backend';
   import Icon from './Icon.svelte';
   import ProviderIcon from './ProviderIcon.svelte';
@@ -18,8 +18,13 @@
   let apiKey = $state('');
   let revealInput = $state(false);
   let saving = $state(false);
+  let confirmingRemoval = $state(false);
   let error = $state<string | null>(null);
+  let notice = $state<string | null>(null);
   let availabilityError = $state<string | null>(null);
+  let editorToggle = $state<HTMLButtonElement>();
+  let removeTrigger = $state<HTMLButtonElement>();
+  let removeCancelButton = $state<HTMLButtonElement>();
   const status = $derived<ApiKeyStatus>(credentialState?.status ?? 'notSet');
   const editable = $derived(status === 'notSet' || overrideExternal);
   const canClear = $derived(status === 'saved' || status === 'overrideActive');
@@ -54,7 +59,9 @@
     overrideExternal = false;
     apiKey = '';
     revealInput = false;
+    confirmingRemoval = false;
     error = null;
+    notice = null;
   }
 
   function toggleOpen() {
@@ -67,10 +74,15 @@
     if (!value || saving) return;
     saving = true;
     error = null;
+    notice = null;
     try {
-      credentialState = await saveProviderApiKey(providerId, value);
+      const outcome = await saveProviderApiKey(providerId, value);
+      credentialState = { providerId: outcome.providerId, status: outcome.status };
       availabilityError = null;
       resetEditor();
+      notice = outcome.warning ?? null;
+      await tick();
+      editorToggle?.focus();
     } catch (cause) {
       error = errorMessage(cause, 'The API key could not be saved.');
     } finally {
@@ -82,15 +94,42 @@
     if (saving) return;
     saving = true;
     error = null;
+    notice = null;
     try {
-      credentialState = await deleteProviderApiKey(providerId);
+      const outcome = await deleteProviderApiKey(providerId);
+      credentialState = { providerId: outcome.providerId, status: outcome.status };
       availabilityError = null;
       resetEditor();
+      notice = outcome.warning ?? null;
+      await tick();
+      editorToggle?.focus();
     } catch (cause) {
       error = errorMessage(cause, 'The saved API key could not be removed.');
     } finally {
       saving = false;
     }
+  }
+
+  async function requestRemoval() {
+    if (saving || confirmingRemoval) return;
+    confirmingRemoval = true;
+    error = null;
+    await tick();
+    removeCancelButton?.focus();
+  }
+
+  async function cancelRemoval() {
+    if (saving) return;
+    confirmingRemoval = false;
+    await tick();
+    removeTrigger?.focus();
+  }
+
+  function handleRemovalKeydown(event: KeyboardEvent) {
+    if (event.key !== 'Escape' || saving) return;
+    event.preventDefault();
+    event.stopPropagation();
+    void cancelRemoval();
   }
 
   onMount(() => {
@@ -114,7 +153,7 @@
         <ProviderIcon {providerId} size={18} />
         <span class="api-key-provider">{providerName}</span>
         <i class:missing={status === 'notSet'} aria-hidden="true"></i>
-        <button type="button" onclick={toggleOpen}
+        <button bind:this={editorToggle} type="button" onclick={toggleOpen}
           >{open ? 'Done' : status === 'notSet' ? 'Add' : 'Edit'}</button
         >
       </div>
@@ -159,12 +198,15 @@
               <div class="api-key-input api-key-readonly">
                 {#if canClear}
                   <button
+                    bind:this={removeTrigger}
                     class="field-icon clear-icon"
                     type="button"
-                    disabled={saving}
-                    aria-label={saving ? 'Removing saved API key…' : 'Remove saved API key'}
+                    disabled={saving || confirmingRemoval}
+                    aria-controls={`remove-api-key-${providerId}`}
+                    aria-expanded={confirmingRemoval}
+                    aria-label="Remove saved API key"
                     title="Remove saved API key"
-                    onclick={remove}
+                    onclick={() => void requestRemoval()}
                   >
                     <Icon name="clear-filled" size={16} strokeWidth={1.8} />
                   </button>
@@ -177,6 +219,36 @@
                   disabled
                 />
               </div>
+              {#if confirmingRemoval}
+                <div
+                  id={`remove-api-key-${providerId}`}
+                  class="api-key-remove-confirm"
+                  role="group"
+                  aria-labelledby={`remove-api-key-title-${providerId}`}
+                  aria-describedby={`remove-api-key-message-${providerId}`}
+                >
+                  <strong id={`remove-api-key-title-${providerId}`}>Remove saved API key?</strong>
+                  <span id={`remove-api-key-message-${providerId}`}
+                    >The saved key will be removed from secure storage. This can't be undone.</span
+                  >
+                  <div class="api-key-remove-actions">
+                    <button
+                      bind:this={removeCancelButton}
+                      type="button"
+                      disabled={saving}
+                      onkeydown={handleRemovalKeydown}
+                      onclick={() => void cancelRemoval()}>Cancel</button
+                    >
+                    <button
+                      class="destructive"
+                      type="button"
+                      disabled={saving}
+                      onkeydown={handleRemovalKeydown}
+                      onclick={() => void remove()}>{saving ? 'Removing…' : 'Remove key'}</button
+                    >
+                  </div>
+                </div>
+              {/if}
               {#if status === 'fromEnvironment' || status === 'fromConfig'}
                 <label class="api-key-override">
                   <input type="checkbox" bind:checked={overrideExternal} disabled={saving} />
@@ -186,6 +258,7 @@
             {/if}
           {/key}
           {#if error}<div class="api-key-error" role="alert">{error}</div>{/if}
+          {#if notice}<div class="api-key-notice" role="status">{notice}</div>{/if}
         </div>
       {/if}
     </div>
@@ -337,11 +410,49 @@
     font-size: 10px;
   }
 
+  .api-key-remove-confirm {
+    display: grid;
+    gap: 6px;
+    padding: 9px;
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--meter-critical) 8%, transparent);
+    font-size: 10px;
+  }
+
+  .api-key-remove-confirm > span {
+    color: var(--secondary);
+    line-height: 14px;
+  }
+
+  .api-key-remove-actions {
+    display: flex;
+    gap: 7px;
+  }
+
+  .api-key-remove-actions button {
+    min-height: 26px;
+    padding: 5px 10px;
+  }
+
+  .api-key-remove-actions .destructive {
+    color: var(--tray);
+    background: var(--error);
+    font-weight: 600;
+  }
+
   .api-key-error {
     padding: 6px 7px;
     border-radius: 7px;
     color: var(--error);
     background: var(--error-bg);
+    font-size: 10px;
+  }
+
+  .api-key-notice {
+    padding: 6px 7px;
+    border-radius: 7px;
+    color: var(--text);
+    background: var(--button-hover);
     font-size: 10px;
   }
 

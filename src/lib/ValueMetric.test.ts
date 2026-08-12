@@ -111,9 +111,13 @@ describe('ValueMetric', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Rate Limit Resets: 1 available' }));
     await fireEvent.click(screen.getByRole('button', { name: /Use reset expiring/ }));
     expect(mocks.invoke).not.toHaveBeenCalled();
+    expect(screen.getByRole('group', { name: 'Use this reset?' })).toHaveAccessibleDescription(
+      "Immediately reset your usage limits. This can't be undone.",
+    );
     expect(
       screen.getByText("Immediately reset your usage limits. This can't be undone."),
     ).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus());
     await fireEvent.click(screen.getByRole('button', { name: 'Use reset' }));
 
     await waitFor(() =>
@@ -151,6 +155,7 @@ describe('ValueMetric', () => {
       await vi.advanceTimersByTimeAsync(181);
 
       expect(screen.getByText('Use this reset?')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus();
       expect(screen.getByRole('dialog', { name: 'Rate Limit Resets details' })).toBeVisible();
       expect(mocks.invoke).not.toHaveBeenCalled();
     } finally {
@@ -159,37 +164,64 @@ describe('ValueMetric', () => {
   });
 
   it('behaves as an anchored popover and closes with Escape', async () => {
-    render(ValueMetric, {
-      label: 'Rate Limit Resets',
-      metric: {
-        id: 'rateLimitResets',
+    vi.useFakeTimers();
+    try {
+      render(ValueMetric, {
         label: 'Rate Limit Resets',
-        values: [{ number: 1, kind: 'count', label: 'available', estimated: false }],
-        expiriesAt: ['2026-02-20T19:00:00Z'],
-      },
-      now: Date.parse('2026-02-20T16:00:00Z'),
-      resetDisplay: 'countdown',
-      timeFormat: 'twentyFourHour',
-    });
+        metric: {
+          id: 'rateLimitResets',
+          label: 'Rate Limit Resets',
+          values: [{ number: 1, kind: 'count', label: 'available', estimated: false }],
+          expiriesAt: ['2026-02-20T19:00:00Z'],
+        },
+        now: Date.parse('2026-02-20T16:00:00Z'),
+        resetDisplay: 'countdown',
+        timeFormat: 'twentyFourHour',
+      });
 
-    await fireEvent.click(screen.getByRole('button', { name: 'Rate Limit Resets: 1 available' }));
-    expect(screen.queryByLabelText('Drag Rate Limit Resets panel')).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole('button', { name: 'Close Rate Limit Resets' }),
-    ).not.toBeInTheDocument();
+      await fireEvent.click(screen.getByRole('button', { name: 'Rate Limit Resets: 1 available' }));
+      expect(screen.queryByLabelText('Drag Rate Limit Resets panel')).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole('button', { name: 'Close Rate Limit Resets' }),
+      ).not.toBeInTheDocument();
 
-    await fireEvent.click(screen.getByRole('button', { name: /Use reset expiring/ }));
-    const cancel = screen.getByRole('button', { name: 'Cancel' });
-    cancel.focus();
-    await fireEvent.keyDown(cancel, { key: 'Escape' });
-    expect(screen.queryByText('Use this reset?')).not.toBeInTheDocument();
-    const dialog = screen.getByRole('dialog', { name: 'Rate Limit Resets details' });
-    expect(dialog).toBeVisible();
-    expect(dialog).toHaveFocus();
+      const use = screen.getByRole('button', { name: /Use reset expiring/ });
+      await fireEvent.click(use);
+      let cancel = screen.getByRole('button', { name: 'Cancel' });
+      await vi.waitFor(() => expect(cancel).toHaveFocus());
+      await fireEvent.click(cancel);
+      expect(screen.queryByText('Use this reset?')).not.toBeInTheDocument();
+      let restoredUse = screen.getByRole('button', { name: /Use reset expiring/ });
+      await vi.waitFor(() => expect(restoredUse).toHaveFocus());
 
-    await fireEvent.keyDown(dialog, { key: 'Escape' });
-    expect(
-      screen.queryByRole('dialog', { name: 'Rate Limit Resets details' }),
-    ).not.toBeInTheDocument();
+      await fireEvent.click(restoredUse);
+      cancel = screen.getByRole('button', { name: 'Cancel' });
+      await vi.waitFor(() => expect(cancel).toHaveFocus());
+      await fireEvent.keyDown(cancel, { key: 'Escape' });
+      expect(screen.queryByText('Use this reset?')).not.toBeInTheDocument();
+      const dialog = screen.getByRole('dialog', { name: 'Rate Limit Resets details' });
+      expect(dialog).toBeVisible();
+      restoredUse = screen.getByRole('button', { name: /Use reset expiring/ });
+      await vi.waitFor(() => expect(restoredUse).toHaveFocus());
+      await fireEvent.mouseLeave(dialog);
+      await vi.advanceTimersByTimeAsync(181);
+      expect(dialog).toBeVisible();
+
+      await fireEvent.keyDown(restoredUse, { key: 'Escape' });
+      expect(
+        screen.queryByRole('dialog', { name: 'Rate Limit Resets details' }),
+      ).not.toBeInTheDocument();
+      await vi.waitFor(() =>
+        expect(
+          screen.getByRole('button', { name: 'Rate Limit Resets: 1 available' }),
+        ).toHaveFocus(),
+      );
+      await vi.advanceTimersByTimeAsync(351);
+      expect(
+        screen.queryByRole('dialog', { name: 'Rate Limit Resets details' }),
+      ).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

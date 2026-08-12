@@ -133,6 +133,10 @@ pub trait UsageProvider: Send + Sync {
         false
     }
 
+    fn supports_api_key_configuration(&self) -> bool {
+        false
+    }
+
     fn account_identity(&self) -> Option<&str> {
         None
     }

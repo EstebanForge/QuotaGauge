@@ -378,6 +378,24 @@ impl Storage {
         Ok(records)
     }
 
+    pub fn load_all_provider_account_records(
+        &self,
+    ) -> Result<Vec<(String, String, String, String)>, StorageError> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT provider_family, identity_key, provider_id, payload
+             FROM provider_account_records
+             ORDER BY provider_family, provider_id, identity_key",
+        )?;
+        let records = statement
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(StorageError::from)?;
+        Ok(records)
+    }
+
     pub fn load_observed_account_provider_ids(&self) -> Result<Vec<String>, StorageError> {
         let connection = self.connection()?;
         let mut statement = connection.prepare(

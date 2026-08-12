@@ -84,12 +84,17 @@ describe('OpenQuota customization persistence and reorder', () => {
     expect(mocks.invoke).not.toHaveBeenCalledWith('reset_customization');
 
     await fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
 
     await fireEvent.click(screen.getByRole('button', { name: 'Reset all customization' }));
     await fireEvent.click(screen.getByRole('button', { name: 'Reset All' }));
-    await waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith('reset_customization'));
-    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith('reset_customization', {
+        expectedSettingsRevision: 0,
+        expectedAccountRevision: 0,
+      }),
+    );
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
   });
 
   it('undoes the latest customization with Ctrl+Z', async () => {

@@ -20,9 +20,16 @@ use crate::{
     providers::{detect_local_credentials, ProviderRegistry},
     service::ProviderService,
     set_autostart,
-    settings::SettingsService,
+    settings::{CredentialDetectionPlan, SettingsService},
     tray_presentation,
+    window::PanelResizeSession,
 };
+
+#[derive(Clone, Copy)]
+enum SettingsSaveMode {
+    Normal,
+    ResetAll,
+}
 
 #[tauri::command]
 pub fn get_app_settings(
@@ -39,8 +46,35 @@ pub async fn save_app_settings(
     settings_service: State<'_, Arc<SettingsService>>,
     notifications: State<'_, Arc<NotificationEvaluator>>,
     settings: AppSettings,
+    expected_settings_revision: u64,
     expected_account_revision: u64,
 ) -> Result<SettingsViewState, String> {
+    let (state, _, _) = save_app_settings_inner(
+        app,
+        service.inner().clone(),
+        settings_service.inner().clone(),
+        notifications.inner().clone(),
+        settings,
+        expected_settings_revision,
+        expected_account_revision,
+        SettingsSaveMode::Normal,
+    )
+    .await?;
+    Ok(state)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn save_app_settings_inner(
+    app: AppHandle,
+    service: Arc<ProviderService>,
+    settings_service: Arc<SettingsService>,
+    notifications: Arc<NotificationEvaluator>,
+    settings: AppSettings,
+    expected_settings_revision: u64,
+    expected_account_revision: u64,
+    mode: SettingsSaveMode,
+) -> Result<(SettingsViewState, Vec<String>, CredentialDetectionPlan), String> {
+    let command_guard = settings_service.lock_command_mutation().await;
     let previous = settings_service.get();
     let next_shortcut = settings.global_shortcut.clone();
     let autostart_changed = previous.launch_at_login != settings.launch_at_login;
@@ -84,7 +118,19 @@ pub async fn save_app_settings(
             return Err(error);
         }
     }
-    let updated = match settings_service.update_from_view(settings, expected_account_revision) {
+    let persisted = match mode {
+        SettingsSaveMode::Normal => settings_service.update_from_view(
+            settings,
+            expected_settings_revision,
+            expected_account_revision,
+        ),
+        SettingsSaveMode::ResetAll => settings_service.reset_all_from_view(
+            settings,
+            expected_settings_revision,
+            expected_account_revision,
+        ),
+    };
+    let updated = match persisted {
         Ok(settings) => settings,
         Err(error) => {
             crate::app_error!("config", "settings could not be persisted");
@@ -131,19 +177,10 @@ pub async fn save_app_settings(
         settings_view_state(&app, &settings_service),
     );
 
-    let newly_enabled = updated
-        .providers
-        .iter()
-        .filter(|provider| {
-            provider.enabled
-                && !previous
-                    .providers
-                    .iter()
-                    .any(|old| old.id == provider.id && old.enabled)
-        })
-        .map(|provider| provider.id.clone())
-        .collect::<Vec<_>>();
-    if !newly_enabled.is_empty() {
+    let newly_enabled = newly_enabled_provider_ids(&previous, &updated);
+    let credential_detection_plan = settings_service.reset_detection_plan();
+    drop(command_guard);
+    if matches!(mode, SettingsSaveMode::Normal) && !newly_enabled.is_empty() {
         let progress_app = app.clone();
         service
             .refresh_enabled_with_progress(&newly_enabled, true, move |state| {
@@ -154,7 +191,11 @@ pub async fn save_app_settings(
         let _ = app.emit("usage-state", &state);
         finish_refresh(&app, &state, &settings_service, &notifications);
     }
-    Ok(settings_view_state(&app, &settings_service))
+    Ok((
+        settings_view_state(&app, &settings_service),
+        newly_enabled,
+        credential_detection_plan,
+    ))
 }
 
 #[tauri::command]
@@ -164,9 +205,13 @@ pub async fn reset_customization(
     service: State<'_, Arc<ProviderService>>,
     settings: State<'_, Arc<SettingsService>>,
     notifications: State<'_, Arc<NotificationEvaluator>>,
+    expected_settings_revision: u64,
+    expected_account_revision: u64,
 ) -> Result<SettingsViewState, String> {
     crate::app_info!("config", "reset all customization requested");
-    let mut next = settings.get();
+    let command_guard = settings.lock_command_mutation().await;
+    let previous = settings.get();
+    let mut next = previous.clone();
     let detected_before_reset = next
         .providers
         .iter()
@@ -175,44 +220,207 @@ pub async fn reset_customization(
         .collect::<HashSet<_>>();
     next.providers = settings.default_settings(&detected_before_reset).providers;
     next.detection_notice_dismissed = false;
-    let next = settings.update(next)?;
+    let next =
+        settings.update_from_view(next, expected_settings_revision, expected_account_revision)?;
+    let newly_enabled = newly_enabled_provider_ids(&previous, &next);
+    let credential_detection_plan = settings.reset_detection_plan();
     tray_presentation::update(&app, &service.state(), &next, settings.registry());
     let state = settings_view_state(&app, &settings);
     let _ = app.emit("settings-state", &state);
-    let plan = settings.reset_detection_plan();
-    let detected = detect_local_credentials(registry.inner().clone(), plan.provider_ids()).await;
-    let outcome = settings.apply_credential_detection(&plan, &detected)?;
-    tray_presentation::update(
-        &app,
-        &service.state(),
-        &outcome.settings,
-        settings.registry(),
+    drop(command_guard);
+    spawn_provider_reseed(
+        app,
+        registry.inner().clone(),
+        service.inner().clone(),
+        settings.inner().clone(),
+        notifications.inner().clone(),
+        credential_detection_plan,
+        newly_enabled,
     );
-    let state = settings_view_state(&app, &settings);
-    let _ = app.emit("settings-state", &state);
-    let progress_app = app.clone();
-    let usage_state = service
-        .refresh_all_with_progress(&settings.enabled_provider_ids(), true, move |state| {
-            let _ = progress_app.emit("usage-state", state);
-        })
-        .await;
-    let _ = app.emit("usage-state", &usage_state);
-    finish_refresh(&app, &usage_state, &settings, &notifications);
     Ok(state)
 }
 
 #[tauri::command]
-pub fn reset_provider_customization(
+pub async fn reset_all_settings(
+    app: AppHandle,
+    registry: State<'_, Arc<ProviderRegistry>>,
+    service: State<'_, Arc<ProviderService>>,
+    settings: State<'_, Arc<SettingsService>>,
+    notifications: State<'_, Arc<NotificationEvaluator>>,
+    expected_settings_revision: u64,
+    expected_account_revision: u64,
+) -> Result<SettingsViewState, String> {
+    crate::app_info!("config", "reset all settings requested");
+    let panel = app.state::<Arc<PanelResizeSession>>().inner().clone();
+    let panel_reset = panel.begin_automatic_reset()?;
+    let defaults = settings.reset_defaults();
+
+    let result = save_app_settings_inner(
+        app.clone(),
+        service.inner().clone(),
+        settings.inner().clone(),
+        notifications.inner().clone(),
+        defaults,
+        expected_settings_revision,
+        expected_account_revision,
+        SettingsSaveMode::ResetAll,
+    )
+    .await;
+    let (state, newly_enabled, credential_detection_plan) = match result {
+        Ok(result) => result,
+        Err(error) => {
+            if let Err(rollback_error) = panel.rollback_automatic_reset(panel_reset) {
+                crate::app_error!(
+                    "config",
+                    "panel state could not be restored after reset failure"
+                );
+                return Err(format!("{error} {rollback_error}"));
+            }
+            return Err(error);
+        }
+    };
+
+    spawn_provider_reseed(
+        app,
+        registry.inner().clone(),
+        service.inner().clone(),
+        settings.inner().clone(),
+        notifications.inner().clone(),
+        credential_detection_plan,
+        newly_enabled,
+    );
+    Ok(state)
+}
+
+fn spawn_provider_reseed(
+    app: AppHandle,
+    registry: Arc<ProviderRegistry>,
+    service: Arc<ProviderService>,
+    settings: Arc<SettingsService>,
+    notifications: Arc<NotificationEvaluator>,
+    plan: CredentialDetectionPlan,
+    mut refresh_provider_ids: Vec<String>,
+) {
+    tauri::async_runtime::spawn(async move {
+        let detected = detect_local_credentials(registry, plan.provider_ids()).await;
+        let command_guard = settings.lock_command_mutation().await;
+        let outcome = match settings.apply_credential_detection(&plan, &detected) {
+            Ok(outcome) => Some(outcome),
+            Err(_) => {
+                crate::app_warn!(
+                    "config",
+                    "provider detection after reset could not be saved"
+                );
+                None
+            }
+        };
+        if let Some(outcome) = outcome {
+            tray_presentation::update(
+                &app,
+                &service.state(),
+                &outcome.settings,
+                settings.registry(),
+            );
+            let _ = app.emit("settings-state", settings_view_state(&app, &settings));
+            for provider_id in outcome.newly_enabled_provider_ids {
+                if !refresh_provider_ids.contains(&provider_id) {
+                    refresh_provider_ids.push(provider_id);
+                }
+            }
+        }
+        drop(command_guard);
+        let enabled = settings
+            .enabled_provider_ids()
+            .into_iter()
+            .collect::<HashSet<_>>();
+        refresh_provider_ids.retain(|provider_id| enabled.contains(provider_id));
+        if refresh_provider_ids.is_empty() {
+            return;
+        }
+        let progress_app = app.clone();
+        let usage_state = service
+            .refresh_enabled_with_progress(&refresh_provider_ids, true, move |state| {
+                let _ = progress_app.emit("usage-state", state);
+            })
+            .await;
+        let _ = app.emit("usage-state", &usage_state);
+        finish_refresh(&app, &usage_state, &settings, &notifications);
+        let _ = app.emit("settings-state", settings_view_state(&app, &settings));
+    });
+}
+
+fn newly_enabled_provider_ids(previous: &AppSettings, next: &AppSettings) -> Vec<String> {
+    next.providers
+        .iter()
+        .filter(|provider| {
+            provider.enabled
+                && !previous
+                    .providers
+                    .iter()
+                    .any(|old| old.id == provider.id && old.enabled)
+        })
+        .map(|provider| provider.id.clone())
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::newly_enabled_provider_ids;
+    use crate::models::{AppSettings, ProviderLayout};
+
+    fn provider(id: &str, enabled: bool) -> ProviderLayout {
+        ProviderLayout {
+            id: id.to_owned(),
+            enabled,
+            detected: true,
+            expanded: false,
+            metrics: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn newly_enabled_providers_exclude_unchanged_and_disabled_entries() {
+        let previous = AppSettings {
+            providers: vec![provider("codex", true), provider("cursor", false)],
+            ..AppSettings::default()
+        };
+        let next = AppSettings {
+            providers: vec![
+                provider("codex", true),
+                provider("cursor", true),
+                provider("claude", true),
+                provider("disabled", false),
+            ],
+            ..AppSettings::default()
+        };
+
+        assert_eq!(
+            newly_enabled_provider_ids(&previous, &next),
+            vec!["cursor".to_owned(), "claude".to_owned()]
+        );
+    }
+}
+
+#[tauri::command]
+pub async fn reset_provider_customization(
     app: AppHandle,
     service: State<'_, Arc<ProviderService>>,
     settings: State<'_, Arc<SettingsService>>,
     provider_id: String,
+    expected_settings_revision: u64,
+    expected_account_revision: u64,
 ) -> Result<SettingsViewState, String> {
     crate::app_info!("config", "provider customization reset for {provider_id}");
-    let updated = settings.reset_provider(&provider_id)?;
+    let command_guard = settings.lock_command_mutation().await;
+    let updated = settings.reset_provider(
+        &provider_id,
+        expected_settings_revision,
+        expected_account_revision,
+    )?;
     tray_presentation::update(&app, &service.state(), &updated, settings.registry());
     let state = settings_view_state(&app, &settings);
     let _ = app.emit("settings-state", &state);
+    drop(command_guard);
     Ok(state)
 }
 
@@ -293,16 +501,12 @@ pub fn open_log_folder(app: AppHandle) -> Result<(), String> {
 }
 
 pub(crate) fn settings_view_state(app: &AppHandle, service: &SettingsService) -> SettingsViewState {
-    let mut settings = service.get();
-    let mut integration_error = match autostart_is_enabled(app) {
-        Ok(enabled) => {
-            if settings.launch_at_login != enabled {
-                settings.launch_at_login = enabled;
-                let _ = service.update(settings);
-            }
-            None
-        }
-        Err(_) => Some("Launch at login status could not be read.".to_owned()),
+    let (autostart, mut integration_error) = match autostart_is_enabled(app) {
+        Ok(enabled) => (Some(enabled), None),
+        Err(_) => (
+            None,
+            Some("Launch at login status could not be read.".to_owned()),
+        ),
     };
     if let Some(shortcut) = service.get().global_shortcut {
         if !app.global_shortcut().is_registered(shortcut.as_str()) {
@@ -310,12 +514,16 @@ pub(crate) fn settings_view_state(app: &AppHandle, service: &SettingsService) ->
                 Some("The saved global shortcut is currently unavailable.".to_owned());
         }
     }
-    service.view_state(
+    let mut state = service.view_state(
         notification_permission(app),
         integration_error,
         app.state::<DesktopIntegration>().tray_available(),
         app.state::<DesktopIntegration>().platform_summary(),
-    )
+    );
+    if let Some(enabled) = autostart {
+        state.settings.launch_at_login = enabled;
+    }
+    state
 }
 
 pub(crate) fn emit_settings_if_account_changed(

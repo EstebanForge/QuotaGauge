@@ -35,6 +35,7 @@ impl ProviderRegistry {
         let mut definition_indices = HashMap::new();
         let mut metric_indices = HashMap::new();
         let mut metric_owners = BTreeMap::<String, String>::new();
+        let mut api_key_provider_ids = Vec::new();
 
         for provider in providers {
             let mut definition = provider.definition();
@@ -56,6 +57,9 @@ impl ProviderRegistry {
                 metric_owners.insert(metric.id.clone(), definition.id.clone());
                 metric_indices.insert(metric.id.clone(), (provider_index, metric_index));
             }
+            if provider.supports_api_key_configuration() {
+                api_key_provider_ids.push(definition.id.clone());
+            }
             runtimes.insert(definition.id.clone(), provider);
             definitions.push(definition);
         }
@@ -70,6 +74,7 @@ impl ProviderRegistry {
             runtimes,
             catalog: ProviderCatalog {
                 providers: definitions,
+                api_key_provider_ids,
             },
             definition_indices,
             metric_indices,
@@ -285,6 +290,8 @@ mod tests {
 
     struct StubProvider(ProviderDefinition);
 
+    struct ApiKeyStubProvider(ProviderDefinition);
+
     impl UsageProvider for StubProvider {
         fn definition(&self) -> ProviderDefinition {
             self.0.clone()
@@ -292,6 +299,24 @@ mod tests {
 
         fn has_local_credentials(&self) -> bool {
             false
+        }
+
+        fn refresh(&self) -> Result<ProviderSnapshot, ProviderError> {
+            unreachable!()
+        }
+    }
+
+    impl UsageProvider for ApiKeyStubProvider {
+        fn definition(&self) -> ProviderDefinition {
+            self.0.clone()
+        }
+
+        fn has_local_credentials(&self) -> bool {
+            false
+        }
+
+        fn supports_api_key_configuration(&self) -> bool {
+            true
         }
 
         fn refresh(&self) -> Result<ProviderSnapshot, ProviderError> {
@@ -348,6 +373,17 @@ mod tests {
         assert!(registry.runtime("second").is_some());
         assert!(registry.definition("first").is_some());
         assert!(registry.metric("first.session").is_some());
+    }
+
+    #[test]
+    fn registry_exposes_api_key_configuration_capabilities() {
+        let registry = ProviderRegistry::new(vec![
+            runtime(definition("local")),
+            Arc::new(ApiKeyStubProvider(definition("keyed"))),
+        ])
+        .unwrap();
+
+        assert_eq!(registry.catalog().api_key_provider_ids, ["keyed"]);
     }
 
     #[test]

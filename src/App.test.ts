@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App.svelte';
+import type { PanelHeightMode } from './lib/backend';
 import type {
   AppSettings,
   ProviderCatalog,
@@ -87,6 +88,8 @@ describe('OpenQuota dashboard', () => {
       if (command === 'open_notification_settings') return Promise.resolve();
       if (command === 'open_provider_link') return Promise.resolve();
       if (command === 'reset_customization') return Promise.resolve(settingsState);
+      if (command === 'reset_all_settings')
+        return Promise.resolve({ ...settingsState, settingsRevision: 1 });
       if (command === 'reset_provider_customization') return Promise.resolve(settingsState);
       if (command === 'get_panel_resize_edge') return Promise.resolve('bottom');
       if (command === 'get_panel_height_mode') return Promise.resolve('automatic');
@@ -391,6 +394,7 @@ describe('OpenQuota dashboard', () => {
 
     await waitFor(() =>
       expect(mocks.invoke).toHaveBeenCalledWith('save_app_settings', {
+        expectedSettingsRevision: 0,
         expectedAccountRevision: 0,
         settings: expect.objectContaining({ providerNames: { claude: 'Personal' } }),
       }),
@@ -479,6 +483,7 @@ describe('OpenQuota dashboard', () => {
 
     expect(await screen.findByRole('heading', { name: 'Client' })).toBeInTheDocument();
     expect(mocks.invoke).toHaveBeenCalledWith('save_app_settings', {
+      expectedSettingsRevision: 0,
       expectedAccountRevision: 0,
       settings: expect.objectContaining({ providerNames: { [providerId]: 'Client' } }),
     });
@@ -691,6 +696,8 @@ describe('OpenQuota dashboard', () => {
 
     expect(mocks.invoke).toHaveBeenCalledWith('reset_provider_customization', {
       providerId: 'codex',
+      expectedSettingsRevision: 0,
+      expectedAccountRevision: 0,
     });
   });
 
@@ -838,6 +845,13 @@ describe('OpenQuota dashboard', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
     const recorder = screen.getByRole('button', { name: 'Record Shortcut' });
     await fireEvent.click(recorder);
+    expect(recorder).toHaveAttribute('aria-pressed', 'true');
+    await fireEvent.blur(recorder);
+    expect(recorder).toHaveAttribute('aria-pressed', 'false');
+    await fireEvent.click(recorder);
+    expect(await fireEvent.keyDown(recorder, { key: 'Tab' })).toBe(true);
+    expect(recorder).toHaveAttribute('aria-pressed', 'false');
+    await fireEvent.click(recorder);
     await fireEvent.keyDown(recorder, { key: 'Q', code: 'KeyQ', ctrlKey: true, shiftKey: true });
     await fireEvent.click(screen.getByRole('checkbox', { name: /Almost Out/ }));
     await waitFor(() => {
@@ -850,6 +864,86 @@ describe('OpenQuota dashboard', () => {
       expect(mocks.invoke).toHaveBeenCalledWith('request_notification_permission');
     });
     expect(screen.getByRole('checkbox', { name: /Almost Out/ })).toBeChecked();
+  });
+
+  it('confirms a full settings reset without deleting credentials or usage data', async () => {
+    render(App);
+    await screen.findByText('Plus');
+    await fireEvent.click(screen.getByLabelText('Open options'));
+    await fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    const trigger = screen.getByRole('button', { name: 'Reset All Settings…' });
+    trigger.focus();
+    await fireEvent.click(trigger);
+
+    const dialog = screen.getByRole('alertdialog', { name: 'Reset All Settings?' });
+    expect(dialog).toHaveTextContent(
+      'Provider sign-ins, API keys, and usage history stay in place.',
+    );
+    expect(mocks.invoke).not.toHaveBeenCalledWith('reset_all_settings', expect.anything());
+    const cancel = screen.getByRole('button', { name: 'Cancel' });
+    await waitFor(() => expect(cancel).toHaveFocus());
+    await fireEvent.click(cancel);
+    await waitFor(() => expect(trigger).toHaveFocus());
+
+    await fireEvent.click(trigger);
+    await fireEvent.click(screen.getByRole('button', { name: 'Reset All' }));
+    await waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith('reset_all_settings', {
+        expectedSettingsRevision: 0,
+        expectedAccountRevision: 0,
+      }),
+    );
+    expect(await screen.findByRole('status')).toHaveTextContent('All settings restored');
+  });
+
+  it('keeps the reset panel mode when an older mode read finishes late', async () => {
+    let resolvePanelMode: ((mode: 'manual') => void) | undefined;
+    mockInvoke((command: string) => {
+      if (command === 'get_usage_state') return Promise.resolve(liveState);
+      if (command === 'get_app_settings') return Promise.resolve(settingsState);
+      if (command === 'reset_all_settings')
+        return Promise.resolve({ ...settingsState, settingsRevision: 1 });
+      if (command === 'get_panel_height_mode')
+        return new Promise<'manual'>((resolve) => (resolvePanelMode = resolve));
+      if (command === 'get_panel_resize_edge') return Promise.resolve('top');
+      if (command === 'fit_panel_to_content') return Promise.resolve(true);
+      if (command === 'check_for_updates')
+        return Promise.resolve({
+          available: false,
+          currentVersion: '0.1.0',
+          version: null,
+          body: null,
+          installable: true,
+          releaseUrl: 'https://github.com/deviffyy/OpenQuota/releases/latest',
+        });
+      return Promise.resolve();
+    });
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    try {
+      render(App);
+      await screen.findByText('Plus');
+      await fireEvent.click(screen.getByLabelText('Open options'));
+      await fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+      await fireEvent.click(screen.getByRole('button', { name: 'Reset All Settings…' }));
+      await fireEvent.click(screen.getByRole('button', { name: 'Reset All' }));
+      await waitFor(() =>
+        expect(mocks.invoke).toHaveBeenCalledWith('reset_all_settings', {
+          expectedSettingsRevision: 0,
+          expectedAccountRevision: 0,
+        }),
+      );
+      await screen.findByText('All settings restored');
+      resolvePanelMode?.('manual');
+      await Promise.resolve();
+      expect(screen.getByRole('combobox', { name: 'Panel Height' })).toHaveTextContent('Automatic');
+      await waitFor(() =>
+        expect(
+          mocks.invoke.mock.calls.filter(([command]) => command === 'get_panel_resize_edge').length,
+        ).toBeGreaterThanOrEqual(2),
+      );
+    } finally {
+      delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+    }
   });
 
   it('offers system settings only when enabled notifications are blocked', async () => {
@@ -883,7 +977,7 @@ describe('OpenQuota dashboard', () => {
     expect(mocks.invoke).toHaveBeenCalledWith('open_notification_settings');
   });
 
-  it('preserves cached values and exposes a stale refresh error', async () => {
+  it('preserves cached values and exposes a retryable stale refresh error', async () => {
     mockInvoke((command: string) => {
       if (command === 'get_usage_state')
         return Promise.resolve({
@@ -898,13 +992,22 @@ describe('OpenQuota dashboard', () => {
           },
         });
       if (command === 'get_app_settings') return Promise.resolve(settingsState);
+      if (command === 'refresh_provider_usage') return Promise.resolve(liveState);
       return Promise.resolve(liveState);
     });
     render(App);
     expect(await screen.findByRole('alert')).toHaveTextContent('Could not connect to Codex.');
-    expect(screen.getByText('Outdated')).toHaveAttribute(
-      'data-tooltip',
-      expect.stringMatching(/^Last updated/),
+    const outdated = screen.getByText((_, element) =>
+      Boolean(element?.classList.contains('status-badge')),
+    );
+    expect(outdated).toHaveAttribute('data-tooltip', expect.stringMatching(/^Last updated/));
+    expect(outdated).toHaveTextContent(/^Outdated\. Last updated/);
+    const retry = screen.getByRole('button', { name: 'Retry Codex' });
+    retry.focus();
+    await fireEvent.click(retry);
+    expect(mocks.invoke).toHaveBeenCalledWith('refresh_provider_usage', { providerId: 'codex' });
+    await waitFor(() =>
+      expect(screen.getByRole('group', { name: 'Codex provider' })).toHaveFocus(),
     );
   });
 
@@ -925,15 +1028,17 @@ describe('OpenQuota dashboard', () => {
     await fireEvent.click(screen.getAllByRole('button', { name: /Use reset expiring/ })[0]);
 
     const cancel = screen.getByRole('button', { name: 'Cancel' });
-    cancel.focus();
+    await waitFor(() => expect(cancel).toHaveFocus());
     await fireEvent.keyDown(cancel, { key: 'Escape' });
 
     expect(screen.queryByText('Use this reset?')).not.toBeInTheDocument();
     const dialog = screen.getByRole('dialog', { name: 'Rate Limit Resets details' });
-    expect(dialog).toHaveFocus();
+    expect(dialog).toBeVisible();
+    const restoredUse = screen.getAllByRole('button', { name: /Use reset expiring/ })[0];
+    await waitFor(() => expect(restoredUse).toHaveFocus());
     expect(mocks.invoke).not.toHaveBeenCalledWith('dismiss_main_window');
 
-    await fireEvent.keyDown(dialog, { key: 'Escape' });
+    await fireEvent.keyDown(restoredUse, { key: 'Escape' });
     expect(
       screen.queryByRole('dialog', { name: 'Rate Limit Resets details' }),
     ).not.toBeInTheDocument();
@@ -1205,14 +1310,64 @@ describe('OpenQuota dashboard', () => {
     const provider = await screen.findByRole('group', { name: 'Codex provider' });
     const card = within(provider).getByRole('region', { name: 'Codex usage' });
 
-    expect(within(provider).getByRole('alert')).toHaveAttribute(
-      'aria-label',
+    expect(within(provider).getByRole('alert')).toHaveTextContent(
       'Sign in to Codex to load usage.',
     );
+    expect(
+      within(provider).queryByRole('button', { name: 'Configure Codex' }),
+    ).not.toBeInTheDocument();
+    expect(within(provider).getByRole('button', { name: 'Retry Codex' })).toBeInTheDocument();
     expect(provider.querySelector('.provider-status-slot')).toHaveClass('active');
     expect(
       within(within(card).getByRole('group', { name: 'Session options' })).getByText('No data'),
     ).toBeInTheDocument();
+  });
+
+  it('offers configuration when an API-key provider needs authentication', async () => {
+    const definition = providerCatalog.providers.find((provider) => provider.id === 'openrouter')!;
+    const failedOpenRouter: ProviderViewState = {
+      source: 'none',
+      refreshing: false,
+      stale: false,
+      error: 'Add an OpenRouter API key in Customize to view usage.',
+      errorKind: 'authentication',
+      lastAttemptAt: new Date().toISOString(),
+      snapshot: null,
+    };
+    mockInvoke((command: string) => {
+      if (command === 'get_usage_state')
+        return Promise.resolve({ providers: { openrouter: failedOpenRouter } });
+      if (command === 'get_app_settings')
+        return Promise.resolve({
+          ...settingsState,
+          settings: {
+            ...settingsState.settings,
+            providers: [
+              {
+                id: 'openrouter',
+                enabled: true,
+                detected: false,
+                expanded: false,
+                metrics: definition.metrics.map((metric) => ({
+                  id: metric.id,
+                  enabled: metric.defaultEnabled,
+                  section: metric.defaultSection,
+                  pinned: metric.defaultPinned,
+                })),
+              },
+            ],
+          },
+        });
+      if (command === 'get_provider_api_key_state')
+        return Promise.resolve({ providerId: 'openrouter', status: 'notSet' });
+      return Promise.resolve();
+    });
+
+    render(App);
+    const provider = await screen.findByRole('group', { name: 'OpenRouter provider' });
+    await fireEvent.click(within(provider).getByRole('button', { name: 'Configure OpenRouter' }));
+    expect(await screen.findByRole('region', { name: 'OpenRouter API Key' })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Back' })).toHaveFocus());
   });
 
   it('restores stable provider chrome when a refresh request fails to start', async () => {
@@ -1347,6 +1502,86 @@ describe('OpenQuota dashboard', () => {
     }
   });
 
+  it('lets the app preference reduce animations independently of the system setting', async () => {
+    const originalMatchMedia = window.matchMedia;
+    window.matchMedia = vi.fn().mockReturnValue({
+      matches: false,
+      media: '(prefers-reduced-motion: reduce)',
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    });
+    mockInvoke((command: string, args?: InvokeArgs) => {
+      if (command === 'get_usage_state') return Promise.resolve(liveState);
+      if (command === 'get_app_settings')
+        return Promise.resolve({
+          ...settingsState,
+          settings: { ...settingsState.settings, reduceAnimations: true },
+        });
+      if (command === 'save_app_settings')
+        return Promise.resolve({
+          ...settingsState,
+          settingsRevision: 1,
+          settings: args?.settings ?? settingsState.settings,
+        });
+      if (command === 'get_panel_resize_edge') return Promise.resolve('bottom');
+      if (command === 'get_panel_height_mode') return Promise.resolve('automatic');
+      if (command === 'fit_panel_to_content') return Promise.resolve(true);
+      return Promise.resolve();
+    });
+    try {
+      render(App);
+      await waitFor(() => expect(document.documentElement).toHaveAttribute('data-reduced-motion'));
+      await screen.findByText('Plus');
+      await fireEvent.click(screen.getByLabelText('Open options'));
+      await fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+      const toggle = screen.getByRole('checkbox', { name: 'Reduce Animations' });
+      expect(toggle).toBeChecked();
+      await fireEvent.click(toggle);
+      await waitFor(() =>
+        expect(mocks.invoke).toHaveBeenCalledWith(
+          'save_app_settings',
+          expect.objectContaining({
+            settings: expect.objectContaining({ reduceAnimations: false }),
+          }),
+        ),
+      );
+      await waitFor(() =>
+        expect(document.documentElement).not.toHaveAttribute('data-reduced-motion'),
+      );
+    } finally {
+      window.matchMedia = originalMatchMedia;
+    }
+  });
+
+  it('honors the system motion preference even when bootstrap settings fail', async () => {
+    const originalMatchMedia = window.matchMedia;
+    window.matchMedia = vi.fn().mockReturnValue({
+      matches: true,
+      media: '(prefers-reduced-motion: reduce)',
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    });
+    mockInvoke((command: string) => {
+      if (command === 'get_usage_state') return Promise.resolve(liveState);
+      if (command === 'get_app_settings') return Promise.reject(new Error('settings unavailable'));
+      return Promise.resolve();
+    });
+    try {
+      render(App);
+      await waitFor(() => expect(document.documentElement).toHaveAttribute('data-reduced-motion'));
+    } finally {
+      window.matchMedia = originalMatchMedia;
+    }
+  });
+
   it('suppresses the WebView context menu outside custom menu targets', async () => {
     render(App);
     await screen.findByText('Plus');
@@ -1385,8 +1620,17 @@ describe('OpenQuota dashboard', () => {
       value: {},
     });
     const defaultInvoke = mocks.invoke.getMockImplementation()!;
+    let persistedHeightMode: PanelHeightMode = 'manual';
     mocks.invoke.mockImplementation((command: string, args?: InvokeArgs) => {
-      if (command === 'get_panel_height_mode') return Promise.resolve('manual');
+      if (command === 'get_panel_height_mode') return Promise.resolve(persistedHeightMode);
+      if (command === 'set_panel_height_automatic') {
+        persistedHeightMode = 'automatic';
+        return Promise.resolve();
+      }
+      if (command === 'set_panel_height_manual') {
+        persistedHeightMode = 'manual';
+        return Promise.resolve();
+      }
       return defaultInvoke(command, args);
     });
     try {
@@ -1437,13 +1681,18 @@ describe('OpenQuota dashboard', () => {
     render(App);
     await screen.findByText('Plus');
     await fireEvent.click(screen.getByLabelText('Open options'));
-    await fireEvent.click(screen.getByRole('button', { name: 'About OpenQuota' }));
+    const trigger = screen.getByRole('button', { name: 'About OpenQuota' });
+    await fireEvent.click(trigger);
     expect(screen.getByRole('dialog', { name: 'About OpenQuota' })).toBeInTheDocument();
     const close = screen.getByRole('button', { name: 'Close About' });
+    await waitFor(() => expect(close).toHaveFocus());
     expect(close.querySelector('svg')).not.toBeNull();
     expect(close).not.toHaveTextContent('×');
-    await fireEvent.click(close);
+    await fireEvent.keyDown(close, { key: 'Tab' });
+    expect(close).toHaveFocus();
+    await fireEvent.keyDown(close, { key: 'Escape' });
     expect(screen.queryByRole('dialog', { name: 'About OpenQuota' })).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByLabelText('Open options')).toHaveFocus());
   });
 
   it('matches provider context-menu and Customize to Settings navigation behavior', async () => {

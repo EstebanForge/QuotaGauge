@@ -16,7 +16,9 @@ use crate::{
     storage::Storage,
 };
 
-const PROVIDER_REFRESH_TIMEOUT: Duration = Duration::from_secs(45);
+// Cursor can make several bounded requests in sequence; allow its full healthy network budget
+// before quarantining the synchronous provider worker.
+const PROVIDER_REFRESH_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Debug, Clone, Default, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -684,7 +686,9 @@ mod tests {
     use chrono::Utc;
     use tempfile::tempdir;
 
-    use super::{merge_refresh_result, validate_snapshot, ProviderService};
+    use super::{
+        merge_refresh_result, validate_snapshot, ProviderService, PROVIDER_REFRESH_TIMEOUT,
+    };
     use crate::{
         models::{
             MetricDefinition, MetricSection, MetricSource, ProviderDefinition, ProviderErrorKind,
@@ -700,6 +704,11 @@ mod tests {
     };
 
     const TEST_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
+
+    #[test]
+    fn production_refresh_timeout_covers_the_longest_bounded_provider_flow() {
+        assert!(PROVIDER_REFRESH_TIMEOUT >= Duration::from_secs(110));
+    }
 
     struct SlowProvider {
         id: &'static str,
@@ -993,7 +1002,11 @@ mod tests {
         let mut renamed = settings.get();
         renamed.provider_names.insert("codex".into(), "GPT".into());
         settings
-            .update_from_view(renamed, settings.account_revision())
+            .update_from_view(
+                renamed,
+                settings.settings_revision(),
+                settings.account_revision(),
+            )
             .unwrap();
 
         let service = Arc::new(ProviderService::new_with_settings(

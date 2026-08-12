@@ -44,8 +44,11 @@ pub struct SettingsService {
     storage: Arc<Storage>,
     registry: Arc<ProviderRegistry>,
     settings: RwLock<AppSettings>,
+    command_mutation: tokio::sync::Mutex<()>,
+    credential_mutation: tokio::sync::Mutex<()>,
     enablement_revision: AtomicU64,
     credential_revision: AtomicU64,
+    settings_revision: AtomicU64,
     account_revision: AtomicU64,
     active_account_identities: RwLock<HashMap<String, String>>,
 }
@@ -67,8 +70,11 @@ impl SettingsService {
             storage,
             registry,
             settings: RwLock::new(settings),
+            command_mutation: tokio::sync::Mutex::new(()),
+            credential_mutation: tokio::sync::Mutex::new(()),
             enablement_revision: AtomicU64::new(0),
             credential_revision: AtomicU64::new(0),
+            settings_revision: AtomicU64::new(0),
             account_revision: AtomicU64::new(0),
             active_account_identities: RwLock::new(HashMap::new()),
         };
@@ -123,8 +129,11 @@ impl SettingsService {
             storage,
             registry,
             settings: RwLock::new(settings),
+            command_mutation: tokio::sync::Mutex::new(()),
+            credential_mutation: tokio::sync::Mutex::new(()),
             enablement_revision: AtomicU64::new(0),
             credential_revision: AtomicU64::new(0),
+            settings_revision: AtomicU64::new(0),
             account_revision: AtomicU64::new(0),
             active_account_identities: RwLock::new(HashMap::new()),
         };
@@ -146,16 +155,31 @@ impl SettingsService {
             .unwrap_or_default()
     }
 
-    fn get_with_account_revision(&self) -> (AppSettings, u64) {
+    pub(crate) async fn lock_command_mutation(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.command_mutation.lock().await
+    }
+
+    pub(crate) async fn lock_credential_mutation(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.credential_mutation.lock().await
+    }
+
+    fn get_with_revisions(&self) -> (AppSettings, u64, u64) {
         self.settings
             .read()
             .map(|settings| {
                 (
                     settings.clone(),
+                    self.settings_revision.load(Ordering::SeqCst),
                     self.account_revision.load(Ordering::SeqCst),
                 )
             })
-            .unwrap_or_else(|_| (AppSettings::default(), self.account_revision()))
+            .unwrap_or_else(|_| {
+                (
+                    AppSettings::default(),
+                    self.settings_revision(),
+                    self.account_revision(),
+                )
+            })
     }
 
     fn activate_launch_accounts(&self) -> Result<(), StorageError> {
@@ -241,8 +265,13 @@ impl SettingsService {
             .save_settings_with_account_updates(&next, &account_updates)?;
         settings.clone_from(&next);
         active_accounts.insert(provider_id.to_owned(), identity.to_owned());
+        self.settings_revision.fetch_add(1, Ordering::SeqCst);
         self.account_revision.fetch_add(1, Ordering::SeqCst);
         Ok(true)
+    }
+
+    pub fn settings_revision(&self) -> u64 {
+        self.settings_revision.load(Ordering::SeqCst)
     }
 
     pub fn account_revision(&self) -> u64 {
@@ -280,27 +309,57 @@ impl SettingsService {
         Ok(updates)
     }
 
+    #[cfg(test)]
     pub fn update(&self, mut settings: AppSettings) -> Result<AppSettings, String> {
-        self.update_internal(&mut settings, None)
+        self.update_internal(&mut settings, None, None, false)
     }
 
     pub fn update_from_view(
         &self,
         mut settings: AppSettings,
+        expected_settings_revision: u64,
         expected_account_revision: u64,
     ) -> Result<AppSettings, String> {
-        self.update_internal(&mut settings, Some(expected_account_revision))
+        self.update_internal(
+            &mut settings,
+            Some(expected_settings_revision),
+            Some(expected_account_revision),
+            false,
+        )
+    }
+
+    pub fn reset_all_from_view(
+        &self,
+        mut settings: AppSettings,
+        expected_settings_revision: u64,
+        expected_account_revision: u64,
+    ) -> Result<AppSettings, String> {
+        self.update_internal(
+            &mut settings,
+            Some(expected_settings_revision),
+            Some(expected_account_revision),
+            true,
+        )
     }
 
     fn update_internal(
         &self,
         settings: &mut AppSettings,
+        expected_settings_revision: Option<u64>,
         expected_account_revision: Option<u64>,
+        reset_all_account_names: bool,
     ) -> Result<AppSettings, String> {
         let mut current = self
             .settings
             .write()
             .map_err(|_| "OpenQuota settings are temporarily unavailable.".to_owned())?;
+        if expected_settings_revision
+            .is_some_and(|revision| revision != self.settings_revision.load(Ordering::SeqCst))
+        {
+            return Err(
+                "Settings changed before they could be saved. Please try again.".to_owned(),
+            );
+        }
         let enabled_before = enabled_provider_set(&current);
         let detected = current
             .providers
@@ -327,9 +386,12 @@ impl SettingsService {
                 }
             }
         }
-        let account_updates = self
-            .active_account_name_updates(settings)
-            .map_err(|_| "OpenQuota account names could not be saved.".to_owned())?;
+        let account_updates = if reset_all_account_names {
+            self.account_name_reset_updates()
+        } else {
+            self.active_account_name_updates(settings)
+        }
+        .map_err(|_| "OpenQuota account names could not be saved.".to_owned())?;
         self.storage
             .save_settings_with_account_updates(settings, &account_updates)
             .map_err(|_| "OpenQuota settings could not be saved.".to_owned())?;
@@ -338,7 +400,27 @@ impl SettingsService {
         if enablement_changed {
             self.enablement_revision.fetch_add(1, Ordering::SeqCst);
         }
+        self.settings_revision.fetch_add(1, Ordering::SeqCst);
         Ok(settings.clone())
+    }
+
+    fn account_name_reset_updates(&self) -> Result<Vec<ProviderAccountUpdate>, StorageError> {
+        self.storage
+            .load_all_provider_account_records()?
+            .into_iter()
+            .map(|(provider_family, identity_key, provider_id, payload)| {
+                let mut payload = serde_json::from_str::<Value>(&payload)?;
+                if let Some(object) = payload.as_object_mut() {
+                    object.remove("customName");
+                }
+                Ok(ProviderAccountUpdate {
+                    provider_family,
+                    identity_key,
+                    provider_id,
+                    payload: serde_json::to_string(&payload)?,
+                })
+            })
+            .collect()
     }
 
     pub fn reset_detection_plan(&self) -> CredentialDetectionPlan {
@@ -424,6 +506,13 @@ impl SettingsService {
             }
         }
 
+        if next == *current {
+            return Ok(CredentialDetectionOutcome {
+                settings: next,
+                newly_enabled_provider_ids: Vec::new(),
+            });
+        }
+
         self.storage
             .save_settings(&next)
             .map_err(|_| "OpenQuota settings could not be saved.".to_owned())?;
@@ -441,6 +530,7 @@ impl SettingsService {
         if detected_provider_set(&next) != detected_before {
             self.credential_revision.fetch_add(1, Ordering::SeqCst);
         }
+        self.settings_revision.fetch_add(1, Ordering::SeqCst);
         Ok(CredentialDetectionOutcome {
             settings: next,
             newly_enabled_provider_ids,
@@ -456,7 +546,12 @@ impl SettingsService {
             .collect()
     }
 
-    pub fn reset_provider(&self, provider_id: &str) -> Result<AppSettings, String> {
+    pub fn reset_provider(
+        &self,
+        provider_id: &str,
+        expected_settings_revision: u64,
+        expected_account_revision: u64,
+    ) -> Result<AppSettings, String> {
         let mut settings = self.get();
         let definition = self
             .registry
@@ -469,10 +564,22 @@ impl SettingsService {
             .ok_or_else(|| "Provider settings are unavailable.".to_owned())?;
         provider.expanded = false;
         provider.metrics = default_provider(definition, provider.detected).metrics;
-        self.update(settings)
+        self.update_from_view(
+            settings,
+            expected_settings_revision,
+            expected_account_revision,
+        )
     }
 
-    pub fn apply_provider_credential_state(
+    pub fn reset_defaults(&self) -> AppSettings {
+        self.default_settings(&detected_provider_set(&self.get()))
+    }
+
+    pub fn record_provider_credential_mutation(&self) {
+        self.credential_revision.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub fn reconcile_provider_credential_state(
         &self,
         provider_id: &str,
         detected: bool,
@@ -483,7 +590,8 @@ impl SettingsService {
             .write()
             .map_err(|_| "OpenQuota settings are temporarily unavailable.".to_owned())?;
         let enabled_before = enabled_provider_set(&current);
-        let provider = current
+        let mut next = current.clone();
+        let provider = next
             .providers
             .iter_mut()
             .find(|provider| provider.id == provider_id)
@@ -493,13 +601,14 @@ impl SettingsService {
             provider.enabled = true;
         }
         self.storage
-            .save_settings(&current)
+            .save_settings(&next)
             .map_err(|_| "OpenQuota settings could not be saved.".to_owned())?;
-        if enabled_provider_set(&current) != enabled_before {
+        current.clone_from(&next);
+        if enabled_provider_set(&next) != enabled_before {
             self.enablement_revision.fetch_add(1, Ordering::SeqCst);
         }
-        self.credential_revision.fetch_add(1, Ordering::SeqCst);
-        Ok(current.clone())
+        self.settings_revision.fetch_add(1, Ordering::SeqCst);
+        Ok(next)
     }
 
     pub fn default_settings(&self, detected: &HashSet<String>) -> AppSettings {
@@ -521,7 +630,7 @@ impl SettingsService {
         tray_available: bool,
         platform_summary: Option<String>,
     ) -> SettingsViewState {
-        let (settings, account_revision) = self.get_with_account_revision();
+        let (settings, settings_revision, account_revision) = self.get_with_revisions();
         let mut renamable_provider_ids = self.registry.observed_account_provider_ids();
         if let Ok(stored_ids) = self.storage.load_observed_account_provider_ids() {
             for provider_id in stored_ids {
@@ -534,6 +643,7 @@ impl SettingsService {
         }
         SettingsViewState {
             settings,
+            settings_revision,
             account_revision,
             renamable_provider_ids,
             notification_permission: notification_permission.into(),
@@ -604,7 +714,7 @@ fn normalize_with_persisted_accounts(
 ) {
     let catalog = registry.catalog();
     let migrating_to_multi_provider = settings.schema_version < 3;
-    settings.schema_version = 6;
+    settings.schema_version = 7;
     settings.dismissed_update_version = settings
         .dismissed_update_version
         .take()
@@ -853,6 +963,7 @@ mod tests {
         sync::{atomic::Ordering, Arc},
     };
 
+    use serde_json::Value;
     use tempfile::tempdir;
 
     use crate::{
@@ -1201,7 +1312,11 @@ mod tests {
             .provider_names
             .insert("claude".into(), "Personal".into());
         first
-            .update_from_view(settings, first.account_revision())
+            .update_from_view(
+                settings,
+                first.settings_revision(),
+                first.account_revision(),
+            )
             .unwrap();
         drop(first);
 
@@ -1236,7 +1351,11 @@ mod tests {
         let mut settings = service.get();
         settings.provider_names.insert("codex".into(), "GPT".into());
         service
-            .update_from_view(settings, service.account_revision())
+            .update_from_view(
+                settings,
+                service.settings_revision(),
+                service.account_revision(),
+            )
             .unwrap();
 
         service
@@ -1249,7 +1368,11 @@ mod tests {
             .provider_names
             .insert("codex".into(), "Work".into());
         service
-            .update_from_view(settings, service.account_revision())
+            .update_from_view(
+                settings,
+                service.settings_revision(),
+                service.account_revision(),
+            )
             .unwrap();
 
         service
@@ -1311,6 +1434,100 @@ mod tests {
     }
 
     #[test]
+    fn settings_revision_rejects_a_stale_full_snapshot() {
+        let directory = tempdir().unwrap();
+        let storage = Arc::new(Storage::open(&directory.path().join("openquota.db")).unwrap());
+        let service = SettingsService::new_for_test(storage, catalog(), &HashSet::new()).unwrap();
+        let initial_revision = service.settings_revision();
+        let stale = service.get();
+        let mut newer = stale.clone();
+        newer.density = crate::models::DensityPreference::Compact;
+
+        service
+            .update_from_view(newer, initial_revision, service.account_revision())
+            .unwrap();
+        let revision_after_save = service.settings_revision();
+        assert_eq!(revision_after_save, initial_revision + 1);
+
+        let error = service
+            .update_from_view(stale, initial_revision, service.account_revision())
+            .unwrap_err();
+
+        assert!(error.contains("Settings changed"));
+        assert_eq!(service.settings_revision(), revision_after_save);
+        assert_eq!(
+            service.get().density,
+            crate::models::DensityPreference::Compact
+        );
+    }
+
+    #[test]
+    fn settings_revision_tracks_each_persisted_mutation_path() {
+        let directory = tempdir().unwrap();
+        let storage = Arc::new(Storage::open(&directory.path().join("openquota.db")).unwrap());
+        let service = SettingsService::new_for_test(storage, catalog(), &HashSet::new()).unwrap();
+        let mut revision = service.settings_revision();
+
+        service.update(service.get()).unwrap();
+        revision += 1;
+        assert_eq!(service.settings_revision(), revision);
+
+        service.record_provider_credential_mutation();
+        service
+            .reconcile_provider_credential_state("openrouter", true, true)
+            .unwrap();
+        revision += 1;
+        assert_eq!(service.settings_revision(), revision);
+
+        let plan = service.reset_detection_plan();
+        service
+            .apply_credential_detection(&plan, &probe_results(&[]))
+            .unwrap();
+        revision += 1;
+        assert_eq!(service.settings_revision(), revision);
+
+        assert!(service
+            .activate_account("codex", "codex", "aaaaaaaa11111111")
+            .unwrap());
+        revision += 1;
+        assert_eq!(service.settings_revision(), revision);
+
+        service
+            .reset_provider(
+                "codex",
+                service.settings_revision(),
+                service.account_revision(),
+            )
+            .unwrap();
+        revision += 1;
+        assert_eq!(service.settings_revision(), revision);
+        assert_eq!(
+            service
+                .view_state("prompt", None, true, None)
+                .settings_revision,
+            revision
+        );
+    }
+
+    #[test]
+    fn unchanged_credential_probe_does_not_create_a_settings_revision() {
+        let directory = tempdir().unwrap();
+        let storage = Arc::new(Storage::open(&directory.path().join("openquota.db")).unwrap());
+        let service =
+            SettingsService::new_for_test(storage, catalog(), &HashSet::from(["codex".to_owned()]))
+                .unwrap();
+        let revision = service.settings_revision();
+        let plan = service.reset_detection_plan();
+
+        let outcome = service
+            .apply_credential_detection(&plan, &probe_results(&["codex"]))
+            .unwrap();
+
+        assert!(outcome.newly_enabled_provider_ids.is_empty());
+        assert_eq!(service.settings_revision(), revision);
+    }
+
+    #[test]
     fn stale_settings_save_cannot_move_a_name_to_the_new_active_account() {
         let directory = tempdir().unwrap();
         let storage = Arc::new(Storage::open(&directory.path().join("openquota.db")).unwrap());
@@ -1323,10 +1540,14 @@ mod tests {
         let mut named = service.get();
         named.provider_names.insert("codex".into(), "GPT".into());
         service
-            .update_from_view(named, service.account_revision())
+            .update_from_view(
+                named,
+                service.settings_revision(),
+                service.account_revision(),
+            )
             .unwrap();
 
-        let stale_revision = service.account_revision();
+        let stale_account_revision = service.account_revision();
         let mut stale_settings = service.get();
         service
             .activate_account("codex", "codex", "bbbbbbbb22222222")
@@ -1336,7 +1557,11 @@ mod tests {
             .provider_names
             .insert("claude".into(), "Personal".into());
         let updated = service
-            .update_from_view(stale_settings, stale_revision)
+            .update_from_view(
+                stale_settings,
+                service.settings_revision(),
+                stale_account_revision,
+            )
             .unwrap();
 
         assert_eq!(updated.theme, ThemePreference::Dark);
@@ -1806,7 +2031,7 @@ mod tests {
             &mut settings,
             &HashSet::from(["codex".to_owned(), "antigravity".to_owned()]),
         );
-        assert_eq!(settings.schema_version, 6);
+        assert_eq!(settings.schema_version, 7);
         assert_eq!(
             settings
                 .providers
@@ -1868,7 +2093,13 @@ mod tests {
         codex.metrics[0].pinned = true;
         service.update(settings).unwrap();
 
-        let reset = service.reset_provider("codex").unwrap();
+        let reset = service
+            .reset_provider(
+                "codex",
+                service.settings_revision(),
+                service.account_revision(),
+            )
+            .unwrap();
         let codex = reset
             .providers
             .iter()
@@ -1888,13 +2119,109 @@ mod tests {
     }
 
     #[test]
+    fn full_reset_restores_defaults_without_deleting_usage_or_accounts() {
+        let directory = tempdir().unwrap();
+        let storage = Arc::new(Storage::open(&directory.path().join("openquota.db")).unwrap());
+        storage
+            .save_provider_account_record(
+                "codex",
+                "identity-a",
+                "codex",
+                r#"{"customName":"Work","plan":"plus"}"#,
+            )
+            .unwrap();
+        storage
+            .save_provider_account_record(
+                "codex",
+                "identity-b",
+                "codex@bbbbbbbb",
+                r#"{"customName":"Personal","region":"eu"}"#,
+            )
+            .unwrap();
+        let snapshot = ProviderSnapshot {
+            provider_id: "codex".into(),
+            plan: Some("Plus".into()),
+            quotas: Vec::new(),
+            value_metrics: Vec::new(),
+            status_metrics: Vec::new(),
+            notices: Vec::new(),
+            usage: Default::default(),
+            warnings: Vec::new(),
+            refreshed_at: chrono::Utc::now(),
+        };
+        storage.save_snapshot(&snapshot).unwrap();
+        let service = SettingsService::new_for_test(
+            storage.clone(),
+            catalog(),
+            &HashSet::from(["codex".to_owned()]),
+        )
+        .unwrap();
+        service
+            .activate_account("codex", "codex", "identity-a")
+            .unwrap();
+        let mut customized = service.get();
+        customized.theme = ThemePreference::Dark;
+        customized.density = crate::models::DensityPreference::Compact;
+        customized.reduce_animations = true;
+        customized.launch_at_login = true;
+        customized.global_shortcut = Some("Ctrl+Shift+Q".into());
+        customized.notifications.almost_out = true;
+        customized
+            .provider_names
+            .insert("codex".into(), "Work".into());
+        customized.providers.reverse();
+        service.update(customized).unwrap();
+
+        let defaults = service.reset_defaults();
+        let reset = service
+            .reset_all_from_view(
+                defaults,
+                service.settings_revision(),
+                service.account_revision(),
+            )
+            .unwrap();
+
+        let expected = service.reset_defaults();
+        assert_eq!(reset.providers, expected.providers);
+        assert_eq!(reset.provider_names, expected.provider_names);
+        assert_eq!(reset.theme, expected.theme);
+        assert_eq!(reset.density, expected.density);
+        assert_eq!(reset.reduce_animations, expected.reduce_animations);
+        assert_eq!(reset.launch_at_login, expected.launch_at_login);
+        assert_eq!(reset.global_shortcut, expected.global_shortcut);
+        assert_eq!(reset.notifications, expected.notifications);
+        assert_eq!(storage.load_snapshot("codex").unwrap(), Some(snapshot));
+        let records = storage.load_provider_account_records("codex").unwrap();
+        assert_eq!(records.len(), 2);
+        let payloads = records
+            .into_iter()
+            .map(|(identity, provider_id, payload)| {
+                (
+                    identity,
+                    provider_id,
+                    serde_json::from_str::<Value>(&payload).unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(payloads[0].0, "identity-a");
+        assert_eq!(payloads[0].1, "codex");
+        assert_eq!(payloads[0].2["plan"], "plus");
+        assert!(payloads[0].2.get("customName").is_none());
+        assert_eq!(payloads[1].0, "identity-b");
+        assert_eq!(payloads[1].1, "codex@bbbbbbbb");
+        assert_eq!(payloads[1].2["region"], "eu");
+        assert!(payloads[1].2.get("customName").is_none());
+    }
+
+    #[test]
     fn api_key_save_marks_and_enables_provider_while_delete_only_clears_detection() {
         let directory = tempdir().unwrap();
         let storage = Arc::new(Storage::open(&directory.path().join("openquota.db")).unwrap());
         let service = SettingsService::new_for_test(storage, catalog(), &HashSet::new()).unwrap();
 
+        service.record_provider_credential_mutation();
         let saved = service
-            .apply_provider_credential_state("openrouter", true, true)
+            .reconcile_provider_credential_state("openrouter", true, true)
             .unwrap();
         let openrouter = saved
             .providers
@@ -1904,8 +2231,9 @@ mod tests {
         assert!(openrouter.detected);
         assert!(openrouter.enabled);
 
+        service.record_provider_credential_mutation();
         let deleted = service
-            .apply_provider_credential_state("openrouter", false, false)
+            .reconcile_provider_credential_state("openrouter", false, false)
             .unwrap();
         let openrouter = deleted
             .providers
@@ -1928,8 +2256,9 @@ mod tests {
         .unwrap();
         let plan = service.reset_detection_plan();
 
+        service.record_provider_credential_mutation();
         service
-            .apply_provider_credential_state("openrouter", true, true)
+            .reconcile_provider_credential_state("openrouter", true, true)
             .unwrap();
         let outcome = service
             .apply_credential_detection(&plan, &probe_results(&[]))
@@ -1958,8 +2287,9 @@ mod tests {
         .unwrap();
         let plan = service.reset_detection_plan();
 
+        service.record_provider_credential_mutation();
         service
-            .apply_provider_credential_state("openrouter", false, false)
+            .reconcile_provider_credential_state("openrouter", false, false)
             .unwrap();
         let outcome = service
             .apply_credential_detection(&plan, &probe_results(&["openrouter"]))

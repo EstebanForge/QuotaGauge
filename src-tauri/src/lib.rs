@@ -209,6 +209,7 @@ fn spawn_startup_credential_detection(
     tauri::async_runtime::spawn(async move {
         app_info!("config", "startup credential detection began");
         let detected = detect_local_credentials(registry, plan.provider_ids()).await;
+        let command_guard = settings.lock_command_mutation().await;
         let Ok(outcome) = settings.apply_credential_detection(&plan, &detected) else {
             app_error!(
                 "config",
@@ -236,6 +237,7 @@ fn spawn_startup_credential_detection(
             "settings-state",
             commands::settings::settings_view_state(&app, &settings),
         );
+        drop(command_guard);
         if outcome.newly_enabled_provider_ids.is_empty() {
             return;
         }
@@ -491,6 +493,7 @@ pub fn run() {
             commands::settings::get_app_settings,
             commands::settings::save_app_settings,
             commands::settings::reset_customization,
+            commands::settings::reset_all_settings,
             commands::settings::reset_provider_customization,
             commands::settings::request_notification_permission,
             commands::settings::open_notification_settings,

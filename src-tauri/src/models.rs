@@ -20,6 +20,15 @@ pub struct ProviderApiKeyState {
     pub status: ApiKeyStatus,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiKeyMutationOutcome {
+    #[serde(flatten)]
+    pub state: ProviderApiKeyState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct QuotaWindow {
@@ -548,6 +557,8 @@ pub struct ProviderDefinition {
 #[serde(rename_all = "camelCase")]
 pub struct ProviderCatalog {
     pub providers: Vec<ProviderDefinition>,
+    #[serde(default)]
+    pub api_key_provider_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -689,6 +700,7 @@ pub struct AppSettings {
     pub show_total_spend: bool,
     pub theme: ThemePreference,
     pub density: DensityPreference,
+    pub reduce_animations: bool,
     pub window_mode: WindowMode,
     pub menu_bar_style: MenuBarStyle,
     pub usage_display: UsageDisplay,
@@ -710,13 +722,14 @@ pub struct AppSettings {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
-            schema_version: 6,
+            schema_version: 7,
             providers: Vec::new(),
             known_provider_ids: Vec::new(),
             provider_names: BTreeMap::new(),
             show_total_spend: true,
             theme: ThemePreference::System,
             density: DensityPreference::Default,
+            reduce_animations: false,
             window_mode: WindowMode::Popup,
             menu_bar_style: MenuBarStyle::Text,
             usage_display: UsageDisplay::Left,
@@ -750,6 +763,7 @@ impl AppSettings {
 #[serde(rename_all = "camelCase")]
 pub struct SettingsViewState {
     pub settings: AppSettings,
+    pub settings_revision: u64,
     pub account_revision: u64,
     pub renamable_provider_ids: Vec<String>,
     pub notification_permission: String,
@@ -761,8 +775,9 @@ pub struct SettingsViewState {
 #[cfg(test)]
 mod tests {
     use super::{
-        ApiKeyStatus, AppSettings, LogLevel, ProviderApiKeyState, ProviderErrorKind, ProviderLink,
-        ProviderSnapshot, ProviderViewState, UsagePeriod, WindowMode,
+        ApiKeyMutationOutcome, ApiKeyStatus, AppSettings, LogLevel, ProviderApiKeyState,
+        ProviderErrorKind, ProviderLink, ProviderSnapshot, ProviderViewState, UsagePeriod,
+        WindowMode,
     };
 
     #[test]
@@ -774,6 +789,7 @@ mod tests {
         object.remove("logLevel");
         object.remove("providerNames");
         object.remove("windowMode");
+        object.remove("reduceAnimations");
 
         let settings: AppSettings = serde_json::from_value(value).unwrap();
         assert_eq!(settings.dismissed_update_version, None);
@@ -781,6 +797,7 @@ mod tests {
         assert_eq!(settings.last_update_check_at, None);
         assert_eq!(settings.log_level, LogLevel::Info);
         assert_eq!(settings.window_mode, WindowMode::Popup);
+        assert!(!settings.reduce_animations);
     }
 
     #[test]
@@ -823,6 +840,27 @@ mod tests {
             serde_json::json!({
                 "providerId": "openrouter",
                 "status": "overrideActive"
+            })
+        );
+    }
+
+    #[test]
+    fn applied_api_key_mutations_only_add_a_warning_when_reconciliation_is_incomplete() {
+        let value = serde_json::to_value(ApiKeyMutationOutcome {
+            state: ProviderApiKeyState {
+                provider_id: "openrouter".into(),
+                status: ApiKeyStatus::Saved,
+            },
+            warning: Some("Provider status could not be refreshed.".into()),
+        })
+        .unwrap();
+
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "providerId": "openrouter",
+                "status": "saved",
+                "warning": "Provider status could not be refreshed."
             })
         );
     }

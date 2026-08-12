@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type {
+  ApiKeyMutationOutcome,
   AppSettings,
   BootstrapState,
   ProviderApiKeyState,
@@ -45,27 +46,59 @@ export function getProviderApiKeyState(providerId: string) {
 }
 
 export function saveProviderApiKey(providerId: string, apiKey: string) {
-  return invoke<ProviderApiKeyState>('save_provider_api_key', { providerId, apiKey });
+  return invoke<ApiKeyMutationOutcome>('save_provider_api_key', { providerId, apiKey });
 }
 
 export function deleteProviderApiKey(providerId: string) {
-  return invoke<ProviderApiKeyState>('delete_provider_api_key', { providerId });
+  return invoke<ApiKeyMutationOutcome>('delete_provider_api_key', { providerId });
 }
 
 export function getAppSettings() {
   return invoke<SettingsViewState>('get_app_settings');
 }
 
-export function saveAppSettings(settings: AppSettings, expectedAccountRevision: number) {
-  return invoke<SettingsViewState>('save_app_settings', { settings, expectedAccountRevision });
+export function saveAppSettings(
+  settings: AppSettings,
+  expectedSettingsRevision: number,
+  expectedAccountRevision: number,
+) {
+  return invoke<SettingsViewState>('save_app_settings', {
+    settings,
+    expectedSettingsRevision,
+    expectedAccountRevision,
+  });
 }
 
-export function resetCustomization() {
-  return invoke<SettingsViewState>('reset_customization');
+export function resetCustomization(
+  expectedSettingsRevision: number,
+  expectedAccountRevision: number,
+) {
+  return invoke<SettingsViewState>('reset_customization', {
+    expectedSettingsRevision,
+    expectedAccountRevision,
+  });
 }
 
-export function resetProviderCustomization(providerId: string) {
-  return invoke<SettingsViewState>('reset_provider_customization', { providerId });
+export function resetAllSettings(
+  expectedSettingsRevision: number,
+  expectedAccountRevision: number,
+) {
+  return invoke<SettingsViewState>('reset_all_settings', {
+    expectedSettingsRevision,
+    expectedAccountRevision,
+  });
+}
+
+export function resetProviderCustomization(
+  providerId: string,
+  expectedSettingsRevision: number,
+  expectedAccountRevision: number,
+) {
+  return invoke<SettingsViewState>('reset_provider_customization', {
+    providerId,
+    expectedSettingsRevision,
+    expectedAccountRevision,
+  });
 }
 
 export function requestNotificationPermission() {

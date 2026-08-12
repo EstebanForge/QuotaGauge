@@ -69,6 +69,7 @@ function value(id: string, label: string, sourceId: string): MetricDefinition {
 }
 
 export const providerCatalog: ProviderCatalog = {
+  apiKeyProviderIds: ['openrouter'],
   providers: [
     {
       id: 'claude',
@@ -334,6 +335,7 @@ export const antigravityState: ProviderViewState = {
 };
 
 export const settingsState: SettingsViewState = {
+  settingsRevision: 0,
   accountRevision: 0,
   renamableProviderIds: ['claude', 'codex'],
   notificationPermission: 'prompt',
@@ -341,12 +343,13 @@ export const settingsState: SettingsViewState = {
   trayAvailable: true,
   platformSummary: null,
   settings: {
-    schemaVersion: 6,
+    schemaVersion: 7,
     providerNames: {},
     knownProviderIds: ['claude', 'codex', 'antigravity'],
     showTotalSpend: true,
     theme: 'system',
     density: 'default',
+    reduceAnimations: false,
     windowMode: 'popup',
     menuBarStyle: 'text',
     usageDisplay: 'left',

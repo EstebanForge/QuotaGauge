@@ -6,10 +6,10 @@ use zeroize::Zeroizing;
 
 use crate::{
     commands::settings::settings_view_state,
-    models::{ApiKeyStatus, ProviderApiKeyState, ProviderLink},
+    models::{ApiKeyMutationOutcome, ApiKeyStatus, ProviderApiKeyState, ProviderLink},
     notifications::finish_refresh,
     pacing::NotificationEvaluator,
-    providers::ProviderRegistry,
+    providers::{ProviderRegistry, UsageProvider},
     service::ProviderService,
     settings::SettingsService,
     tray_presentation,
@@ -65,6 +65,82 @@ async fn api_key_state(
     .map_err(|_| "The API key status could not be read.".to_owned())?
 }
 
+enum ApiKeyMutation<'a> {
+    Save(&'a str),
+    Delete,
+}
+
+struct AppliedApiKeyMutation {
+    state: ProviderApiKeyState,
+    status_uncertain: bool,
+}
+
+fn mutate_api_key(
+    runtime: &dyn UsageProvider,
+    provider_id: String,
+    mutation: ApiKeyMutation<'_>,
+) -> Result<AppliedApiKeyMutation, String> {
+    let initial_status = runtime
+        .api_key_status()
+        .ok_or_else(|| "That provider does not accept an API key.".to_owned())?
+        .ok();
+    let fallback_status = match &mutation {
+        ApiKeyMutation::Save(_) => {
+            if matches!(
+                initial_status,
+                Some(
+                    ApiKeyStatus::FromEnvironment
+                        | ApiKeyStatus::FromConfig
+                        | ApiKeyStatus::OverrideActive
+                )
+            ) {
+                ApiKeyStatus::OverrideActive
+            } else {
+                ApiKeyStatus::Saved
+            }
+        }
+        ApiKeyMutation::Delete => ApiKeyStatus::NotSet,
+    };
+
+    match mutation {
+        ApiKeyMutation::Save(value) => runtime.save_api_key(value),
+        ApiKeyMutation::Delete => runtime.delete_api_key(),
+    }
+    .map_err(|error| error.to_string())?;
+
+    let (status, status_uncertain) = match runtime.api_key_status() {
+        Some(Ok(status)) => (status, false),
+        Some(Err(_)) | None => (fallback_status, true),
+    };
+    Ok(AppliedApiKeyMutation {
+        state: ProviderApiKeyState {
+            provider_id,
+            status,
+        },
+        status_uncertain,
+    })
+}
+
+fn reconcile_provider_credential_state(
+    app: &AppHandle,
+    service: &ProviderService,
+    settings: &SettingsService,
+    provider_id: &str,
+    detected: bool,
+    enable: bool,
+) -> Result<(), String> {
+    let updated = settings.reconcile_provider_credential_state(provider_id, detected, enable)?;
+    tray_presentation::update(app, &service.state(), &updated, settings.registry());
+    let _ = app.emit("settings-state", settings_view_state(app, settings));
+    Ok(())
+}
+
+fn incomplete_mutation_warning(action: &str) -> String {
+    format!(
+        "The API key was {action}, but OpenQuota could not finish updating provider status. Restart OpenQuota or try again."
+    )
+}
+
 #[tauri::command]
 pub async fn get_provider_api_key_state(
     registry: State<'_, Arc<ProviderRegistry>>,
@@ -82,40 +158,60 @@ pub async fn save_provider_api_key(
     notifications: State<'_, Arc<NotificationEvaluator>>,
     provider_id: String,
     api_key: String,
-) -> Result<ProviderApiKeyState, String> {
+) -> Result<ApiKeyMutationOutcome, String> {
     let api_key = Zeroizing::new(api_key);
     let runtime = registry
         .runtime(&provider_id)
         .ok_or_else(|| "Unknown provider.".to_owned())?;
+    let credential_guard = settings.lock_credential_mutation().await;
+    settings.record_provider_credential_mutation();
     let provider_for_save = provider_id.clone();
-    let state = tauri::async_runtime::spawn_blocking(move || {
-        if runtime.api_key_status().is_none() {
-            return Err("That provider does not accept an API key.".to_owned());
-        }
-        runtime
-            .save_api_key(api_key.as_str())
-            .map_err(|error| error.to_string())?;
-        let status = runtime
-            .api_key_status()
-            .and_then(Result::ok)
-            .ok_or_else(|| "The saved API key status could not be read.".to_owned())?;
-        Ok(ProviderApiKeyState {
-            provider_id: provider_for_save,
-            status,
-        })
+    let applied = tauri::async_runtime::spawn_blocking(move || {
+        mutate_api_key(
+            runtime.as_ref(),
+            provider_for_save,
+            ApiKeyMutation::Save(api_key.as_str()),
+        )
     })
     .await
     .map_err(|_| "The API key could not be saved.".to_owned())??;
 
-    let updated = settings.apply_provider_credential_state(&provider_id, true, true)?;
-    tray_presentation::update(&app, &service.state(), &updated, settings.registry());
-    let _ = app.emit("settings-state", settings_view_state(&app, &settings));
+    let command_guard = settings.lock_command_mutation().await;
+    let settings_reconciled = match reconcile_provider_credential_state(
+        &app,
+        &service,
+        &settings,
+        &provider_id,
+        true,
+        true,
+    ) {
+        Ok(()) => true,
+        Err(error) => {
+            crate::app_warn!(
+                "auth",
+                "provider state after API key save could not be reconciled for {provider_id}: {error}"
+            );
+            false
+        }
+    };
+    if applied.status_uncertain {
+        crate::app_warn!(
+            "auth",
+            "API key status could not be confirmed after saving for {provider_id}"
+        );
+    }
+    drop(command_guard);
+    drop(credential_guard);
     service.refresh(&provider_id, true).await;
     let usage = service.state();
     let _ = app.emit("usage-state", &usage);
     finish_refresh(&app, &usage, &settings, &notifications);
     crate::app_info!("auth", "API key saved for {provider_id}");
-    Ok(state)
+    Ok(ApiKeyMutationOutcome {
+        state: applied.state,
+        warning: (applied.status_uncertain || !settings_reconciled)
+            .then(|| incomplete_mutation_warning("saved securely")),
+    })
 }
 
 #[tauri::command]
@@ -126,56 +222,138 @@ pub async fn delete_provider_api_key(
     settings: State<'_, Arc<SettingsService>>,
     notifications: State<'_, Arc<NotificationEvaluator>>,
     provider_id: String,
-) -> Result<ProviderApiKeyState, String> {
+) -> Result<ApiKeyMutationOutcome, String> {
     let runtime = registry
         .runtime(&provider_id)
         .ok_or_else(|| "Unknown provider.".to_owned())?;
+    let credential_guard = settings.lock_credential_mutation().await;
+    settings.record_provider_credential_mutation();
     let provider_for_delete = provider_id.clone();
-    let state = tauri::async_runtime::spawn_blocking(move || {
-        if runtime.api_key_status().is_none() {
-            return Err("That provider does not accept an API key.".to_owned());
-        }
-        runtime
-            .delete_api_key()
-            .map_err(|error| error.to_string())?;
-        let status = runtime
-            .api_key_status()
-            .and_then(Result::ok)
-            .ok_or_else(|| "The API key status could not be read.".to_owned())?;
-        Ok(ProviderApiKeyState {
-            provider_id: provider_for_delete,
-            status,
-        })
+    let applied = tauri::async_runtime::spawn_blocking(move || {
+        mutate_api_key(
+            runtime.as_ref(),
+            provider_for_delete,
+            ApiKeyMutation::Delete,
+        )
     })
     .await
     .map_err(|_| "The API key could not be removed.".to_owned())??;
 
-    let detected = state.status != ApiKeyStatus::NotSet;
-    let updated = settings.apply_provider_credential_state(&provider_id, detected, false)?;
-    tray_presentation::update(&app, &service.state(), &updated, settings.registry());
-    let _ = app.emit("settings-state", settings_view_state(&app, &settings));
-    if updated
+    let command_guard = settings.lock_command_mutation().await;
+    let detected = applied.state.status != ApiKeyStatus::NotSet;
+    let settings_reconciled = match reconcile_provider_credential_state(
+        &app,
+        &service,
+        &settings,
+        &provider_id,
+        detected,
+        false,
+    ) {
+        Ok(()) => true,
+        Err(error) => {
+            crate::app_warn!(
+                "auth",
+                "provider state after API key removal could not be reconciled for {provider_id}: {error}"
+            );
+            false
+        }
+    };
+    if applied.status_uncertain {
+        crate::app_warn!(
+            "auth",
+            "API key status could not be confirmed after removal for {provider_id}"
+        );
+    }
+    let should_refresh = settings
+        .get()
         .providers
         .iter()
-        .any(|provider| provider.id == provider_id && provider.enabled)
-    {
+        .any(|provider| provider.id == provider_id && provider.enabled);
+    drop(command_guard);
+    drop(credential_guard);
+    if should_refresh {
         service.refresh(&provider_id, true).await;
         let usage = service.state();
         let _ = app.emit("usage-state", &usage);
         finish_refresh(&app, &usage, &settings, &notifications);
     }
     crate::app_info!("auth", "saved API key removed for {provider_id}");
-    Ok(state)
+    Ok(ApiKeyMutationOutcome {
+        state: applied.state,
+        warning: (applied.status_uncertain || !settings_reconciled)
+            .then(|| incomplete_mutation_warning("removed")),
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        models::{MetricDefinition, MetricSection, MetricSource, ProviderDefinition, ProviderLink},
-        providers::ProviderRegistry,
+    use std::{
+        collections::VecDeque,
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Mutex,
+        },
     };
 
-    use super::resolve_provider_link;
+    use crate::{
+        models::{
+            ApiKeyStatus, MetricDefinition, MetricSection, MetricSource, ProviderDefinition,
+            ProviderErrorKind, ProviderLink, ProviderSnapshot,
+        },
+        providers::{ProviderError, ProviderRegistry, UsageProvider},
+    };
+
+    use super::{mutate_api_key, resolve_provider_link, ApiKeyMutation};
+
+    struct MutatingProvider {
+        statuses: Mutex<VecDeque<Result<ApiKeyStatus, ProviderError>>>,
+        saved_value: Mutex<Option<String>>,
+        deleted: AtomicBool,
+    }
+
+    impl MutatingProvider {
+        fn new(statuses: Vec<Result<ApiKeyStatus, ProviderError>>) -> Self {
+            Self {
+                statuses: Mutex::new(statuses.into()),
+                saved_value: Mutex::new(None),
+                deleted: AtomicBool::new(false),
+            }
+        }
+    }
+
+    impl UsageProvider for MutatingProvider {
+        fn definition(&self) -> ProviderDefinition {
+            registry().definition("provider").unwrap().clone()
+        }
+
+        fn has_local_credentials(&self) -> bool {
+            false
+        }
+
+        fn refresh(&self) -> Result<ProviderSnapshot, ProviderError> {
+            unreachable!()
+        }
+
+        fn api_key_status(&self) -> Option<Result<ApiKeyStatus, ProviderError>> {
+            Some(
+                self.statuses
+                    .lock()
+                    .unwrap()
+                    .pop_front()
+                    .unwrap_or(Ok(ApiKeyStatus::NotSet)),
+            )
+        }
+
+        fn save_api_key(&self, value: &str) -> Result<(), ProviderError> {
+            *self.saved_value.lock().unwrap() = Some(value.to_owned());
+            Ok(())
+        }
+
+        fn delete_api_key(&self) -> Result<(), ProviderError> {
+            self.deleted.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+    }
 
     fn registry() -> ProviderRegistry {
         ProviderRegistry::from_definitions(vec![ProviderDefinition {
@@ -213,5 +391,43 @@ mod tests {
         );
         assert!(resolve_provider_link(&registry, "provider", 1).is_err());
         assert!(resolve_provider_link(&registry, "unknown", 0).is_err());
+    }
+
+    #[test]
+    fn applied_api_key_save_is_not_reported_as_failed_when_status_refresh_fails() {
+        let provider = MutatingProvider::new(vec![
+            Ok(ApiKeyStatus::FromEnvironment),
+            Err(ProviderError::new(
+                ProviderErrorKind::CredentialStorage,
+                "status unavailable",
+            )),
+        ]);
+
+        let applied =
+            mutate_api_key(&provider, "provider".into(), ApiKeyMutation::Save("secret")).unwrap();
+
+        assert_eq!(applied.state.status, ApiKeyStatus::OverrideActive);
+        assert!(applied.status_uncertain);
+        assert_eq!(
+            provider.saved_value.lock().unwrap().as_deref(),
+            Some("secret")
+        );
+    }
+
+    #[test]
+    fn applied_api_key_delete_is_not_reported_as_failed_when_status_refresh_fails() {
+        let provider = MutatingProvider::new(vec![
+            Ok(ApiKeyStatus::Saved),
+            Err(ProviderError::new(
+                ProviderErrorKind::CredentialStorage,
+                "status unavailable",
+            )),
+        ]);
+
+        let applied = mutate_api_key(&provider, "provider".into(), ApiKeyMutation::Delete).unwrap();
+
+        assert_eq!(applied.state.status, ApiKeyStatus::NotSet);
+        assert!(applied.status_uncertain);
+        assert!(provider.deleted.load(Ordering::SeqCst));
     }
 }

@@ -21,6 +21,7 @@
     refreshProviderUsage,
     refreshUsage,
     requestNotificationPermission,
+    resetAllSettings as resetAllSettingsCommand,
     resetCustomization as resetCustomizationCommand,
     resetProviderCustomization as resetProviderCustomizationCommand,
     setPanelHeightAutomatic,
@@ -65,7 +66,7 @@
   let now = $state(Date.now());
   let settingsError = $state<string | null>(null);
   let automaticUpdatesReady = $state(false);
-  let reducedMotion = $state(false);
+  let systemReducedMotion = $state(false);
   let slideDirection = $state(1);
   let slidePageTransition = $state(true);
   let customizationHistory = $state<AppSettings[]>([]);
@@ -73,8 +74,13 @@
   let reordering = $state(false);
   let confirmationMessage = $state<string | null>(null);
   let resetConfirmationOpen = $state(false);
+  let settingsResetConfirmationOpen = $state(false);
   let resettingCustomization = $state(false);
+  let resettingAllSettings = $state(false);
+  let resettingProviderId = $state<string | null>(null);
   let showAbout = $state(false);
+  let aboutTrigger: HTMLElement | null = null;
+  let aboutCloseButton = $state<HTMLButtonElement>();
   let shareMenuOpen = $state(false);
   let optionsMenuElement = $state<HTMLDetailsElement>();
   let shareMenuElement = $state<HTMLDetailsElement>();
@@ -86,6 +92,9 @@
   const shortcuts = shortcutLabels(platform);
   const settingsController = new SettingsController((message) => (settingsError = message));
   const settingsState = $derived(settingsController.state);
+  const reducedMotion = $derived(
+    systemReducedMotion || Boolean(settingsState?.settings.reduceAnimations),
+  );
   const floatingWindow = $derived(
     !!settingsState &&
       (!settingsState.trayAvailable || settingsState.settings.windowMode === 'floating'),
@@ -97,6 +106,7 @@
   const renderedResizeEdge = $derived(floatingWindow ? 'bottom' : resizeEdge);
   let panelHeightMode = $state<PanelHeightMode>('automatic');
   let panelHeightModeRequest = 0;
+  let panelHeightModeMutation: Promise<void> = Promise.resolve();
   let renameCard = $state<{ id: string; initialValue: string } | null>(null);
   let lastResizeGripPointerAt = Number.NEGATIVE_INFINITY;
   let panelResizeOperation: Promise<void> | null = null;
@@ -110,8 +120,9 @@
   });
 
   $effect(() => {
-    if (!settingsState) return;
     const root = document.documentElement;
+    root.toggleAttribute('data-reduced-motion', reducedMotion);
+    if (!settingsState) return;
     if (settingsState.settings.theme === 'system') delete root.dataset.theme;
     else root.dataset.theme = settingsState.settings.theme;
     root.dataset.density = settingsState.settings.density;
@@ -148,8 +159,11 @@
     closeOptionsMenu();
     showAbout = false;
     resetConfirmationOpen = false;
+    settingsResetConfirmationOpen = false;
     renameCard = null;
     resettingCustomization = false;
+    resettingAllSettings = false;
+    resettingProviderId = null;
     confirmationMessage = null;
     const content = document.querySelector<HTMLElement>('.content');
     if (content && typeof content.scrollTo === 'function') content.scrollTo({ top: 0 });
@@ -167,6 +181,12 @@
     slidePageTransition = shouldSlideBetweenScreens(screen, next);
     slideDirection = screenRank(next) >= screenRank(screen) ? 1 : -1;
     screen = next;
+  }
+  async function openProviderCustomization(providerId: string, focusBack = false) {
+    navigate(`provider:${providerId}`);
+    if (!focusBack) return;
+    await tick();
+    document.querySelector<HTMLButtonElement>('.screen-header button[aria-label="Back"]')?.focus();
   }
   function back() {
     if (screen.startsWith('provider:')) navigate('customize');
@@ -202,7 +222,7 @@
     const current = settingsState;
     if (!current) return;
     if (customizationGestureStart) {
-      settingsController.setState({ ...current, settings: next });
+      settingsController.setDraftSettings(next);
       settingsError = null;
       return;
     }
@@ -236,22 +256,29 @@
   }
   function beginCustomizationGesture() {
     if (!settingsState) return;
-    customizationGestureStart ??= cloneSettings(settingsState.settings);
+    if (!customizationGestureStart) {
+      customizationGestureStart = cloneSettings(settingsState.settings);
+      settingsController.beginDraft();
+    }
     reordering = true;
     scheduleWindowFit();
   }
   function endCustomizationGesture(moved: boolean, cancelled = false) {
     const current = settingsState;
-    if (!current) return;
+    if (!current) {
+      settingsController.endDraft();
+      return;
+    }
     const start = customizationGestureStart;
     const final = current.settings;
     customizationGestureStart = null;
     reordering = false;
-    if (start && moved && cancelled) settingsController.setState({ ...current, settings: start });
+    if (start && moved && cancelled) settingsController.setDraftSettings(start);
     else if (start && moved) {
       customizationHistory = [...customizationHistory.slice(-19), start];
       saveSettings(final);
     }
+    settingsController.endDraft();
     queueMicrotask(scheduleWindowFit);
   }
   function undoCustomization() {
@@ -268,7 +295,7 @@
       providers: Object.fromEntries(
         Object.entries(viewState.providers).map(([id, state]) => [
           id,
-          { ...state, refreshing: true, error: null },
+          { ...state, refreshing: true },
         ]),
       ),
     };
@@ -294,7 +321,7 @@
       ...viewState,
       providers: {
         ...viewState.providers,
-        [providerId]: { ...current, refreshing: true, error: null },
+        [providerId]: { ...current, refreshing: true },
       },
     };
     try {
@@ -323,9 +350,12 @@
     const current = settingsState;
     if (!current || resettingCustomization) return;
     resettingCustomization = true;
-    customizationHistory = [...customizationHistory.slice(-19), cloneSettings(current.settings)];
+    const previous = cloneSettings(current.settings);
     try {
-      settingsController.setState(await resetCustomizationCommand());
+      await settingsController.runMutation((expectedSettingsRevision, expectedAccountRevision) =>
+        resetCustomizationCommand(expectedSettingsRevision, expectedAccountRevision),
+      );
+      customizationHistory = [...customizationHistory.slice(-19), previous];
     } catch {
       settingsError = 'Customization could not be reset.';
     } finally {
@@ -335,14 +365,47 @@
   }
   async function resetProviderCustomization(providerId: string) {
     const current = settingsState;
-    if (!current) return;
+    if (!current || resettingProviderId) return;
     const provider = current.settings.providers.find((item) => item.id === providerId);
     if (!provider) return;
-    customizationHistory = [...customizationHistory.slice(-19), cloneSettings(current.settings)];
+    const previous = cloneSettings(current.settings);
+    resettingProviderId = providerId;
     try {
-      settingsController.setState(await resetProviderCustomizationCommand(providerId));
+      await settingsController.runMutation((expectedSettingsRevision, expectedAccountRevision) =>
+        resetProviderCustomizationCommand(
+          providerId,
+          expectedSettingsRevision,
+          expectedAccountRevision,
+        ),
+      );
+      customizationHistory = [...customizationHistory.slice(-19), previous];
     } catch {
       settingsError = `${providerDisplayName(providerId)} customization could not be reset.`;
+    } finally {
+      resettingProviderId = null;
+    }
+  }
+  async function confirmAllSettingsReset() {
+    if (!settingsState || resettingAllSettings) return;
+    const windowModeChanged = settingsState.settings.windowMode !== 'popup';
+    if (windowModeChanged) beginContentMorph();
+    resettingAllSettings = true;
+    try {
+      await panelHeightModeMutation;
+      await settingsController.runMutation((expectedSettingsRevision, expectedAccountRevision) =>
+        resetAllSettingsCommand(expectedSettingsRevision, expectedAccountRevision),
+      );
+      customizationHistory = [];
+      updatePanelHeightMode();
+      updatePanelResizeEdge();
+      settingsError = null;
+      showConfirmation('All settings restored');
+    } catch {
+      settingsError = 'Settings could not be reset.';
+      updatePanelHeightMode();
+    } finally {
+      resettingAllSettings = false;
+      settingsResetConfirmationOpen = false;
     }
   }
   async function copyCanvas(canvas: HTMLCanvasElement, fallback: string) {
@@ -412,8 +475,30 @@
     if (screen.startsWith('provider:')) return providerDisplayName(screen.slice(9));
     return screen === 'settings' ? 'Settings' : 'Customize';
   }
+  async function openAbout() {
+    aboutTrigger = optionsMenuElement?.querySelector<HTMLElement>(':scope > summary') ?? null;
+    showAbout = true;
+    await tick();
+    aboutCloseButton?.focus();
+  }
+  async function closeAbout() {
+    showAbout = false;
+    await tick();
+    aboutTrigger?.focus();
+    aboutTrigger = null;
+  }
   function closeAboutFromBackdrop(event: MouseEvent) {
-    if (event.target === event.currentTarget) showAbout = false;
+    if (event.target === event.currentTarget) void closeAbout();
+  }
+  function handleAboutKeydown(event: KeyboardEvent) {
+    event.stopPropagation();
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      void closeAbout();
+    } else if (event.key === 'Tab') {
+      event.preventDefault();
+      aboutCloseButton?.focus();
+    }
   }
   function ownsEnterKey(target: EventTarget | null) {
     if (!(target instanceof Element)) return false;
@@ -493,6 +578,7 @@
     }
     const operation = (async () => {
       try {
+        await panelHeightModeMutation;
         const edge = await beginPanelResize();
         resizeEdge = edge;
         // The native begin command has already persisted the current height as manual. Mirroring it
@@ -523,24 +609,25 @@
   }
   async function changePanelHeightMode(mode: PanelHeightMode) {
     if (!('__TAURI_INTERNALS__' in window)) return;
-    panelHeightModeRequest += 1;
+    const request = ++panelHeightModeRequest;
+    const operation = panelHeightModeMutation.then(() =>
+      mode === 'automatic' ? setPanelHeightAutomatic() : setPanelHeightManual(),
+    );
+    panelHeightModeMutation = operation.catch(() => undefined);
     try {
-      if (mode === 'automatic') await setPanelHeightAutomatic();
-      else await setPanelHeightManual();
-      acceptPanelHeightMode(mode);
-      if (mode === 'automatic') scheduleWindowFit();
+      await operation;
+      if (request === panelHeightModeRequest) updatePanelHeightMode();
     } catch {
+      if (request !== panelHeightModeRequest) return;
       settingsError = 'OpenQuota could not change the panel height mode.';
       updatePanelHeightMode();
     }
   }
   async function requestNotifications() {
-    const current = settingsState;
-    if (!current) return;
+    if (!settingsState) return;
     try {
-      const currentSettings = current.settings;
       const permissionState = await requestNotificationPermission();
-      settingsController.setState({ ...permissionState, settings: currentSettings });
+      settingsController.acceptExternalState(permissionState);
     } catch {
       settingsError = 'Notification permission could not be requested.';
     }
@@ -567,8 +654,7 @@
   onMount(() => {
     const motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
     const updateMotionPreference = () => {
-      reducedMotion = motionQuery.matches;
-      document.documentElement.toggleAttribute('data-reduced-motion', reducedMotion);
+      systemReducedMotion = motionQuery.matches;
       scheduleWindowFit();
     };
     updateMotionPreference();
@@ -605,7 +691,7 @@
       if (event.key === 'Escape') {
         event.preventDefault();
         if (showAbout) {
-          showAbout = false;
+          void closeAbout();
           return;
         }
         back();
@@ -741,6 +827,7 @@
           <button
             class="text-button"
             type="button"
+            disabled={resettingProviderId !== null}
             onclick={() => resetProviderCustomization(screen.slice(9))}
             aria-label={`Reset ${topBarTitle()}`}
             data-tooltip={`Reset ${topBarTitle()}`}
@@ -781,7 +868,7 @@
                 onReorderStart={beginCustomizationGesture}
                 onReorderEnd={endCustomizationGesture}
                 onCustomize={() => navigate('customize')}
-                onOpenProviderCustomize={(id) => navigate(`provider:${id}`)}
+                onOpenProviderCustomize={(id) => void openProviderCustomization(id, true)}
                 onRenameProvider={openRenameProvider}
                 onShare={shareProvider}
                 onShareTotal={shareTotalSpend}
@@ -811,12 +898,13 @@
                 onCustomize={() => navigate('customize')}
                 onCopyLogPath={copyLogPath}
                 onOpenLogFolder={openLogFolder}
+                onResetAllSettings={() => (settingsResetConfirmationOpen = true)}
               />
             {:else if screen === 'customize'}
               <CustomizeProviderList
                 settings={settingsState.settings}
                 {catalog}
-                onOpen={(id) => navigate(`provider:${id}`)}
+                onOpen={(id) => void openProviderCustomization(id)}
                 onChange={saveCustomization}
                 onReorderStart={beginCustomizationGesture}
                 onReorderEnd={endCustomizationGesture}
@@ -928,7 +1016,7 @@
                   ><Icon name="refresh" /><span>Check for Updates…</span></button
                 >
                 <hr />
-                <button class="menu-item" type="button" onclick={() => (showAbout = true)}
+                <button class="menu-item" type="button" onclick={openAbout}
                   ><Icon name="about" /><span>About OpenQuota</span></button
                 >
                 <button
@@ -963,6 +1051,17 @@
       />
     {/if}
 
+    {#if settingsResetConfirmationOpen}
+      <ConfirmationSheet
+        title="Reset All Settings?"
+        message="This restores appearance, notifications, shortcuts, updates, panel sizing, provider names, and layout. Provider sign-ins, API keys, and usage history stay in place. This cannot be undone."
+        confirmLabel="Reset All"
+        pending={resettingAllSettings}
+        onConfirm={() => void confirmAllSettingsReset()}
+        onCancel={() => (settingsResetConfirmationOpen = false)}
+      />
+    {/if}
+
     {#if renameCard}
       <RenameProviderSheet
         initialValue={renameCard.initialValue}
@@ -972,7 +1071,12 @@
     {/if}
 
     {#if showAbout}
-      <div class="about-backdrop" role="presentation" onclick={closeAboutFromBackdrop}>
+      <div
+        class="about-backdrop"
+        role="presentation"
+        onclick={closeAboutFromBackdrop}
+        onkeydown={handleAboutKeydown}
+      >
         <div
           class="about-card"
           role="dialog"
@@ -981,10 +1085,11 @@
           aria-label="About OpenQuota"
         >
           <button
+            bind:this={aboutCloseButton}
             class="about-card__close"
             type="button"
             aria-label="Close About"
-            onclick={() => (showAbout = false)}
+            onclick={() => void closeAbout()}
             ><Icon name="close" size={11} strokeWidth={2.3} /></button
           >
           <OpenQuotaMark size={44} />

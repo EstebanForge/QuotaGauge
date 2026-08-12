@@ -14,6 +14,8 @@ describe('provider catalog index', () => {
     });
     expect(catalog.supportsSpend('claude')).toBe(true);
     expect(catalog.supportsSpend('antigravity')).toBe(false);
+    expect(catalog.supportsApiKeyConfiguration('openrouter')).toBe(true);
+    expect(catalog.supportsApiKeyConfiguration('codex')).toBe(false);
     expect(catalog.metric('openrouter.balance')).toMatchObject({
       label: 'Balance',
       source: { kind: 'value', sourceId: 'balance' },

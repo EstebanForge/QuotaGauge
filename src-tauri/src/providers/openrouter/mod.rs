@@ -234,6 +234,10 @@ impl UsageProvider for OpenRouterProvider {
         )
     }
 
+    fn supports_api_key_configuration(&self) -> bool {
+        true
+    }
+
     fn save_api_key(&self, value: &str) -> Result<(), ProviderError> {
         self.auth
             .save(value)

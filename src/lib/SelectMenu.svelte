@@ -149,7 +149,7 @@
   }
 
   function menuMotion(duration: number): TransitionConfig {
-    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const reducedMotion = document.documentElement.hasAttribute('data-reduced-motion');
     return {
       duration: reducedMotion ? 0 : duration,
       easing: cubicOut,
