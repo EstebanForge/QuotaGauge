@@ -10,7 +10,7 @@ use std::{
     time::Duration,
 };
 
-use chrono::{DateTime, TimeDelta, Utc};
+use chrono::{DateTime, NaiveDate, TimeDelta, Utc};
 use reqwest::{blocking::Client, header::ETAG, StatusCode};
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
@@ -353,23 +353,42 @@ fn load_pricing(
     cache_directory: &Path,
     bundled: &BundledSources,
 ) -> Result<ModelPricing, PricingStoreError> {
+    let bundled_supplement = PricingSupplement::decode(&bundled.supplement)?;
     let supplement = match fs::read(cache_directory.join(SourceId::Supplement.file_name())) {
         Ok(cached) => match PricingSupplement::decode(&cached) {
-            Ok(supplement) => supplement,
+            Ok(cached_supplement)
+                if supplement_is_newer(
+                    bundled_supplement.updated_at.as_deref(),
+                    cached_supplement.updated_at.as_deref(),
+                ) =>
+            {
+                bundled_supplement
+            }
+            Ok(cached_supplement) => cached_supplement,
             Err(error) => {
                 crate::app_warn!(
                     "pricing",
                     "cached pricing supplement unreadable, using bundled: {error}"
                 );
-                PricingSupplement::decode(&bundled.supplement)?
+                bundled_supplement
             }
         },
-        Err(_) => PricingSupplement::decode(&bundled.supplement)?,
+        Err(_) => bundled_supplement,
     };
-    let _supplement_updated_at = supplement.updated_at.as_deref();
     let primary = load_catalog(cache_directory, SourceId::Litellm, &bundled.litellm)?;
     let secondary = load_catalog(cache_directory, SourceId::ModelsDev, &bundled.models_dev)?;
     Ok(ModelPricing::new(supplement, primary, secondary))
+}
+
+fn supplement_is_newer(candidate: Option<&str>, current: Option<&str>) -> bool {
+    let parse = |value: Option<&str>| {
+        value.and_then(|value| NaiveDate::parse_from_str(value, "%Y-%m-%d").ok())
+    };
+    match (parse(candidate), parse(current)) {
+        (Some(candidate), Some(current)) => candidate > current,
+        (Some(_), None) => true,
+        _ => false,
+    }
 }
 
 fn load_catalog(
@@ -505,6 +524,29 @@ mod tests {
         }
     }
 
+    fn supplement(updated_at: Option<&str>, input_per_million: f64) -> Vec<u8> {
+        let mut value = serde_json::json!({
+            "pricing": {
+                "auto": {
+                    "input_per_million": input_per_million,
+                    "output_per_million": 6
+                }
+            },
+            "fast_multipliers": {},
+            "alias_rules": []
+        });
+        if let Some(updated_at) = updated_at {
+            value["updated_at"] = updated_at.into();
+        }
+        serde_json::to_vec(&value).unwrap()
+    }
+
+    fn bundled_with_supplement(updated_at: Option<&str>, input_per_million: f64) -> BundledSources {
+        let mut sources = bundled();
+        sources.supplement = Arc::from(supplement(updated_at, input_per_million));
+        sources
+    }
+
     fn response(body: &[u8]) -> FetchResponse {
         FetchResponse {
             status: StatusCode::OK,
@@ -543,6 +585,107 @@ mod tests {
             store.snapshot().resolve("auto").unwrap().input_per_million,
             1.25
         );
+    }
+
+    #[test]
+    fn supplement_selection_prefers_only_a_strictly_newer_valid_date() {
+        let cases = [
+            ("newer bundle", Some("2026-08-12"), Some("2026-08-11"), 1.0),
+            ("newer cache", Some("2026-08-11"), Some("2026-08-12"), 9.0),
+            (
+                "equal date keeps cache",
+                Some("2026-08-12"),
+                Some("2026-08-12"),
+                9.0,
+            ),
+            (
+                "dated bundle replaces undated cache",
+                Some("2026-08-12"),
+                None,
+                1.0,
+            ),
+            (
+                "dated cache replaces undated bundle",
+                None,
+                Some("2026-08-12"),
+                9.0,
+            ),
+            (
+                "valid bundle replaces malformed cache date",
+                Some("2026-08-12"),
+                Some("not-a-date"),
+                1.0,
+            ),
+            ("undated cache stays compatible", None, None, 9.0),
+        ];
+
+        for (label, bundled_date, cached_date, expected_input) in cases {
+            let directory = tempdir().unwrap();
+            fs::write(
+                directory.path().join(SourceId::Supplement.file_name()),
+                supplement(cached_date, 9.0),
+            )
+            .unwrap();
+            let pricing = load_pricing(
+                directory.path(),
+                &bundled_with_supplement(bundled_date, 1.0),
+            )
+            .unwrap();
+            assert_eq!(
+                pricing.resolve("auto").unwrap().input_per_million,
+                expected_input,
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
+    fn unreadable_cached_supplement_falls_back_to_bundle() {
+        let directory = tempdir().unwrap();
+        fs::write(
+            directory.path().join(SourceId::Supplement.file_name()),
+            b"not json",
+        )
+        .unwrap();
+
+        let pricing = load_pricing(
+            directory.path(),
+            &bundled_with_supplement(Some("2026-08-12"), 1.0),
+        )
+        .unwrap();
+
+        assert_eq!(pricing.resolve("auto").unwrap().input_per_million, 1.0);
+    }
+
+    #[test]
+    fn stale_download_is_cached_without_replacing_a_newer_bundle() {
+        let directory = tempdir().unwrap();
+        let http = Arc::new(StubHttp::default());
+        http.push(response(br#"{"fetched-model":{"input_cost_per_token":0.000005,"output_cost_per_token":0.00001}}"#));
+        http.push(response(
+            br#"{"x":{"models":{"fetched-dev":{"cost":{"input":1,"output":2}}}}}"#,
+        ));
+        http.push(response(&supplement(Some("2026-08-11"), 9.0)));
+        let now = Utc.with_ymd_and_hms(2026, 8, 12, 10, 0, 0).unwrap();
+        let store = PricingStore::with_dependencies(
+            directory.path().to_path_buf(),
+            bundled_with_supplement(Some("2026-08-12"), 1.0),
+            http,
+            Arc::new(move || now),
+        )
+        .unwrap();
+
+        store.refresh_due();
+
+        assert_eq!(
+            store.snapshot().resolve("auto").unwrap().input_per_million,
+            1.0
+        );
+        let cached = PricingSupplement::decode(
+            &fs::read(directory.path().join(SourceId::Supplement.file_name())).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(cached.updated_at.as_deref(), Some("2026-08-11"));
     }
 
     #[test]
