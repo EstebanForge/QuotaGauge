@@ -118,7 +118,7 @@ fn parse_integer(value: Option<&String>) -> u64 {
 mod tests {
     use std::collections::HashMap;
 
-    use crate::pricing::{ModelRates, PricingCatalog, PricingSupplement};
+    use crate::pricing::{test_bundled_pricing, ModelRates, PricingCatalog, PricingSupplement};
 
     use super::*;
 
@@ -151,6 +151,22 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].tokens.input, 300_000);
         assert!((rows[0].estimated_cost_usd.unwrap() - 10.6).abs() < 0.000_001);
+    }
+
+    #[test]
+    fn router_model_labels_use_the_routed_models_rates() {
+        let csv =
+            "Date,Model,Input (w/ Cache Write),Input (w/o Cache Write),Cache Read,Output Tokens\n\
+2026-08-12T00:00:00Z,Opus 5 (Auto Balanced),0,1000000,0,1000000\n\
+2026-08-12T00:01:00Z,Kimi K3 (Auto Intelligence),0,1000000,0,1000000\n\
+2026-08-12T00:02:00Z,Grok 4.6 Fast (Auto Balanced),0,1000000,0,1000000";
+
+        let rows = parse_usage_csv(csv, &test_bundled_pricing());
+
+        assert_eq!(rows.len(), 3);
+        for (row, expected) in rows.iter().zip([30.0, 18.0, 16.0]) {
+            assert_eq!(row.estimated_cost_usd, Some(expected), "{}", row.model);
+        }
     }
 
     #[test]

@@ -64,6 +64,19 @@ mod bundled_resource_tests {
     #[test]
     fn known_log_models_and_aliases_match_expected_rates() {
         let pricing = test_bundled_pricing();
+        let assert_rates = |model: &str, expected: [f64; 4]| {
+            let rates = pricing.resolve(model).unwrap_or_else(|| panic!("{model}"));
+            assert_eq!(
+                [
+                    rates.input_per_million,
+                    rates.cache_write_per_million,
+                    rates.cache_read_per_million,
+                    rates.output_per_million,
+                ],
+                expected,
+                "{model}"
+            );
+        };
         assert_eq!(
             pricing
                 .resolve("claude-sonnet-4-5-20250929")
@@ -76,7 +89,7 @@ mod bundled_resource_tests {
                 .resolve("gpt-5.6-sol-ultra-fast")
                 .unwrap()
                 .input_per_million,
-            12.5
+            10.0
         );
         assert_eq!(
             pricing
@@ -85,6 +98,19 @@ mod bundled_resource_tests {
                 .output_per_million,
             50.0
         );
+        assert_rates("gpt-5.6-high-fast", [10.0, 12.5, 1.0, 60.0]);
+        assert_rates("gpt-5.6-terra-max-fast", [4.0, 5.0, 0.4, 24.0]);
+        assert_rates("gpt-5.6-luna-high-fast", [0.4, 0.5, 0.04, 2.4]);
+        assert_rates("claude-opus-5", [5.0, 6.25, 0.5, 25.0]);
+        assert_rates(
+            "claude-opus-5[1m]-thinking-max-fast",
+            [10.0, 12.5, 1.0, 50.0],
+        );
+        assert_rates("claude-sonnet-5", [2.0, 2.5, 0.2, 10.0]);
+        assert_rates("kimi-k3-code-max", [3.0, 3.0, 0.3, 15.0]);
+        assert_rates("cursor-grok-4.5-high-fast", [4.0, 4.0, 1.0, 12.0]);
+        assert_rates("cursor-grok-4.6-medium", [2.0, 2.0, 0.5, 6.0]);
+        assert_rates("grok-4.6-fast-high", [4.0, 4.0, 1.0, 12.0]);
         assert_eq!(
             pricing.resolve("grok-build-0.1").unwrap().input_per_million,
             1.0

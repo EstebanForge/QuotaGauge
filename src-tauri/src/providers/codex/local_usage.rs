@@ -588,8 +588,8 @@ fn codex_long_context_rates(model: &str) -> Option<(f64, f64, f64)> {
         "gpt-5.5" => Some((10.0, 45.0, 1.0)),
         "gpt-5.5-pro" => Some((60.0, 270.0, 60.0)),
         "gpt-5.6-sol" => Some((10.0, 45.0, 1.0)),
-        "gpt-5.6-terra" => Some((5.0, 22.5, 0.5)),
-        "gpt-5.6-luna" => Some((2.0, 9.0, 0.2)),
+        "gpt-5.6-terra" => Some((4.0, 18.0, 0.4)),
+        "gpt-5.6-luna" => Some((0.4, 1.8, 0.04)),
         _ => None,
     }
 }
@@ -1032,8 +1032,8 @@ mod tests {
             ("gpt-5.5", (10.0, 45.0, 1.0)),
             ("gpt-5.5-pro", (60.0, 270.0, 60.0)),
             ("gpt-5.6-sol", (10.0, 45.0, 1.0)),
-            ("gpt-5.6-terra", (5.0, 22.5, 0.5)),
-            ("gpt-5.6-luna", (2.0, 9.0, 0.2)),
+            ("gpt-5.6-terra", (4.0, 18.0, 0.4)),
+            ("gpt-5.6-luna", (0.4, 1.8, 0.04)),
         ] {
             assert_eq!(codex_long_context_rates(model), Some(expected), "{model}");
         }
