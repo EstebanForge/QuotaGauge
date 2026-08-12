@@ -2,24 +2,36 @@
 set -euo pipefail
 
 binary="$(realpath "${1:?Linux release binary is required}")"
+release_validation="${2:-false}"
+case "${release_validation}" in
+  true | false) ;;
+  *)
+    echo "Linux release validation must be true or false: ${release_validation}" >&2
+    exit 1
+    ;;
+esac
 test -x "${binary}"
 export OPENQUOTA_SMOKE_BINARY="${binary}"
+export OPENQUOTA_SMOKE_RELEASE_VALIDATION="${release_validation}"
 
 dbus-run-session -- bash -euo pipefail -c '
+  runner_temp="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
   export HOME
-  HOME="$(mktemp -d "${RUNNER_TEMP}/openquota-wayland-home.XXXXXX")"
+  HOME="$(mktemp -d "${runner_temp}/openquota-wayland-home.XXXXXX")"
   export XDG_CONFIG_HOME="${HOME}/xdg"
+  export XDG_STATE_HOME="${HOME}/state"
   export XDG_CURRENT_DESKTOP="KDE"
   export XDG_RUNTIME_DIR
-  XDG_RUNTIME_DIR="$(mktemp -d "${RUNNER_TEMP}/openquota-wayland-runtime.XXXXXX")"
+  XDG_RUNTIME_DIR="$(mktemp -d "${runner_temp}/openquota-wayland-runtime.XXXXXX")"
   export XDG_SESSION_TYPE="wayland"
   export OPENQUOTA_LINUX_TRAY_HOST="unavailable"
   export GDK_BACKEND="wayland"
   export WAYLAND_DISPLAY="openquota-wayland"
-  mkdir -p "${XDG_CONFIG_HOME}"
+  mkdir -p "${XDG_CONFIG_HOME}" "${XDG_STATE_HOME}"
   chmod 700 "${XDG_RUNTIME_DIR}"
-  app_log="${RUNNER_TEMP}/openquota-wayland-app-${RANDOM}.log"
-  weston_log="${RUNNER_TEMP}/openquota-weston-${RANDOM}.log"
+  stdio_log="${runner_temp}/openquota-wayland-app-${RANDOM}.log"
+  runtime_log="${XDG_STATE_HOME}/openquota/logs/OpenQuota.log"
+  weston_log="${runner_temp}/openquota-weston-${RANDOM}.log"
   weston --backend=headless-backend.so --socket="${WAYLAND_DISPLAY}" --idle-time=0 \
     --log="${weston_log}" &
   weston_pid=$!
@@ -47,11 +59,32 @@ dbus-run-session -- bash -euo pipefail -c '
     cat "${weston_log}"
     exit 1
   fi
-  "${OPENQUOTA_SMOKE_BINARY}" >"${app_log}" 2>&1 &
+  "${OPENQUOTA_SMOKE_BINARY}" >"${stdio_log}" 2>&1 &
   app_pid=$!
-  sleep 8
-  if ! kill -0 "${app_pid}" 2>/dev/null; then
-    cat "${app_log}"
+  ready=false
+  for _ in $(seq 1 30); do
+    if ! kill -0 "${app_pid}" 2>/dev/null; then
+      cat "${stdio_log}" >&2 || true
+      cat "${runtime_log}" >&2 || true
+      exit 1
+    fi
+    if test -f "${runtime_log}" \
+      && grep -Fq "desktop integration detected (tray=false)" "${runtime_log}" \
+      && grep -Fq "OpenQuota startup completed" "${runtime_log}"; then
+      ready=true
+      break
+    fi
+    sleep 1
+  done
+  if test "${ready}" != true; then
+    cat "${stdio_log}" >&2 || true
+    cat "${runtime_log}" >&2 || true
+    cat "${weston_log}" >&2 || true
+    echo "OpenQuota did not report a ready Wayland fallback before the startup deadline." >&2
+    exit 1
+  fi
+  if grep -Fq "system tray integration ready" "${runtime_log}"; then
+    echo "OpenQuota created a tray while the Wayland tray host was unavailable." >&2
     exit 1
   fi
 '

@@ -26,6 +26,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            dbus-tests \
             dbus-x11 \
             gnome-keyring \
             libayatana-appindicator3-dev \

@@ -11,9 +11,21 @@ const linuxX11 = read('.github/actions/platform-smoke/scripts/linux-x11.sh');
 const linuxWayland = read('.github/actions/platform-smoke/scripts/linux-wayland.sh');
 const linuxPackages = read('.github/actions/platform-smoke/scripts/linux-packages.sh');
 const linuxdeploySetup = read('.github/scripts/setup-linuxdeploy.sh');
+const windowsSigningSetup = read('.github/scripts/setup-windows-signing.ps1');
+const windowsSigner = read('.github/scripts/sign-windows.ps1');
+const windowsSignShim = read('.github/scripts/openquota-sign-windows.cmd');
+const windowsSigningConfig = JSON.parse(read('src-tauri/tauri.windows-signing.conf.json'));
 const releaseTagVerification = read('.github/scripts/verify-release-tag.sh');
 
-const ciContracts = [
+const requireContracts = (source, content, contracts) => {
+  for (const contract of contracts) {
+    if (!content.includes(contract)) {
+      throw new Error(`${source} configuration is missing: ${contract}`);
+    }
+  }
+};
+
+requireContracts('CI', ci, [
   'os: [windows-latest, macos-latest, ubuntu-22.04]',
   'Test Windows Credential Manager integration',
   'Test macOS Keychain integration',
@@ -23,8 +35,11 @@ const ciContracts = [
   'Build macOS DMG',
   'Build Linux packages',
   'uses: ./.github/actions/platform-smoke',
-];
-const releaseContracts = [
+  'dbus-tests',
+  "APPLE_SIGNING_IDENTITY: '-'",
+]);
+
+requireContracts('release', release, [
   'checks: read',
   'name: Windows x64',
   'name: Windows ARM64',
@@ -34,6 +49,9 @@ const releaseContracts = [
   'name: Build and smoke ${{ matrix.name }}',
   'Smoke test release artifact',
   'uses: ./.github/actions/platform-smoke',
+  "release-validation: 'true'",
+  'windows-signer-subject:',
+  'apple-team-id:',
   'needs: [validate, prepare-release, publish-artifacts]',
   'Verify release smoke checks',
   'Build and smoke Windows x64',
@@ -42,7 +60,20 @@ const releaseContracts = [
   'Build and smoke Linux ARM64',
   'Build and smoke macOS Universal',
   'Prepare Linux AppImage bundler',
-  'Validate updater signing configuration',
+  'Prepare Windows code signing',
+  'Validate release signing configuration',
+  'TAURI_SIGNING_PRIVATE_KEY',
+  'ES_USERNAME',
+  'ES_PASSWORD',
+  'ES_CREDENTIAL_ID',
+  'ES_TOTP_SECRET',
+  'WINDOWS_SIGNER_SUBJECT',
+  'APPLE_CERTIFICATE',
+  'APPLE_CERTIFICATE_PASSWORD',
+  'APPLE_ID',
+  'APPLE_PASSWORD',
+  'APPLE_TEAM_ID',
+  'OPENQUOTA_EXPECTED_WINDOWS_SIGNER_SUBJECT',
   'Validate trusted release tag',
   'ref: ${{ github.sha }}',
   '+refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}',
@@ -54,94 +85,147 @@ const releaseContracts = [
   'verify-release-tag.sh',
   'artifact-root: ${{ matrix.smoke-artifact-root }}',
   "needs.validate.result == 'success' && (inputs.verify_only",
-  "APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && '-' || '' }}",
-];
-const actionContracts = [
+  'dbus-tests',
+  '--config src-tauri/tauri.windows-signing.conf.json',
+]);
+
+requireContracts('platform smoke action', action, [
   'Install, start, and uninstall the Windows NSIS package',
   'Smoke test macOS tray startup',
   'Exercise Linux AppImage and Debian packages',
   'artifact-root:',
+  'release-validation:',
+  "default: 'false'",
+  'windows-signer-subject:',
+  'apple-team-id:',
+  'OPENQUOTA_EXPECTED_WINDOWS_SIGNER_SUBJECT',
+  'OPENQUOTA_EXPECTED_APPLE_TEAM_ID',
   'scripts/windows.ps1',
   'scripts/macos.sh',
   'scripts/linux-packages.sh',
-];
+]);
 
-for (const [source, contracts] of [
-  ['CI', ciContracts],
-  ['release', releaseContracts],
-  ['action', actionContracts],
-]) {
-  const content = source === 'CI' ? ci : source === 'release' ? release : action;
-  for (const contract of contracts) {
-    if (!content.includes(contract)) {
-      throw new Error(`Platform ${source} smoke contract is missing: ${contract}`);
-    }
-  }
-}
+requireContracts('release tag verification', releaseTagVerification, [
+  'git fetch --force --no-tags origin',
+  'Release tag moved after validation',
+  'exit 1',
+]);
 
-for (const [source, content, contracts] of [
-  [
-    'release tag verification',
-    releaseTagVerification,
-    ['git fetch --force --no-tags origin', 'Release tag moved after validation', 'exit 1'],
-  ],
-]) {
-  for (const contract of contracts) {
-    if (!content.includes(contract)) {
-      throw new Error(`${source} configuration is missing: ${contract}`);
-    }
-  }
-}
+requireContracts('Windows package smoke', windows, [
+  '*-setup.exe',
+  'RUNNER_TEMP is required for the Windows installer smoke test',
+  'Refusing to disturb an existing OpenQuota installation',
+  '@(\'/S\', "/D=$installRoot")',
+  'OPENQUOTA_EXPECTED_WINDOWS_SIGNER_SUBJECT',
+  'Get-AuthenticodeSignature',
+  'TimeStamperCertificate',
+  'verify /pa /all /tw',
+  'SignerCertificate.Thumbprint',
+  'system tray integration ready',
+  'OpenQuota startup completed',
+  'Expected Windows GUI subsystem (2)',
+  "-ArgumentList '/S'",
+  'remained installed after the NSIS uninstall smoke test',
+]);
 
-for (const [source, content, contracts] of [
-  [
-    'Windows',
-    windows,
-    [
-      '*-setup.exe',
-      'RUNNER_TEMP is required for the Windows installer smoke test',
-      'Refusing to disturb an existing OpenQuota installation',
-      '@(\'/S\', "/D=$installRoot")',
-      'Start-Sleep -Seconds 8',
-      'Expected Windows GUI subsystem (2)',
-      "-ArgumentList '/S'",
-      'remained installed after the NSIS uninstall smoke test',
-    ],
-  ],
-  ['macOS', macos, ['hdiutil attach', 'OpenQuota.app/Contents/MacOS/openquota', 'sleep 8']],
-  [
-    'Linux packages',
-    linuxPackages,
-    [
-      'APPIMAGE_EXTRACT_AND_RUN=1',
-      '--appimage-extract',
-      "-name 'libwayland-client.so*'",
-      'dpkg-deb --field',
-      'test "${package_name}" = \'open-quota\'',
-      'sudo apt-get install --yes',
-      'sudo apt-get remove --yes',
-      'linux-x11.sh',
-      'linux-wayland.sh',
-    ],
-  ],
-  [
-    'Linux AppImage bundler',
-    linuxdeploySetup,
-    [
-      "linuxdeploy_release='1-alpha-20251107-1'",
-      'c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d',
-      '620095110d693282b8ebeb244a95b5e911cf8f65f76c88b4b47d16ae6346fcff',
-      'sha256sum --check --strict',
-    ],
-  ],
-  ['Linux X11', linuxX11, ['xvfb-run', 'openbox', 'xdotool search --name "^OpenQuota$"']],
-  ['Linux Wayland', linuxWayland, ['weston --backend=headless-backend.so', 'sleep 8']],
-]) {
-  for (const contract of contracts) {
-    if (!content.includes(contract)) {
-      throw new Error(`${source} smoke harness is missing: ${contract}`);
-    }
-  }
+requireContracts('macOS package smoke', macos, [
+  'hdiutil attach',
+  'ditto "${source_app}" "${app}"',
+  'hdiutil detach "${mount_dir}"',
+  'open -n "${app}"',
+  'com.apple.quarantine',
+  'xattr -p com.apple.quarantine "${app}"',
+  'xattr -d com.apple.quarantine "${app}"',
+  'codesign --verify --deep --strict',
+  'Authority=Developer ID Application:',
+  'TeamIdentifier=${OPENQUOTA_EXPECTED_APPLE_TEAM_ID}',
+  'flags=0x[0-9a-fA-F]+\\([^)]*runtime[^)]*\\)',
+  'Timestamp=',
+  'spctl --assess --type execute',
+  'xcrun stapler validate "${candidate}"',
+  'syspolicy_check distribution',
+  'system tray integration ready',
+  'OpenQuota startup completed',
+]);
+
+requireContracts('Linux packages', linuxPackages, [
+  'APPIMAGE_EXTRACT_AND_RUN=1',
+  '--appimage-extract',
+  "-name 'libwayland-client.so*'",
+  'dpkg-deb --field',
+  'test "${package_name}" = \'open-quota\'',
+  'sudo apt-get install --yes',
+  'sudo apt-get remove --yes',
+  'linux-x11.sh" "${appimage}" unavailable',
+  'linux-x11.sh" "${installed_binary}" available',
+  'linux-wayland.sh',
+]);
+
+requireContracts('Linux AppImage bundler', linuxdeploySetup, [
+  "linuxdeploy_release='1-alpha-20251107-1'",
+  'c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d',
+  '620095110d693282b8ebeb244a95b5e911cf8f65f76c88b4b47d16ae6346fcff',
+  'sha256sum --check --strict',
+]);
+
+requireContracts('Linux X11 package smoke', linuxX11, [
+  'xvfb-run',
+  'openbox',
+  'dbus-test-tool echo --session --name=org.kde.StatusNotifierWatcher',
+  'org.freedesktop.DBus.NameHasOwner',
+  'desktop integration detected (tray=true)',
+  'system tray integration ready',
+  'OpenQuota startup completed',
+  'kill "${watcher_pid}"',
+  'system tray became unavailable; using standalone window',
+  'xdotool search --onlyvisible --limit 1 --name "^OpenQuota$"',
+  'xdotool windowclose',
+  'did not exit when its standalone window was closed',
+]);
+
+requireContracts('Linux Wayland package smoke', linuxWayland, [
+  'weston --backend=headless-backend.so',
+  'desktop integration detected (tray=false)',
+  'OpenQuota startup completed',
+  'system tray integration ready',
+]);
+
+requireContracts('Windows signing setup', windowsSigningSetup, [
+  'https://ssl.com/wp-content/uploads/2024/06/CodeSignTool-v1.3.0-windows.zip',
+  'E22094505DECBE622AFE5B0C27ABC618ED2BA179BD94F3450490352399D5EF2A',
+  'ES_USERNAME',
+  'ES_PASSWORD',
+  'ES_CREDENTIAL_ID',
+  'ES_TOTP_SECRET',
+  'Get-FileHash',
+  'OPENQUOTA_CODESIGNTOOL_JAVA',
+  'OPENQUOTA_CODESIGNTOOL_JAR',
+  '$env:GITHUB_ENV',
+  '$env:GITHUB_PATH',
+]);
+
+requireContracts('Windows signer', windowsSigner, [
+  "'sign'",
+  '-override=true',
+  'OPENQUOTA_EXPECTED_WINDOWS_SIGNER_SUBJECT',
+  'Get-AuthenticodeSignature',
+  'SignerCertificate.Subject -ne',
+  'TimeStamperCertificate',
+]);
+
+requireContracts('Windows signing shim', windowsSignShim, [
+  'sign-windows.ps1',
+  '-FilePath "%~1"',
+  'exit /b %openquota_exit_code%',
+]);
+
+const signCommand = windowsSigningConfig.bundle?.windows?.signCommand;
+if (
+  signCommand?.cmd !== 'cmd.exe' ||
+  JSON.stringify(signCommand.args) !==
+    JSON.stringify(['/d', '/s', '/c', 'openquota-sign-windows.cmd', '%1'])
+) {
+  throw new Error('Windows Tauri signing command does not use the reviewed signing shim.');
 }
 
 for (const obsoleteContract of ['smoke-binary:', 'binary-path:', 'bundle-directory:']) {
@@ -152,27 +236,24 @@ for (const obsoleteContract of ['smoke-binary:', 'binary-path:', 'bundle-directo
   }
 }
 
-for (const deferredPlatformSigningContract of [
-  'WINDOWS_CERTIFICATE',
-  'APPLE_CERTIFICATE',
-  'APPLE_ID',
-  'OPENQUOTA_REQUIRE_AUTHENTICODE',
-  'OPENQUOTA_REQUIRE_NOTARIZATION',
-  'tauri.windows-signing.conf.json',
-]) {
-  if (
-    release.includes(deferredPlatformSigningContract) ||
-    windows.includes(deferredPlatformSigningContract) ||
-    macos.includes(deferredPlatformSigningContract)
-  ) {
-    throw new Error(
-      `Deferred platform signing is still configured: ${deferredPlatformSigningContract}`,
-    );
-  }
+if (release.includes("APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && '-' || '' }}")) {
+  throw new Error('Release builds still use an ad-hoc macOS signing identity.');
 }
 if (release.includes('ref: ${{ env.RELEASE_TAG }}')) {
   throw new Error('A downstream release checkout is not pinned to the validated commit SHA.');
 }
+if (macos.includes('xcrun stapler validate "${dmg}"')) {
+  throw new Error('The smoke test incorrectly expects Tauri to staple the outer DMG.');
+}
+
+const windowsSigningConfigCount =
+  release.split('--config src-tauri/tauri.windows-signing.conf.json').length - 1;
+if (windowsSigningConfigCount !== 2) {
+  throw new Error(
+    `Expected native signing on 2 Windows release builds, found ${windowsSigningConfigCount}.`,
+  );
+}
+
 const pinnedCheckoutCount =
   release.split('ref: ${{ needs.validate.outputs.release_commit }}').length - 1;
 if (pinnedCheckoutCount !== 3) {
@@ -180,11 +261,18 @@ if (pinnedCheckoutCount !== 3) {
 }
 
 const trustedTagGate = release.indexOf('      - name: Validate trusted release tag');
-const updaterSigningGate = release.indexOf('      - name: Validate updater signing configuration');
-if (trustedTagGate === -1 || updaterSigningGate === -1 || trustedTagGate >= updaterSigningGate) {
-  throw new Error('Updater signing secret is exposed before the trusted-tag gate.');
+const signingGate = release.indexOf('      - name: Validate release signing configuration');
+const firstSigningSecret = release.indexOf('          ES_USERNAME:');
+if (
+  trustedTagGate === -1 ||
+  signingGate === -1 ||
+  firstSigningSecret === -1 ||
+  trustedTagGate >= signingGate ||
+  trustedTagGate >= firstSigningSecret
+) {
+  throw new Error('Release signing secrets are exposed before the trusted-tag gate.');
 }
 
 console.log(
-  'CI and release builds exercise packaged Windows, macOS and Linux artifacts with pinned release tags.',
+  'CI and release builds exercise installed Windows, macOS and Linux packages with native release trust checks.',
 );

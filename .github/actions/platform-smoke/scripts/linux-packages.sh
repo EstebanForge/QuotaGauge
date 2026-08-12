@@ -3,6 +3,14 @@ set -euo pipefail
 
 appimage_directory="$(realpath "${1:?AppImage directory is required}")"
 deb_directory="$(realpath "${2:?Debian package directory is required}")"
+release_validation="${3:-false}"
+case "${release_validation}" in
+  true | false) ;;
+  *)
+    echo "Linux release validation must be true or false: ${release_validation}" >&2
+    exit 1
+    ;;
+esac
 script_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 mapfile -t appimages < <(find "${appimage_directory}" -maxdepth 1 -type f -name '*.AppImage' -print)
@@ -44,7 +52,7 @@ fi
 # Running with the AppImage runtime's extraction mode exercises the published
 # container without depending on FUSE being enabled on hosted runners.
 export APPIMAGE_EXTRACT_AND_RUN=1
-bash "${script_directory}/linux-x11.sh" "${appimage}"
+bash "${script_directory}/linux-x11.sh" "${appimage}" unavailable "${release_validation}"
 unset APPIMAGE_EXTRACT_AND_RUN
 
 package_name="$(dpkg-deb --field "${deb}" Package)"
@@ -69,4 +77,5 @@ installed=true
 installed_binary="$(dpkg-query --listfiles "${package_name}" | grep -E '/(usr/)?bin/openquota$' | head -n 1)"
 test -n "${installed_binary}"
 test -x "${installed_binary}"
-bash "${script_directory}/linux-wayland.sh" "${installed_binary}"
+bash "${script_directory}/linux-x11.sh" "${installed_binary}" available "${release_validation}"
+bash "${script_directory}/linux-wayland.sh" "${installed_binary}" "${release_validation}"
