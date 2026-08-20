@@ -613,7 +613,12 @@ mod tests {
         .expect("provider values should produce a strip");
         assert_eq!(strip.rgba.len(), (strip.width * TEXT_HEIGHT * 4) as usize);
         assert!(strip.width > TEXT_HEIGHT * 3);
-        assert!(strip.rgba.chunks_exact(4).any(|pixel| pixel[3] == 255));
+        assert!(strip
+            .rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|pixel| pixel[3] == 255));
         let icon = text_icon(&[text_group("codex", &["75%", "40%"])])
             .expect("public text renderer should return an image");
         assert_eq!(icon.height(), TEXT_HEIGHT);
@@ -652,7 +657,12 @@ mod tests {
         assert!(provider_path("future-provider").is_none());
         let strip = render_text_strip(&[text_group("future-provider", &["42%"])])
             .expect("unknown provider should still render");
-        assert!(strip.rgba.chunks_exact(4).any(|pixel| pixel[3] == 255));
+        assert!(strip
+            .rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|pixel| pixel[3] == 255));
     }
 
     #[test]
@@ -665,7 +675,13 @@ mod tests {
 
     #[test]
     fn renderer_preserves_empty_zero_and_full_states() {
-        let alpha_pixels = |rgba: &[u8]| rgba.chunks_exact(4).filter(|pixel| pixel[3] > 0).count();
+        let alpha_pixels = |rgba: &[u8]| {
+            rgba.as_chunks::<4>()
+                .0
+                .iter()
+                .filter(|pixel| pixel[3] > 0)
+                .count()
+        };
         let empty = render_bar_rgba(&[]);
         let zero = render_bar_rgba(&[0.0]);
         let half = render_bar_rgba(&[0.5]);
@@ -674,10 +690,12 @@ mod tests {
         assert_eq!(empty.len(), (ICON_SIZE * ICON_SIZE * 4) as usize);
         assert_eq!(alpha_pixels(&empty), 0);
         assert!(alpha_pixels(&zero) > 0);
-        assert!(zero.chunks_exact(4).all(|pixel| pixel[3] < 255));
+        assert!(zero.as_chunks::<4>().0.iter().all(|pixel| pixel[3] < 255));
 
         let visible = zero
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .enumerate()
             .filter(|(_, pixel)| pixel[3] > 0)
             .map(|(index, _)| (index % ICON_SIZE as usize, index / ICON_SIZE as usize))
@@ -687,8 +705,8 @@ mod tests {
         let min_y = visible.iter().map(|point| point.1).min().unwrap();
         let max_y = visible.iter().map(|point| point.1).max().unwrap();
         assert!(max_x - min_x > max_y - min_y);
-        assert!(half.chunks_exact(4).any(|pixel| pixel[3] == 255));
-        assert!(full.chunks_exact(4).any(|pixel| pixel[3] == 255));
+        assert!(half.as_chunks::<4>().0.iter().any(|pixel| pixel[3] == 255));
+        assert!(full.as_chunks::<4>().0.iter().any(|pixel| pixel[3] == 255));
     }
 
     #[test]

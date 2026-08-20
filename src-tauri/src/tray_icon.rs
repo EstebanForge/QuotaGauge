@@ -285,7 +285,7 @@ mod tests {
         let rgba = render_rgba(0.5, 0.5);
         assert_eq!(rgba.len(), (ICON_SIZE * ICON_SIZE * 4) as usize);
         assert_eq!(&rgba[..4], &[0, 0, 0, 0]);
-        assert!(rgba.chunks_exact(4).any(|pixel| pixel[3] > 0));
+        assert!(rgba.as_chunks::<4>().0.iter().any(|pixel| pixel[3] > 0));
     }
 
     #[test]
@@ -296,17 +296,23 @@ mod tests {
         let full = render_rgba(1.0, 1.0);
         let depleted = render_rgba(1.0, 0.0);
         let alpha_weight = |rgba: &[u8]| {
-            rgba.chunks_exact(4)
+            rgba.as_chunks::<4>()
+                .0
+                .iter()
                 .map(|pixel| u64::from(pixel[3]))
                 .sum::<u64>()
         };
         let blue_pixels = |rgba: &[u8]| {
-            rgba.chunks_exact(4)
+            rgba.as_chunks::<4>()
+                .0
+                .iter()
                 .filter(|pixel| pixel[2] > pixel[0] && pixel[2] > pixel[1] && pixel[3] > 200)
                 .count()
         };
         let red_pixels = |rgba: &[u8]| {
-            rgba.chunks_exact(4)
+            rgba.as_chunks::<4>()
+                .0
+                .iter()
                 .filter(|pixel| pixel[0] > pixel[1] && pixel[0] > pixel[2] && pixel[3] > 200)
                 .count()
         };
