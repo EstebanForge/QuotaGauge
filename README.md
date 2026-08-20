@@ -37,7 +37,14 @@ Open the latest release and choose the file for your platform:
 - **macOS:** `_universal.dmg` — requires macOS 11 or later
 - **Linux:** `.AppImage` or `.deb`
 
-OpenQuota checks for updates automatically. Installable updates are cryptographically signed.
+OpenQuota checks for updates automatically. Update payloads are cryptographically signed with the
+project's updater key, independently from operating-system package signing.
+
+When native signing is disabled (the current default), Windows installers are not
+Authenticode-signed, while the macOS app uses an ad-hoc signature and is not Apple-notarized.
+Windows SmartScreen or macOS Gatekeeper may therefore ask for confirmation. Download OpenQuota only
+from this repository's official release page; on macOS, manual approval may be required in Privacy
+& Security. Each release states its exact native-signing status in its notes.
 
 ## Supported providers
 
@@ -111,6 +118,9 @@ corepack pnpm build:installer             # Windows
 corepack pnpm build:linux                 # Linux
 corepack pnpm tauri build --bundles dmg   # macOS
 ```
+
+Maintainers can review updater and optional native-signing requirements in
+[docs/releasing.md](docs/releasing.md).
 
 ## Contributing
 

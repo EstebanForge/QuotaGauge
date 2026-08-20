@@ -16,11 +16,26 @@ const windowsSigner = read('.github/scripts/sign-windows.ps1');
 const windowsSignShim = read('.github/scripts/openquota-sign-windows.cmd');
 const windowsSigningConfig = JSON.parse(read('src-tauri/tauri.windows-signing.conf.json'));
 const releaseTagVerification = read('.github/scripts/verify-release-tag.sh');
+const readme = read('README.md');
+const releasing = read('docs/releasing.md');
 
 const requireContracts = (source, content, contracts) => {
   for (const contract of contracts) {
     if (!content.includes(contract)) {
       throw new Error(`${source} configuration is missing: ${contract}`);
+    }
+  }
+};
+
+const requireExactKeyLines = (source, content, expectations) => {
+  const lines = content.split('\n').map((line) => line.trim());
+  for (const [key, expected] of Object.entries(expectations)) {
+    const actual = lines.filter((line) => line.startsWith(`${key}:`)).sort();
+    const reviewed = [...expected].sort();
+    if (JSON.stringify(actual) !== JSON.stringify(reviewed)) {
+      throw new Error(
+        `${source} ${key} bindings differ from the reviewed optional-signing policy.`,
+      );
     }
   }
 };
@@ -49,7 +64,40 @@ requireContracts('release', release, [
   'name: Build and smoke ${{ matrix.name }}',
   'Smoke test release artifact',
   'uses: ./.github/actions/platform-smoke',
-  "release-validation: 'true'",
+  "ENABLE_WINDOWS_NATIVE_SIGNING: ${{ vars.ENABLE_WINDOWS_NATIVE_SIGNING || 'false' }}",
+  "ENABLE_MACOS_NATIVE_SIGNING: ${{ vars.ENABLE_MACOS_NATIVE_SIGNING || 'false' }}",
+  'windows_signing: ${{ steps.signing_policy.outputs.windows_signing }}',
+  'macos_signing: ${{ steps.signing_policy.outputs.macos_signing }}',
+  'if: ${{ !inputs.verify_only }}',
+  'if [[ "$WINDOWS_SIGNING_ENABLED" = true ]]',
+  'if [[ "$MACOS_SIGNING_ENABLED" = true ]]',
+  "if: runner.os == 'Windows' && needs.validate.outputs.windows_signing == 'true'",
+  "if: runner.os == 'macOS' && needs.validate.outputs.macos_signing != 'true'",
+  'echo \'APPLE_SIGNING_IDENTITY=-\' >> "$GITHUB_ENV"',
+  "needs.validate.outputs.windows_signing == 'true' && matrix.windows-signing-args",
+  "ES_USERNAME: ${{ steps.signing_policy.outputs.windows_signing == 'true' && secrets.ES_USERNAME || '' }}",
+  "ES_PASSWORD: ${{ steps.signing_policy.outputs.windows_signing == 'true' && secrets.ES_PASSWORD || '' }}",
+  "ES_CREDENTIAL_ID: ${{ steps.signing_policy.outputs.windows_signing == 'true' && secrets.ES_CREDENTIAL_ID || '' }}",
+  "ES_TOTP_SECRET: ${{ steps.signing_policy.outputs.windows_signing == 'true' && secrets.ES_TOTP_SECRET || '' }}",
+  "WINDOWS_SIGNER_SUBJECT: ${{ steps.signing_policy.outputs.windows_signing == 'true' && vars.WINDOWS_SIGNER_SUBJECT || '' }}",
+  "APPLE_CERTIFICATE: ${{ steps.signing_policy.outputs.macos_signing == 'true' && secrets.APPLE_CERTIFICATE || '' }}",
+  "APPLE_CERTIFICATE_PASSWORD: ${{ steps.signing_policy.outputs.macos_signing == 'true' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}",
+  "APPLE_ID: ${{ steps.signing_policy.outputs.macos_signing == 'true' && secrets.APPLE_ID || '' }}",
+  "APPLE_PASSWORD: ${{ steps.signing_policy.outputs.macos_signing == 'true' && secrets.APPLE_PASSWORD || '' }}",
+  "APPLE_TEAM_ID: ${{ steps.signing_policy.outputs.macos_signing == 'true' && secrets.APPLE_TEAM_ID || '' }}",
+  "ES_USERNAME: ${{ runner.os == 'Windows' && needs.validate.outputs.windows_signing == 'true' && secrets.ES_USERNAME || '' }}",
+  "ES_PASSWORD: ${{ runner.os == 'Windows' && needs.validate.outputs.windows_signing == 'true' && secrets.ES_PASSWORD || '' }}",
+  "ES_CREDENTIAL_ID: ${{ runner.os == 'Windows' && needs.validate.outputs.windows_signing == 'true' && secrets.ES_CREDENTIAL_ID || '' }}",
+  "ES_TOTP_SECRET: ${{ runner.os == 'Windows' && needs.validate.outputs.windows_signing == 'true' && secrets.ES_TOTP_SECRET || '' }}",
+  "OPENQUOTA_EXPECTED_WINDOWS_SIGNER_SUBJECT: ${{ runner.os == 'Windows' && needs.validate.outputs.windows_signing == 'true' && vars.WINDOWS_SIGNER_SUBJECT || '' }}",
+  "APPLE_CERTIFICATE: ${{ runner.os == 'macOS' && needs.validate.outputs.macos_signing == 'true' && secrets.APPLE_CERTIFICATE || '' }}",
+  "APPLE_CERTIFICATE_PASSWORD: ${{ runner.os == 'macOS' && needs.validate.outputs.macos_signing == 'true' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}",
+  "APPLE_ID: ${{ runner.os == 'macOS' && needs.validate.outputs.macos_signing == 'true' && secrets.APPLE_ID || '' }}",
+  "APPLE_PASSWORD: ${{ runner.os == 'macOS' && needs.validate.outputs.macos_signing == 'true' && secrets.APPLE_PASSWORD || '' }}",
+  "APPLE_TEAM_ID: ${{ runner.os == 'macOS' && needs.validate.outputs.macos_signing == 'true' && secrets.APPLE_TEAM_ID || '' }}",
+  "release-validation: ${{ (runner.os == 'Linux' || (runner.os == 'Windows' && needs.validate.outputs.windows_signing == 'true') || (runner.os == 'macOS' && needs.validate.outputs.macos_signing == 'true')) && 'true' || 'false' }}",
+  "windows-signer-subject: ${{ runner.os == 'Windows' && needs.validate.outputs.windows_signing == 'true' && vars.WINDOWS_SIGNER_SUBJECT || '' }}",
+  "apple-team-id: ${{ runner.os == 'macOS' && needs.validate.outputs.macos_signing == 'true' && secrets.APPLE_TEAM_ID || '' }}",
   'windows-signer-subject:',
   'apple-team-id:',
   'needs: [validate, prepare-release, publish-artifacts]',
@@ -61,7 +109,9 @@ requireContracts('release', release, [
   'Build and smoke macOS Universal',
   'Prepare Linux AppImage bundler',
   'Prepare Windows code signing',
-  'Validate release signing configuration',
+  'Resolve release signing policy',
+  'Validate release signing credentials',
+  'required=(TAURI_SIGNING_PRIVATE_KEY)',
   'TAURI_SIGNING_PRIVATE_KEY',
   'ES_USERNAME',
   'ES_PASSWORD',
@@ -87,6 +137,101 @@ requireContracts('release', release, [
   "needs.validate.result == 'success' && (inputs.verify_only",
   'dbus-tests',
   '--config src-tauri/tauri.windows-signing.conf.json',
+  '<!-- openquota-native-trust:start -->',
+  '<!-- openquota-native-trust:end -->',
+  'gh release edit "$RELEASE_TAG"',
+  'Verify native trust release notes',
+  'count_line() {',
+  "windows_signed='- Windows installers are Authenticode-signed and verified.'",
+  "windows_unsigned='- Windows installers are not Authenticode-signed, so SmartScreen may warn.'",
+  "macos_signed='- The macOS build is Developer ID-signed, notarized, and verified.'",
+  "macos_unsigned='- The macOS build uses an ad-hoc signature and is not notarized, so Gatekeeper may require manual approval.'",
+  'test "$(count_line "$windows_signed")" -eq 1',
+  'test "$(count_line "$windows_unsigned")" -eq 1',
+  'test "$(count_line "$macos_signed")" -eq 1',
+  'test "$(count_line "$macos_unsigned")" -eq 1',
+  'test "$(count_line "$windows_signed")" -eq 0',
+  'test "$(count_line "$windows_unsigned")" -eq 0',
+  'test "$(count_line "$macos_signed")" -eq 0',
+  'test "$(count_line "$macos_unsigned")" -eq 0',
+]);
+
+const expression = (value) => `\${{ ${value} }}`;
+const exactSigningBindings = {
+  ENABLE_WINDOWS_NATIVE_SIGNING: [
+    `ENABLE_WINDOWS_NATIVE_SIGNING: ${expression("vars.ENABLE_WINDOWS_NATIVE_SIGNING || 'false'")}`,
+  ],
+  ENABLE_MACOS_NATIVE_SIGNING: [
+    `ENABLE_MACOS_NATIVE_SIGNING: ${expression("vars.ENABLE_MACOS_NATIVE_SIGNING || 'false'")}`,
+  ],
+  windows_signing: [
+    `windows_signing: ${expression('steps.signing_policy.outputs.windows_signing')}`,
+  ],
+  macos_signing: [`macos_signing: ${expression('steps.signing_policy.outputs.macos_signing')}`],
+  WINDOWS_SIGNING_ENABLED: [
+    `WINDOWS_SIGNING_ENABLED: ${expression('steps.signing_policy.outputs.windows_signing')}`,
+    `WINDOWS_SIGNING_ENABLED: ${expression('needs.validate.outputs.windows_signing')}`,
+    `WINDOWS_SIGNING_ENABLED: ${expression('needs.validate.outputs.windows_signing')}`,
+  ],
+  MACOS_SIGNING_ENABLED: [
+    `MACOS_SIGNING_ENABLED: ${expression('steps.signing_policy.outputs.macos_signing')}`,
+    `MACOS_SIGNING_ENABLED: ${expression('needs.validate.outputs.macos_signing')}`,
+    `MACOS_SIGNING_ENABLED: ${expression('needs.validate.outputs.macos_signing')}`,
+  ],
+  TAURI_SIGNING_PRIVATE_KEY: [
+    `TAURI_SIGNING_PRIVATE_KEY: ${expression('secrets.TAURI_SIGNING_PRIVATE_KEY')}`,
+    `TAURI_SIGNING_PRIVATE_KEY: ${expression('secrets.TAURI_SIGNING_PRIVATE_KEY')}`,
+  ],
+  TAURI_SIGNING_PRIVATE_KEY_PASSWORD: [
+    `TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${expression('secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD')}`,
+  ],
+  WINDOWS_SIGNER_SUBJECT: [
+    `WINDOWS_SIGNER_SUBJECT: ${expression("steps.signing_policy.outputs.windows_signing == 'true' && vars.WINDOWS_SIGNER_SUBJECT || ''")}`,
+  ],
+  OPENQUOTA_EXPECTED_WINDOWS_SIGNER_SUBJECT: [
+    `OPENQUOTA_EXPECTED_WINDOWS_SIGNER_SUBJECT: ${expression("runner.os == 'Windows' && needs.validate.outputs.windows_signing == 'true' && vars.WINDOWS_SIGNER_SUBJECT || ''")}`,
+  ],
+};
+
+for (const name of ['ES_USERNAME', 'ES_PASSWORD', 'ES_CREDENTIAL_ID', 'ES_TOTP_SECRET']) {
+  exactSigningBindings[name] = [
+    `${name}: ${expression(`steps.signing_policy.outputs.windows_signing == 'true' && secrets.${name} || ''`)}`,
+    `${name}: ${expression(`secrets.${name}`)}`,
+    `${name}: ${expression(`runner.os == 'Windows' && needs.validate.outputs.windows_signing == 'true' && secrets.${name} || ''`)}`,
+  ];
+}
+
+for (const name of [
+  'APPLE_CERTIFICATE',
+  'APPLE_CERTIFICATE_PASSWORD',
+  'APPLE_ID',
+  'APPLE_PASSWORD',
+  'APPLE_TEAM_ID',
+]) {
+  exactSigningBindings[name] = [
+    `${name}: ${expression(`steps.signing_policy.outputs.macos_signing == 'true' && secrets.${name} || ''`)}`,
+    `${name}: ${expression(`runner.os == 'macOS' && needs.validate.outputs.macos_signing == 'true' && secrets.${name} || ''`)}`,
+  ];
+}
+
+requireExactKeyLines('release', release, exactSigningBindings);
+
+requireContracts('release documentation', releasing, [
+  'ENABLE_WINDOWS_NATIVE_SIGNING',
+  'ENABLE_MACOS_NATIVE_SIGNING',
+  'TAURI_SIGNING_PRIVATE_KEY',
+  'TAURI_SIGNING_PRIVATE_KEY_PASSWORD',
+  'unsigned Windows installer',
+  'ad-hoc-signed, unnotarized',
+  'does not weaken updater verification',
+]);
+
+requireContracts('download documentation', readme, [
+  'Update payloads are cryptographically signed',
+  'Authenticode-signed',
+  'ad-hoc',
+  'SmartScreen',
+  'Gatekeeper',
 ]);
 
 requireContracts('platform smoke action', action, [
@@ -137,6 +282,8 @@ requireContracts('macOS package smoke', macos, [
   'xattr -p com.apple.quarantine "${app}"',
   'xattr -d com.apple.quarantine "${app}"',
   'codesign --verify --deep --strict',
+  'verify_app_signature "${source_app}"',
+  'verify_app_signature "${app}"',
   'Authority=Developer ID Application:',
   'TeamIdentifier=${OPENQUOTA_EXPECTED_APPLE_TEAM_ID}',
   'flags=0x[0-9a-fA-F]+\\([^)]*runtime[^)]*\\)',
@@ -147,6 +294,15 @@ requireContracts('macOS package smoke', macos, [
   'system tray integration ready',
   'OpenQuota startup completed',
 ]);
+
+for (const bundle of ['source_app', 'app']) {
+  const signature = macos.indexOf(`verify_app_signature "\${${bundle}}"`);
+  const trust = macos.indexOf(`verify_release_trust "\${${bundle}}"`);
+  const trustBranch = macos.lastIndexOf('if test "${release_validation}" = true; then', trust);
+  if (signature === -1 || trust === -1 || !(signature < trustBranch && trustBranch < trust)) {
+    throw new Error(`macOS ${bundle} signature integrity check is no longer unconditional.`);
+  }
+}
 
 requireContracts('Linux packages', linuxPackages, [
   'APPIMAGE_EXTRACT_AND_RUN=1',
@@ -236,8 +392,29 @@ for (const obsoleteContract of ['smoke-binary:', 'binary-path:', 'bundle-directo
   }
 }
 
-if (release.includes("APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && '-' || '' }}")) {
-  throw new Error('Release builds still use an ad-hoc macOS signing identity.');
+if (release.includes("release-validation: 'true'")) {
+  throw new Error('Release smoke still requires native trust checks unconditionally.');
+}
+for (const defaultTruePolicy of [
+  "ENABLE_WINDOWS_NATIVE_SIGNING: ${{ vars.ENABLE_WINDOWS_NATIVE_SIGNING || 'true' }}",
+  "ENABLE_MACOS_NATIVE_SIGNING: ${{ vars.ENABLE_MACOS_NATIVE_SIGNING || 'true' }}",
+]) {
+  if (release.includes(defaultTruePolicy)) {
+    throw new Error(`Native signing policy defaults to enabled: ${defaultTruePolicy}`);
+  }
+}
+
+const expectedReleaseValidation =
+  "release-validation: ${{ (runner.os == 'Linux' || (runner.os == 'Windows' && needs.validate.outputs.windows_signing == 'true') || (runner.os == 'macOS' && needs.validate.outputs.macos_signing == 'true')) && 'true' || 'false' }}";
+const releaseValidationLines = release
+  .split('\n')
+  .map((line) => line.trim())
+  .filter((line) => line.startsWith('release-validation:'));
+if (
+  releaseValidationLines.length !== 1 ||
+  releaseValidationLines[0] !== expectedReleaseValidation
+) {
+  throw new Error('Release smoke native trust routing is not the reviewed opt-in expression.');
 }
 if (release.includes('ref: ${{ env.RELEASE_TAG }}')) {
   throw new Error('A downstream release checkout is not pinned to the validated commit SHA.');
@@ -246,12 +423,27 @@ if (macos.includes('xcrun stapler validate "${dmg}"')) {
   throw new Error('The smoke test incorrectly expects Tauri to staple the outer DMG.');
 }
 
-const windowsSigningConfigCount =
-  release.split('--config src-tauri/tauri.windows-signing.conf.json').length - 1;
-if (windowsSigningConfigCount !== 2) {
+const windowsSigningConfigLines = release
+  .split('\n')
+  .filter((line) => line.includes('--config src-tauri/tauri.windows-signing.conf.json'));
+if (
+  windowsSigningConfigLines.length !== 2 ||
+  windowsSigningConfigLines.some((line) => !line.includes('windows-signing-args:'))
+) {
   throw new Error(
-    `Expected native signing on 2 Windows release builds, found ${windowsSigningConfigCount}.`,
+    'Windows native signing configuration must be declared only as the 2 opt-in matrix arguments.',
   );
+}
+
+const unconditionalSignedBuild = release
+  .split('\n')
+  .find(
+    (line) =>
+      line.trimStart().startsWith('args: ') &&
+      line.includes('--config src-tauri/tauri.windows-signing.conf.json'),
+  );
+if (unconditionalSignedBuild) {
+  throw new Error('A default Windows matrix build still requires native signing.');
 }
 
 const pinnedCheckoutCount =
@@ -261,7 +453,7 @@ if (pinnedCheckoutCount !== 3) {
 }
 
 const trustedTagGate = release.indexOf('      - name: Validate trusted release tag');
-const signingGate = release.indexOf('      - name: Validate release signing configuration');
+const signingGate = release.indexOf('      - name: Resolve release signing policy');
 const firstSigningSecret = release.indexOf('          ES_USERNAME:');
 if (
   trustedTagGate === -1 ||
@@ -274,5 +466,5 @@ if (
 }
 
 console.log(
-  'CI and release builds exercise installed Windows, macOS and Linux packages with native release trust checks.',
+  'CI and release builds exercise installed packages; optional native trust and mandatory updater signatures remain fail-closed.',
 );

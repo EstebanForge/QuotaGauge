@@ -16,11 +16,15 @@ if test "${release_validation}" = true \
   exit 1
 fi
 
-verify_release_app() {
+verify_app_signature() {
+  local candidate="${1:?macOS application bundle is required}"
+  codesign --verify --deep --strict --verbose=2 "${candidate}"
+}
+
+verify_release_trust() {
   local candidate="${1:?macOS application bundle is required}"
   local details
 
-  codesign --verify --deep --strict --verbose=2 "${candidate}"
   details="$(codesign -dv --verbose=4 "${candidate}" 2>&1)"
   grep -Fq 'Authority=Developer ID Application:' <<<"${details}" || {
     echo "${details}" >&2
@@ -115,8 +119,9 @@ mounted=true
 source_app="${mount_dir}/OpenQuota.app"
 source_binary="${source_app}/Contents/MacOS/openquota"
 test -x "${source_binary}"
+verify_app_signature "${source_app}"
 if test "${release_validation}" = true; then
-  verify_release_app "${source_app}"
+  verify_release_trust "${source_app}"
 fi
 
 mkdir -p "$(dirname "${app}")"
@@ -124,9 +129,10 @@ ditto "${source_app}" "${app}"
 hdiutil detach "${mount_dir}" >/dev/null
 mounted=false
 test -x "${binary}"
+verify_app_signature "${app}"
 
 if test "${release_validation}" = true; then
-  verify_release_app "${app}"
+  verify_release_trust "${app}"
   if command -v syspolicy_check >/dev/null 2>&1; then
     syspolicy_check distribution "${app}"
   fi
