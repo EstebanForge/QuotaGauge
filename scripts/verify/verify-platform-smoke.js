@@ -362,7 +362,7 @@ requireContracts('Linux X11 package smoke', linuxX11, [
   'OpenQuota startup completed',
   'kill "${watcher_pid}"',
   'system tray became unavailable; using standalone window',
-  'xdotool search --onlyvisible --limit 1 --name "^OpenQuota$"',
+  'xdotool search --onlyvisible --limit 1 --pid "${app_pid}" --name "^OpenQuota$"',
   'xdotool windowclose',
   'close_attempted=false',
   'close_requested=false',

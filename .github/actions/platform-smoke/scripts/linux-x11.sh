@@ -107,7 +107,7 @@ xvfb-run -a dbus-run-session -- bash -euo pipefail -c '
     elif test -f "${runtime_log}" \
       && grep -Fq "desktop integration detected (tray=false)" "${runtime_log}" \
       && grep -Fq "OpenQuota startup completed" "${runtime_log}" \
-      && xdotool search --onlyvisible --limit 1 --name "^OpenQuota$" >/dev/null 2>&1; then
+      && xdotool search --onlyvisible --limit 1 --pid "${app_pid}" --name "^OpenQuota$" >/dev/null 2>&1; then
       ready=true
       break
     fi
@@ -133,7 +133,7 @@ xvfb-run -a dbus-run-session -- bash -euo pipefail -c '
         exit 1
       fi
       if grep -Fq "system tray became unavailable; using standalone window" "${runtime_log}" \
-        && xdotool search --onlyvisible --limit 1 --name "^OpenQuota$" >/dev/null 2>&1; then
+        && xdotool search --onlyvisible --limit 1 --pid "${app_pid}" --name "^OpenQuota$" >/dev/null 2>&1; then
         fallback_ready=true
         break
       fi
@@ -163,7 +163,7 @@ xvfb-run -a dbus-run-session -- bash -euo pipefail -c '
       echo "OpenQuota exited before its standalone window was closed." >&2
       exit 1
     fi
-    window_id="$(xdotool search --onlyvisible --limit 1 --name "^OpenQuota$" 2>/dev/null || true)"
+    window_id="$(xdotool search --onlyvisible --limit 1 --pid "${app_pid}" --name "^OpenQuota$" 2>/dev/null || true)"
     if test -n "${window_id}"; then
       close_attempted=true
       if xdotool windowclose "${window_id}" 2>/dev/null; then
