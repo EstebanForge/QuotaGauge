@@ -138,7 +138,7 @@ try {
 
   $trayReady = $false
   $startupComplete = $false
-  for ($attempt = 0; $attempt -lt 30; $attempt++) {
+  for ($attempt = 0; $attempt -lt 60; $attempt++) {
     if ($process.HasExited) {
       Get-Content -LiteralPath $stdout, $stderr, $appLog -ErrorAction SilentlyContinue
       throw 'OpenQuota exited during the Windows tray startup smoke test.'

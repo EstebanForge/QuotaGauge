@@ -295,6 +295,7 @@ requireContracts('Windows package smoke', windows, [
   'SignerCertificate.Thumbprint',
   'system tray integration ready',
   'OpenQuota startup completed',
+  'for ($attempt = 0; $attempt -lt 60; $attempt++)',
   'Expected Windows GUI subsystem (2)',
   "-ArgumentList '/S'",
   'remained installed after the NSIS uninstall smoke test',
