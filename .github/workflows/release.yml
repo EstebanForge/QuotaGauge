@@ -412,9 +412,9 @@ jobs:
       - name: Verify release smoke checks
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERIFY_ONLY: ${{ inputs.verify_only }}
         run: |
           mkdir -p release-check
-          commit="$(git rev-parse HEAD)"
           required=(
             'Build and smoke Windows x64'
             'Build and smoke Windows ARM64'
@@ -424,15 +424,24 @@ jobs:
           )
           verified=false
           for attempt in 1 2 3 4 5; do
-            gh api \
-              -H 'Accept: application/vnd.github+json' \
-              "repos/$GITHUB_REPOSITORY/commits/$commit/check-runs?filter=all&per_page=100" \
-              > release-check/check-runs.json
+            if [[ "$VERIFY_ONLY" = true ]]; then
+              commit="$(git rev-parse HEAD)"
+              gh api \
+                -H 'Accept: application/vnd.github+json' \
+                "repos/$GITHUB_REPOSITORY/commits/$commit/check-runs?filter=all&per_page=100" \
+                > release-check/smoke-checks.json
+              jobs_key=check_runs
+            else
+              gh api \
+                "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?filter=latest&per_page=100" \
+                > release-check/smoke-checks.json
+              jobs_key=jobs
+            fi
             missing=0
             for name in "${required[@]}"; do
-              if ! jq -e --arg name "$name" \
-                '.check_runs | any(.name == $name and .conclusion == "success")' \
-                release-check/check-runs.json >/dev/null; then
+              if ! jq -e --arg key "$jobs_key" --arg name "$name" \
+                '.[$key] | any(.name == $name and .conclusion == "success")' \
+                release-check/smoke-checks.json >/dev/null; then
                 echo "Required release smoke check is not successful: $name"
                 missing=1
               fi
