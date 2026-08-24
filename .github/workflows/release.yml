@@ -341,6 +341,34 @@ jobs:
         shell: bash
         run: echo 'APPLE_SIGNING_IDENTITY=-' >> "$GITHUB_ENV"
 
+      - name: Configure native macOS signing
+        if: runner.os == 'macOS' && needs.validate.outputs.macos_signing == 'true'
+        shell: bash
+        env:
+          OPENQUOTA_APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          OPENQUOTA_APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          OPENQUOTA_APPLE_ID: ${{ secrets.APPLE_ID }}
+          OPENQUOTA_APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          OPENQUOTA_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          write_env() {
+            local name="$1"
+            local value="$2"
+            local delimiter="OPENQUOTA_$(uuidgen)"
+            {
+              printf '%s<<%s\n' "$name" "$delimiter"
+              printf '%s\n' "$value"
+              printf '%s\n' "$delimiter"
+            } >> "$GITHUB_ENV"
+          }
+
+          write_env APPLE_CERTIFICATE "$OPENQUOTA_APPLE_CERTIFICATE"
+          write_env APPLE_CERTIFICATE_PASSWORD "$OPENQUOTA_APPLE_CERTIFICATE_PASSWORD"
+          write_env APPLE_ID "$OPENQUOTA_APPLE_ID"
+          write_env APPLE_PASSWORD "$OPENQUOTA_APPLE_PASSWORD"
+          write_env APPLE_TEAM_ID "$OPENQUOTA_APPLE_TEAM_ID"
+
       - name: Build and upload platform artifacts
         uses: tauri-apps/tauri-action@v1
         env:
@@ -352,11 +380,6 @@ jobs:
           ES_CREDENTIAL_ID: ${{ runner.os == 'Windows' && needs.validate.outputs.windows_signing == 'true' && secrets.ES_CREDENTIAL_ID || '' }}
           ES_TOTP_SECRET: ${{ runner.os == 'Windows' && needs.validate.outputs.windows_signing == 'true' && secrets.ES_TOTP_SECRET || '' }}
           OPENQUOTA_EXPECTED_WINDOWS_SIGNER_SUBJECT: ${{ runner.os == 'Windows' && needs.validate.outputs.windows_signing == 'true' && vars.WINDOWS_SIGNER_SUBJECT || '' }}
-          APPLE_CERTIFICATE: ${{ runner.os == 'macOS' && needs.validate.outputs.macos_signing == 'true' && secrets.APPLE_CERTIFICATE || '' }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ runner.os == 'macOS' && needs.validate.outputs.macos_signing == 'true' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
-          APPLE_ID: ${{ runner.os == 'macOS' && needs.validate.outputs.macos_signing == 'true' && secrets.APPLE_ID || '' }}
-          APPLE_PASSWORD: ${{ runner.os == 'macOS' && needs.validate.outputs.macos_signing == 'true' && secrets.APPLE_PASSWORD || '' }}
-          APPLE_TEAM_ID: ${{ runner.os == 'macOS' && needs.validate.outputs.macos_signing == 'true' && secrets.APPLE_TEAM_ID || '' }}
         with:
           releaseId: ${{ needs.prepare-release.outputs.release_id }}
           releaseDraft: true

@@ -73,7 +73,14 @@ requireContracts('release', release, [
   'if [[ "$MACOS_SIGNING_ENABLED" = true ]]',
   "if: runner.os == 'Windows' && needs.validate.outputs.windows_signing == 'true'",
   "if: runner.os == 'macOS' && needs.validate.outputs.macos_signing != 'true'",
+  "if: runner.os == 'macOS' && needs.validate.outputs.macos_signing == 'true'",
   'echo \'APPLE_SIGNING_IDENTITY=-\' >> "$GITHUB_ENV"',
+  'name: Configure native macOS signing',
+  'write_env APPLE_CERTIFICATE "$OPENQUOTA_APPLE_CERTIFICATE"',
+  'write_env APPLE_CERTIFICATE_PASSWORD "$OPENQUOTA_APPLE_CERTIFICATE_PASSWORD"',
+  'write_env APPLE_ID "$OPENQUOTA_APPLE_ID"',
+  'write_env APPLE_PASSWORD "$OPENQUOTA_APPLE_PASSWORD"',
+  'write_env APPLE_TEAM_ID "$OPENQUOTA_APPLE_TEAM_ID"',
   "needs.validate.outputs.windows_signing == 'true' && matrix.windows-signing-args",
   "ES_USERNAME: ${{ steps.signing_policy.outputs.windows_signing == 'true' && secrets.ES_USERNAME || '' }}",
   "ES_PASSWORD: ${{ steps.signing_policy.outputs.windows_signing == 'true' && secrets.ES_PASSWORD || '' }}",
@@ -90,11 +97,6 @@ requireContracts('release', release, [
   "ES_CREDENTIAL_ID: ${{ runner.os == 'Windows' && needs.validate.outputs.windows_signing == 'true' && secrets.ES_CREDENTIAL_ID || '' }}",
   "ES_TOTP_SECRET: ${{ runner.os == 'Windows' && needs.validate.outputs.windows_signing == 'true' && secrets.ES_TOTP_SECRET || '' }}",
   "OPENQUOTA_EXPECTED_WINDOWS_SIGNER_SUBJECT: ${{ runner.os == 'Windows' && needs.validate.outputs.windows_signing == 'true' && vars.WINDOWS_SIGNER_SUBJECT || '' }}",
-  "APPLE_CERTIFICATE: ${{ runner.os == 'macOS' && needs.validate.outputs.macos_signing == 'true' && secrets.APPLE_CERTIFICATE || '' }}",
-  "APPLE_CERTIFICATE_PASSWORD: ${{ runner.os == 'macOS' && needs.validate.outputs.macos_signing == 'true' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}",
-  "APPLE_ID: ${{ runner.os == 'macOS' && needs.validate.outputs.macos_signing == 'true' && secrets.APPLE_ID || '' }}",
-  "APPLE_PASSWORD: ${{ runner.os == 'macOS' && needs.validate.outputs.macos_signing == 'true' && secrets.APPLE_PASSWORD || '' }}",
-  "APPLE_TEAM_ID: ${{ runner.os == 'macOS' && needs.validate.outputs.macos_signing == 'true' && secrets.APPLE_TEAM_ID || '' }}",
   "release-validation: ${{ (runner.os == 'Linux' || (runner.os == 'Windows' && needs.validate.outputs.windows_signing == 'true') || (runner.os == 'macOS' && needs.validate.outputs.macos_signing == 'true')) && 'true' || 'false' }}",
   "windows-signer-subject: ${{ runner.os == 'Windows' && needs.validate.outputs.windows_signing == 'true' && vars.WINDOWS_SIGNER_SUBJECT || '' }}",
   "apple-team-id: ${{ runner.os == 'macOS' && needs.validate.outputs.macos_signing == 'true' && secrets.APPLE_TEAM_ID || '' }}",
@@ -210,7 +212,10 @@ for (const name of [
 ]) {
   exactSigningBindings[name] = [
     `${name}: ${expression(`steps.signing_policy.outputs.macos_signing == 'true' && secrets.${name} || ''`)}`,
-    `${name}: ${expression(`runner.os == 'macOS' && needs.validate.outputs.macos_signing == 'true' && secrets.${name} || ''`)}`,
+  ];
+
+  exactSigningBindings[`OPENQUOTA_${name}`] = [
+    `OPENQUOTA_${name}: ${expression(`secrets.${name}`)}`,
   ];
 }
 
