@@ -150,9 +150,35 @@ xvfb-run -a dbus-run-session -- bash -euo pipefail -c '
     exit 1
   fi
 
-  window_id="$(xdotool search --onlyvisible --limit 1 --name "^OpenQuota$")"
-  test -n "${window_id}"
-  xdotool windowclose "${window_id}"
+  close_attempted=false
+  close_requested=false
+  for _ in $(seq 1 10); do
+    if ! kill -0 "${app_pid}" 2>/dev/null; then
+      if test "${close_attempted}" = true; then
+        close_requested=true
+        break
+      fi
+      cat "${stdio_log}" >&2 || true
+      cat "${runtime_log}" >&2 || true
+      echo "OpenQuota exited before its standalone window was closed." >&2
+      exit 1
+    fi
+    window_id="$(xdotool search --onlyvisible --limit 1 --name "^OpenQuota$" 2>/dev/null || true)"
+    if test -n "${window_id}"; then
+      close_attempted=true
+      if xdotool windowclose "${window_id}" 2>/dev/null; then
+        close_requested=true
+        break
+      fi
+    fi
+    sleep 1
+  done
+  if test "${close_requested}" != true; then
+    cat "${stdio_log}" >&2 || true
+    cat "${runtime_log}" >&2 || true
+    echo "OpenQuota did not keep a visible standalone window available for closing." >&2
+    exit 1
+  fi
   exited=false
   for _ in $(seq 1 20); do
     if ! kill -0 "${app_pid}" 2>/dev/null; then

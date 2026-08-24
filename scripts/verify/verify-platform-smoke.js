@@ -63,7 +63,11 @@ requireContracts('release', release, [
   'name: macOS Universal',
   'name: Build and smoke ${{ matrix.name }}',
   'Smoke test release artifact',
-  'uses: ./.github/actions/platform-smoke',
+  'name: Check out release smoke tooling',
+  'ref: ${{ github.workflow_sha }}',
+  'path: .release-workflow',
+  'sparse-checkout: .github/actions/platform-smoke',
+  'uses: ./.release-workflow/.github/actions/platform-smoke',
   "ENABLE_WINDOWS_NATIVE_SIGNING: ${{ vars.ENABLE_WINDOWS_NATIVE_SIGNING || 'false' }}",
   "ENABLE_MACOS_NATIVE_SIGNING: ${{ vars.ENABLE_MACOS_NATIVE_SIGNING || 'false' }}",
   'windows_signing: ${{ steps.signing_policy.outputs.windows_signing }}',
@@ -162,6 +166,18 @@ requireContracts('release', release, [
   'test "$(count_line "$windows_unsigned")" -eq 0',
   'test "$(count_line "$macos_signed")" -eq 0',
   'test "$(count_line "$macos_unsigned")" -eq 0',
+]);
+
+requireContracts('release smoke tooling checkout', release, [
+  `      - name: Check out release smoke tooling
+        uses: actions/checkout@v7
+        with:
+          ref: \${{ github.workflow_sha }}
+          path: .release-workflow
+          sparse-checkout: .github/actions/platform-smoke
+
+      - name: Smoke test release artifact
+        uses: ./.release-workflow/.github/actions/platform-smoke`,
 ]);
 
 const expression = (value) => `\${{ ${value} }}`;
@@ -347,6 +363,10 @@ requireContracts('Linux X11 package smoke', linuxX11, [
   'system tray became unavailable; using standalone window',
   'xdotool search --onlyvisible --limit 1 --name "^OpenQuota$"',
   'xdotool windowclose',
+  'close_attempted=false',
+  'close_requested=false',
+  'exited before its standalone window was closed',
+  'did not keep a visible standalone window available for closing',
   'did not exit when its standalone window was closed',
 ]);
 

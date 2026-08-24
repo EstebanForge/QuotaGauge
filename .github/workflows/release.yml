@@ -391,8 +391,15 @@ jobs:
             ${{ matrix.args }}
             ${{ runner.os == 'Windows' && needs.validate.outputs.windows_signing == 'true' && matrix.windows-signing-args || '' }}
 
+      - name: Check out release smoke tooling
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .release-workflow
+          sparse-checkout: .github/actions/platform-smoke
+
       - name: Smoke test release artifact
-        uses: ./.github/actions/platform-smoke
+        uses: ./.release-workflow/.github/actions/platform-smoke
         with:
           artifact-root: ${{ matrix.smoke-artifact-root }}
           release-validation: ${{ (runner.os == 'Linux' || (runner.os == 'Windows' && needs.validate.outputs.windows_signing == 'true') || (runner.os == 'macOS' && needs.validate.outputs.macos_signing == 'true')) && 'true' || 'false' }}
