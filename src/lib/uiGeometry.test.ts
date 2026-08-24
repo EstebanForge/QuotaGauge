@@ -61,6 +61,13 @@ describe('popover geometry contract', () => {
     expect(css).toMatch(/\.footer\s*{[^}]*min-height: 52px;/s);
   });
 
+  it('shows the provider focus ring only when keyboard focus should be visible', () => {
+    expect(css).toMatch(
+      /\.provider-section:focus-visible\s*{[^}]*outline: 2px solid var\(--meter-fill\);[^}]*outline-offset: 2px;/s,
+    );
+    expect(css).not.toMatch(/\.provider-section:focus\s*{/);
+  });
+
   it('keeps shared rules below component-owned styles regardless of bundle order', () => {
     expect(tokensCss).toContain('@layer tokens, base, shared;');
     expect(baseCss).toContain('@layer base');

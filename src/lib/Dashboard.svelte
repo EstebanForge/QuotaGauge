@@ -730,7 +730,7 @@
 {/if}
 
 <style>
-  .provider-section:focus {
+  .provider-section:focus-visible {
     border-radius: 9px;
     outline: 2px solid var(--meter-fill);
     outline-offset: 2px;
