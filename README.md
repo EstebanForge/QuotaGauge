@@ -1,35 +1,38 @@
 <p align="center">
-  <img src="assets/openquota-icon.png" alt="OpenQuota logo" width="88">
+  <img src="assets/quotagauge-icon.png" alt="QuotaGauge logo" width="88">
 </p>
 
-<h1 align="center">OpenQuota</h1>
+<h1 align="center">QuotaGauge</h1>
 
 <p align="center">
   Track usage and limits across your AI coding tools.
 </p>
 
 <p align="center">
-  <a href="https://github.com/deviffyy/OpenQuota/actions/workflows/ci.yml"><img src="https://github.com/deviffyy/OpenQuota/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
-  <a href="https://github.com/deviffyy/OpenQuota/releases/latest"><img src="https://img.shields.io/github/v/release/deviffyy/OpenQuota" alt="Latest release"></a>
-  <a href="https://github.com/deviffyy/OpenQuota/releases"><img src="https://img.shields.io/github/downloads/deviffyy/OpenQuota/total" alt="Total downloads"></a>
+  <a href="https://github.com/EstebanForge/QuotaGauge/actions/workflows/ci.yml"><img src="https://github.com/EstebanForge/QuotaGauge/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
+  <a href="https://github.com/EstebanForge/QuotaGauge/releases/latest"><img src="https://img.shields.io/github/v/release/EstebanForge/QuotaGauge" alt="Latest release"></a>
+  <a href="https://github.com/EstebanForge/QuotaGauge/releases"><img src="https://img.shields.io/github/downloads/EstebanForge/QuotaGauge/total" alt="Total downloads"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
 </p>
 
-OpenQuota brings usage data from Claude Code, Codex, Cursor, Copilot, and other AI coding providers
+QuotaGauge brings usage data from Claude Code, Codex, Cursor, Copilot, and other AI coding providers
 into one compact panel. See session and weekly limits, reset times, token usage, and estimated
 spend at a glance.
 
+QuotaGauge is the maintained continuation of [OpenUsage](https://github.com/robinebers/openusage)
+by robinebers.
+
 <p align="center">
-  <img src="assets/openquota-demo.gif" alt="OpenQuota dashboard showing animated AI usage in light and dark themes" width="840">
+  <img src="assets/quotagauge-demo.gif" alt="QuotaGauge dashboard showing animated AI usage in light and dark themes" width="840">
 </p>
 
 ## Download
 
 | Platform | Available builds                           | Download                                                                      |
 | -------- | ------------------------------------------ | ----------------------------------------------------------------------------- |
-| Windows  | x64 and ARM64 installers                   | [Download for Windows](https://github.com/deviffyy/OpenQuota/releases/latest) |
-| macOS    | Universal DMG for Apple Silicon and Intel  | [Download for macOS](https://github.com/deviffyy/OpenQuota/releases/latest)   |
-| Linux    | x64 and ARM64 AppImage and Debian packages | [Download for Linux](https://github.com/deviffyy/OpenQuota/releases/latest)   |
+| Windows  | x64 and ARM64 installers                   | [Download for Windows](https://github.com/EstebanForge/QuotaGauge/releases/latest) |
+| macOS    | Universal DMG for Apple Silicon and Intel  | [Download for macOS](https://github.com/EstebanForge/QuotaGauge/releases/latest)   |
+| Linux    | x64 and ARM64 AppImage and Debian packages | [Download for Linux](https://github.com/EstebanForge/QuotaGauge/releases/latest)   |
 
 Open the latest release and choose the file for your platform:
 
@@ -37,14 +40,19 @@ Open the latest release and choose the file for your platform:
 - **macOS:** `_universal.dmg` — requires macOS 11 or later
 - **Linux:** `.AppImage` or `.deb`
 
-OpenQuota checks for updates automatically. Update payloads are cryptographically signed with the
+QuotaGauge checks for updates automatically. Update payloads are cryptographically signed with the
 project's updater key, independently from operating-system package signing.
 
 When native signing is disabled (the current default), Windows installers are not
 Authenticode-signed, while the macOS app uses an ad-hoc signature and is not Apple-notarized.
-Windows SmartScreen or macOS Gatekeeper may therefore ask for confirmation. Download OpenQuota only
+Windows SmartScreen or macOS Gatekeeper may therefore ask for confirmation. Download QuotaGauge only
 from this repository's official release page; on macOS, manual approval may be required in Privacy
 & Security. Each release states its exact native-signing status in its notes.
+
+## Migrating from OpenQuota
+
+On first launch, QuotaGauge imports your existing OpenQuota settings database and saved API keys
+automatically. Your OpenQuota installation and its data stay untouched.
 
 ## Supported providers
 
@@ -69,7 +77,7 @@ from this repository's official release page; on macOS, manual approval may be r
 - **[MiniMax](docs/providers/minimax.md)** — Token Plan session and weekly quotas (API key)
 
 Most providers use credentials already available on your computer. OpenRouter, Z.ai, Kimi, and
-MiniMax require API keys, which you can add in Customize; OpenQuota stores them securely in your
+MiniMax require API keys, which you can add in Customize; QuotaGauge stores them securely in your
 operating system's credential store. Codex subscription limits require a ChatGPT login and are not
 available in API-key-only sessions.
 
@@ -87,7 +95,7 @@ available in API-key-only sessions.
 - **Fast refresh.** Cached values appear immediately and providers refresh automatically in the
   background.
 
-OpenQuota runs locally and has no account, cloud backend, analytics, or usage telemetry of its own.
+QuotaGauge runs locally and has no account, cloud backend, analytics, or usage telemetry of its own.
 
 ## Development
 
@@ -129,7 +137,7 @@ and report security problems privately as described in [SECURITY.md](SECURITY.md
 
 ## Acknowledgements
 
-OpenQuota was inspired by [OpenUsage](https://github.com/robinebers/openusage) and developed as a
+QuotaGauge was inspired by [OpenUsage](https://github.com/robinebers/openusage) and developed as a
 cross-platform alternative for Windows, Linux, and macOS.
 
 ## License

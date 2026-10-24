@@ -1,0 +1,138 @@
+//! One-time import of data written by the pre-rename build (OpenQuota).
+//!
+//! The app data directory is keyed by the bundle identifier, so the new
+//! identifier starts with an empty directory. The legacy database lives in a
+//! sibling directory named after the legacy identifier.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+
+pub const LEGACY_APP_IDENTIFIER: &str = "io.github.deviffyy.openquota";
+pub const LEGACY_DB_FILENAME: &str = "openquota.db";
+
+/// Outcome of a legacy database import attempt.
+#[derive(Debug, PartialEq, Eq)]
+pub enum LegacyDbImport {
+    /// New database already existed; nothing was touched.
+    NotNeeded,
+    /// No legacy installation found.
+    LegacyMissing,
+    /// Legacy database copied to the new location.
+    Imported { bytes: u64 },
+}
+
+fn legacy_database_path(app_data_dir: &Path) -> Option<PathBuf> {
+    let data_root = app_data_dir.parent()?;
+    Some(
+        data_root
+            .join(LEGACY_APP_IDENTIFIER)
+            .join(LEGACY_DB_FILENAME),
+    )
+}
+
+/// Copies the legacy database into place when the new one does not exist yet.
+///
+/// The database schema is produced by the same code line, so a file copy is a
+/// complete import. Failures are returned so the caller can log and continue
+/// with a fresh database.
+pub fn import_legacy_database(
+    app_data_dir: &Path,
+    database_path: &Path,
+) -> Result<LegacyDbImport, String> {
+    if database_path.exists() {
+        return Ok(LegacyDbImport::NotNeeded);
+    }
+    let Some(legacy_path) = legacy_database_path(app_data_dir) else {
+        return Ok(LegacyDbImport::LegacyMissing);
+    };
+    if !legacy_path.is_file() {
+        return Ok(LegacyDbImport::LegacyMissing);
+    }
+    let bytes = fs::copy(&legacy_path, database_path)
+        .map_err(|error| format!("copying {} failed: {error}", legacy_path.display()))?;
+    Ok(LegacyDbImport::Imported { bytes })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reports_copy_failure_when_target_directory_is_missing() {
+        let base = tempfile::tempdir().unwrap();
+        let legacy_dir = new_dir(base.path(), LEGACY_APP_IDENTIFIER);
+        let new_dir = new_dir(base.path(), "io.github.estebanforge.quotagauge");
+
+        fs::write(legacy_dir.join(LEGACY_DB_FILENAME), b"legacy").unwrap();
+
+        let outcome =
+            import_legacy_database(&new_dir, &new_dir.join("missing").join("quotagauge.db"));
+
+        assert!(outcome.is_err());
+    }
+
+    fn new_dir(base: &Path, identifier: &str) -> PathBuf {
+        let dir = base.join(identifier);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn imports_legacy_database_when_new_one_is_absent() {
+        let base = tempfile::tempdir().unwrap();
+        let legacy_dir = new_dir(base.path(), LEGACY_APP_IDENTIFIER);
+        let new_dir = new_dir(base.path(), "io.github.estebanforge.quotagauge");
+
+        let legacy_db = legacy_dir.join(LEGACY_DB_FILENAME);
+        fs::write(&legacy_db, b"sqlite-payload").unwrap();
+
+        let database_path = new_dir.join("quotagauge.db");
+        let outcome = import_legacy_database(&new_dir, &database_path).unwrap();
+
+        assert_eq!(outcome, LegacyDbImport::Imported { bytes: 14 });
+        assert_eq!(fs::read(&database_path).unwrap(), b"sqlite-payload");
+        // The legacy file stays in place for the old app.
+        assert!(legacy_db.is_file());
+    }
+
+    #[test]
+    fn keeps_existing_new_database_untouched() {
+        let base = tempfile::tempdir().unwrap();
+        let legacy_dir = new_dir(base.path(), LEGACY_APP_IDENTIFIER);
+        let new_dir = new_dir(base.path(), "io.github.estebanforge.quotagauge");
+
+        fs::write(legacy_dir.join(LEGACY_DB_FILENAME), b"legacy").unwrap();
+        let database_path = new_dir.join("quotagauge.db");
+        fs::write(&database_path, b"current").unwrap();
+
+        let outcome = import_legacy_database(&new_dir, &database_path).unwrap();
+
+        assert_eq!(outcome, LegacyDbImport::NotNeeded);
+        assert_eq!(fs::read(&database_path).unwrap(), b"current");
+    }
+
+    #[test]
+    fn reports_missing_legacy_install_as_no_op() {
+        let base = tempfile::tempdir().unwrap();
+        let new_dir = new_dir(base.path(), "io.github.estebanforge.quotagauge");
+        let database_path = new_dir.join("quotagauge.db");
+
+        let outcome = import_legacy_database(&new_dir, &database_path).unwrap();
+
+        assert_eq!(outcome, LegacyDbImport::LegacyMissing);
+        assert!(!database_path.exists());
+    }
+
+    #[test]
+    fn ignores_legacy_entry_that_is_not_a_file() {
+        let base = tempfile::tempdir().unwrap();
+        let legacy_dir = new_dir(base.path(), LEGACY_APP_IDENTIFIER);
+        let new_dir = new_dir(base.path(), "io.github.estebanforge.quotagauge");
+
+        fs::create_dir(legacy_dir.join(LEGACY_DB_FILENAME)).unwrap();
+
+        let outcome = import_legacy_database(&new_dir, &new_dir.join("quotagauge.db")).unwrap();
+
+        assert_eq!(outcome, LegacyDbImport::LegacyMissing);
+    }
+}

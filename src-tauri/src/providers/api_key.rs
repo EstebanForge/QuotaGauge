@@ -5,7 +5,8 @@ use zeroize::Zeroizing;
 
 use super::credential_store::{delete_owned_password, read_owned_password, write_owned_password};
 
-const SERVICE: &str = "io.github.deviffyy.openquota.api-key";
+const SERVICE: &str = "io.github.estebanforge.quotagauge.api-key";
+const LEGACY_SERVICE: &str = "io.github.deviffyy.openquota.api-key";
 
 pub struct SecretBytes(Zeroizing<Vec<u8>>);
 
@@ -41,20 +42,74 @@ pub trait SecretBackend: Send + Sync {
     fn delete(&self, account: &str) -> Result<(), String>;
 }
 
-#[derive(Default)]
-struct SystemSecretBackend;
+struct ServiceSecretBackend(&'static str);
 
-impl SecretBackend for SystemSecretBackend {
+impl SecretBackend for ServiceSecretBackend {
     fn read(&self, account: &str) -> Result<Option<SecretBytes>, String> {
-        read_owned_password(SERVICE, account).map(|value| value.map(SecretBytes::new))
+        read_owned_password(self.0, account).map(|value| value.map(SecretBytes::new))
     }
 
     fn write(&self, account: &str, value: &[u8]) -> Result<(), String> {
-        write_owned_password(SERVICE, account, value)
+        write_owned_password(self.0, account, value)
     }
 
     fn delete(&self, account: &str) -> Result<(), String> {
-        delete_owned_password(SERVICE, account)
+        delete_owned_password(self.0, account)
+    }
+}
+
+/// Serves entries from the current keychain service and, on first access,
+/// copies them over from the pre-rename service so OpenQuota users keep
+/// their saved API keys.
+struct LegacyImportBackend {
+    current: Arc<dyn SecretBackend>,
+    legacy: Arc<dyn SecretBackend>,
+}
+
+impl LegacyImportBackend {
+    fn system() -> Self {
+        Self {
+            current: Arc::new(ServiceSecretBackend(SERVICE)),
+            legacy: Arc::new(ServiceSecretBackend(LEGACY_SERVICE)),
+        }
+    }
+}
+
+impl SecretBackend for LegacyImportBackend {
+    fn read(&self, account: &str) -> Result<Option<SecretBytes>, String> {
+        match self.current.read(account)? {
+            Some(value) => Ok(Some(value)),
+            None => match self.legacy.read(account) {
+                Ok(Some(value)) => {
+                    if let Err(error) = self.current.write(account, value.as_slice()) {
+                        crate::app_warn!(
+                            &format!("auth:{account}"),
+                            "legacy API key copy failed ({error})"
+                        );
+                    }
+                    Ok(Some(value))
+                }
+                Ok(None) => Ok(None),
+                Err(error) => {
+                    crate::app_warn!(
+                        &format!("auth:{account}"),
+                        "legacy keychain read failed ({error})"
+                    );
+                    Ok(None)
+                }
+            },
+        }
+    }
+
+    fn write(&self, account: &str, value: &[u8]) -> Result<(), String> {
+        self.current.write(account, value)
+    }
+
+    fn delete(&self, account: &str) -> Result<(), String> {
+        // Clear both services so a saved-key reset leaves nothing behind.
+        let current = self.current.delete(account);
+        let _ = self.legacy.delete(account);
+        current
     }
 }
 
@@ -112,7 +167,7 @@ impl ApiKeyStore {
                 .iter()
                 .map(|value| (*value).to_owned())
                 .collect(),
-            secrets: Arc::new(SystemSecretBackend),
+            secrets: Arc::new(LegacyImportBackend::system()),
             environment: Arc::new(ProcessEnvironment),
             config_files: Arc::new(ProcessConfigFiles),
         }
@@ -295,7 +350,10 @@ mod tests {
 
     use crate::models::ApiKeyStatus;
 
-    use super::{ApiKeyStore, ConfigFileReader, EnvironmentReader, SecretBackend, SecretBytes};
+    use super::{
+        ApiKeyStore, ConfigFileReader, EnvironmentReader, LegacyImportBackend, SecretBackend,
+        SecretBytes,
+    };
 
     #[derive(Default)]
     struct MemorySecrets(Mutex<HashMap<String, Vec<u8>>>);
@@ -520,5 +578,108 @@ mod tests {
                 .map(|value| value.as_str()),
             Some("plain-text-key")
         );
+    }
+
+    fn legacy_store(
+        current: Arc<dyn SecretBackend>,
+        legacy: Arc<dyn SecretBackend>,
+    ) -> ApiKeyStore {
+        ApiKeyStore::with_source_backends(
+            "provider",
+            &["PROVIDER_API_KEY"],
+            &[],
+            Arc::new(LegacyImportBackend { current, legacy }),
+            Arc::new(MemoryEnvironment(HashMap::new())),
+            Arc::new(MemoryConfigFiles(HashMap::new())),
+        )
+    }
+
+    #[test]
+    fn falls_back_to_legacy_entry_and_copies_it_under_current_service() {
+        let current = Arc::new(MemorySecrets::default());
+        let legacy = Arc::new(MemorySecrets::default());
+        legacy.write("provider", b"legacy-key").unwrap();
+
+        let loaded = legacy_store(current.clone(), legacy)
+            .load()
+            .unwrap()
+            .map(|value| value.as_str().to_owned());
+
+        assert_eq!(loaded.as_deref(), Some("legacy-key"));
+        assert_eq!(
+            current.read("provider").unwrap().unwrap().as_slice(),
+            b"legacy-key"
+        );
+    }
+
+    #[test]
+    fn current_entry_takes_precedence_over_legacy() {
+        let current = Arc::new(MemorySecrets::default());
+        let legacy = Arc::new(MemorySecrets::default());
+        current.write("provider", b"current-key").unwrap();
+        legacy.write("provider", b"legacy-key").unwrap();
+
+        let loaded = legacy_store(current, legacy)
+            .load()
+            .unwrap()
+            .map(|value| value.as_str().to_owned());
+
+        assert_eq!(loaded.as_deref(), Some("current-key"));
+    }
+
+    #[test]
+    fn delete_clears_legacy_entry_too() {
+        let current = Arc::new(MemorySecrets::default());
+        let legacy = Arc::new(MemorySecrets::default());
+        current.write("provider", b"current-key").unwrap();
+        legacy.write("provider", b"legacy-key").unwrap();
+
+        legacy_store(current.clone(), legacy.clone())
+            .delete()
+            .unwrap();
+
+        assert!(current.read("provider").unwrap().is_none());
+        assert!(legacy.read("provider").unwrap().is_none());
+    }
+
+    #[test]
+    fn legacy_read_error_behaves_as_missing_entry() {
+        let loaded = legacy_store(
+            Arc::new(MemorySecrets::default()),
+            Arc::new(ReadErrorSecrets),
+        )
+        .load()
+        .unwrap();
+
+        assert!(loaded.is_none());
+    }
+
+    struct ReadOnlySecrets;
+
+    impl SecretBackend for ReadOnlySecrets {
+        fn read(&self, _account: &str) -> Result<Option<SecretBytes>, String> {
+            Ok(None)
+        }
+
+        fn write(&self, _account: &str, _value: &[u8]) -> Result<(), String> {
+            Err("System credential store rejected the write.".into())
+        }
+
+        fn delete(&self, _account: &str) -> Result<(), String> {
+            Err("System credential store rejected the write.".into())
+        }
+    }
+
+    #[test]
+    fn legacy_key_still_serves_when_the_copy_write_fails() {
+        let legacy = Arc::new(MemorySecrets::default());
+        legacy.write("provider", b"legacy-key").unwrap();
+
+        let loaded = legacy_store(Arc::new(ReadOnlySecrets), legacy)
+            .load()
+            .unwrap()
+            .map(|value| value.as_str().to_owned());
+
+        assert_eq!(loaded.as_deref(), Some("legacy-key"));
     }
 }

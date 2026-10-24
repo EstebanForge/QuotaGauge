@@ -1,13 +1,13 @@
-# Contributing to OpenQuota
+# Contributing to QuotaGauge
 
-Thanks for helping improve OpenQuota. Bug reports, feature ideas, documentation fixes, and focused
+Thanks for helping improve QuotaGauge. Bug reports, feature ideas, documentation fixes, and focused
 pull requests are welcome.
 
 By participating, you agree to follow the project [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Project philosophy
 
-OpenQuota aims for clean design, fast performance, and a focused user experience. Its purpose is
+QuotaGauge aims for clean design, fast performance, and a focused user experience. Its purpose is
 simple: make AI coding subscription usage and quota limits easy to understand without interrupting
 the user's work.
 
@@ -18,8 +18,8 @@ abstractions, dependencies, or complexity. Keep changes small and focused; do no
 ## Before opening an issue
 
 - Search existing issues and pull requests first.
-- Use the latest OpenQuota release when reproducing a bug.
-- Include your operating system, architecture, OpenQuota version, and affected provider.
+- Use the latest QuotaGauge release when reproducing a bug.
+- Include your operating system, architecture, QuotaGauge version, and affected provider.
 - Never post credentials, access tokens, account identifiers, or unreviewed diagnostic logs.
 
 Security vulnerabilities should not be reported in a public issue. Follow

@@ -326,7 +326,7 @@
     <span class="hint-card__icon"><Icon name="refresh" size={16} strokeWidth={2} /></span>
     <div>
       <strong>Update Available</strong>
-      <span>OpenQuota {updateStatus.version} is ready to download.</span>
+      <span>QuotaGauge {updateStatus.version} is ready to download.</span>
       {#if updateStatus.body}<details class="update-notes">
           <summary>What’s new</summary>
           <p>{updateStatus.body}</p>
@@ -396,7 +396,7 @@
 {#if !settings.detectionNoticeDismissed}
   <section class="detection-card" out:scale={{ start: 0.95, ...springMotion(reducedMotion) }}>
     <div>
-      <strong>Welcome to OpenQuota</strong><span
+      <strong>Welcome to QuotaGauge</strong><span
         >We set you up with the AI tools found on your computer. Add or hide providers any time.</span
       >
     </div>

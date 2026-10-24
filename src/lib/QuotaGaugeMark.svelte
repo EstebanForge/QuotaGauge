@@ -1,5 +1,5 @@
 <script lang="ts">
-  import openQuotaMark from '../assets/openquota-mark.png';
+  import quotaGaugeMark from '../assets/quotagauge-mark.png';
 
   interface Props {
     size?: number;
@@ -10,10 +10,10 @@
 </script>
 
 <img
-  src={openQuotaMark}
+  src={quotaGaugeMark}
   width={size}
   height={size}
-  alt={decorative ? '' : 'OpenQuota'}
+  alt={decorative ? '' : 'QuotaGauge'}
   aria-hidden={decorative}
   draggable="false"
 />

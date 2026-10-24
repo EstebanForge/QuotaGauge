@@ -2,6 +2,7 @@ mod child_process;
 mod commands;
 mod desktop_integration;
 mod hashing;
+mod legacy;
 mod logging;
 #[cfg(any(target_os = "macos", test))]
 mod menu_bar;
@@ -66,28 +67,28 @@ fn install_tray(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
         let settings_item =
             MenuItem::with_id(app, "settings", "Settings", true, Some("CmdOrCtrl+,"))?;
         let separator = PredefinedMenuItem::separator(app)?;
-        let quit = MenuItem::with_id(app, "quit", "Quit OpenQuota", true, Some("CmdOrCtrl+Q"))?;
+        let quit = MenuItem::with_id(app, "quit", "Quit QuotaGauge", true, Some("CmdOrCtrl+Q"))?;
         Menu::with_items(app, &[&settings_item, &separator, &quit])?
     };
     #[cfg(not(target_os = "macos"))]
     let menu = {
-        let open = MenuItem::with_id(app, "open", "Open OpenQuota", true, None::<&str>)?;
+        let open = MenuItem::with_id(app, "open", "Open QuotaGauge", true, None::<&str>)?;
         let customize = MenuItem::with_id(app, "customize", "Customize…", true, None::<&str>)?;
         let settings_item = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
         let separator = PredefinedMenuItem::separator(app)?;
-        let quit = MenuItem::with_id(app, "quit", "Quit OpenQuota", true, None::<&str>)?;
+        let quit = MenuItem::with_id(app, "quit", "Quit QuotaGauge", true, None::<&str>)?;
         Menu::with_items(app, &[&open, &customize, &settings_item, &separator, &quit])?
     };
 
     let icon = app
         .default_window_icon()
-        .ok_or_else(|| std::io::Error::other("OpenQuota application icon is unavailable"))?
+        .ok_or_else(|| std::io::Error::other("QuotaGauge application icon is unavailable"))?
         .clone();
-    let tray = TrayIconBuilder::with_id("openquota-tray")
+    let tray = TrayIconBuilder::with_id("quotagauge-tray")
         .icon(icon)
         .menu(&menu);
     #[cfg(not(target_os = "linux"))]
-    let tray = tray.tooltip("OpenQuota").show_menu_on_left_click(false);
+    let tray = tray.tooltip("QuotaGauge").show_menu_on_left_click(false);
     let tray = tray.on_menu_event(|app, event| match event.id.as_ref() {
         "open" => {
             app.state::<PopupDismissGuard>().cancel_pending();
@@ -146,7 +147,7 @@ fn apply_linux_tray_fallback(app: &AppHandle) {
         "lifecycle",
         "system tray became unavailable; using standalone window"
     );
-    let _ = app.remove_tray_by_id("openquota-tray");
+    let _ = app.remove_tray_by_id("quotagauge-tray");
     app.state::<PopupDismissGuard>().cancel_pending();
 
     if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
@@ -175,7 +176,7 @@ fn spawn_status_notifier_monitor(app: AppHandle) {
     }
     let monitor_app = app.clone();
     if std::thread::Builder::new()
-        .name("openquota-tray-monitor".to_owned())
+        .name("quotagauge-tray-monitor".to_owned())
         .spawn(move || {
             if let Err(error) = desktop_integration::wait_for_status_notifier_loss() {
                 app_warn!("lifecycle", "system tray monitor stopped: {error}");
@@ -359,7 +360,18 @@ pub fn run() {
             app.manage(desktop_integration.clone());
 
             let app_data_dir = app.path().app_data_dir()?;
-            let database_path = app_data_dir.join("openquota.db");
+            let database_path = app_data_dir.join("quotagauge.db");
+            match legacy::import_legacy_database(&app_data_dir, &database_path) {
+                Ok(legacy::LegacyDbImport::Imported { bytes }) => {
+                    app_info!(
+                        "lifecycle",
+                        "imported legacy OpenQuota database ({} bytes)",
+                        bytes
+                    );
+                }
+                Ok(_) => {}
+                Err(error) => app_warn!("lifecycle", "legacy database import skipped ({error})"),
+            }
             let storage = Arc::new(Storage::open(&database_path)?);
             provider_environment::initialize(storage.load_provider_environment()?);
             provider_environment::refresh_for_next_launch(storage.clone());
@@ -397,7 +409,7 @@ pub fn run() {
             logging::set_level(settings.get().log_level);
             app_info!(
                 "config",
-                "OpenQuota v{} starting (level={}, log=OpenQuota.log)",
+                "QuotaGauge v{} starting (level={}, log=QuotaGauge.log)",
                 app.package_info().version,
                 logging::current_level().log_label()
             );
@@ -433,7 +445,7 @@ pub fn run() {
                             "system tray integration failed; using standalone window: {error}"
                         );
                         desktop_integration.disable_tray();
-                        let _ = app.remove_tray_by_id("openquota-tray");
+                        let _ = app.remove_tray_by_id("quotagauge-tray");
                         false
                     }
                 }
@@ -477,7 +489,7 @@ pub fn run() {
                 credential_detection_plan,
             );
             refresh_loop::spawn(app.handle().clone(), service, settings, notifications);
-            app_info!("lifecycle", "OpenQuota startup completed");
+            app_info!("lifecycle", "QuotaGauge startup completed");
 
             Ok(())
         })
@@ -514,5 +526,5 @@ pub fn run() {
         ])
         .on_window_event(handle_window_event)
         .run(tauri::generate_context!())
-        .expect("error while running OpenQuota");
+        .expect("error while running QuotaGauge");
 }

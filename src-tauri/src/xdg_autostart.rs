@@ -1,6 +1,6 @@
 use std::{fs, path::PathBuf};
 
-const DESKTOP_FILE: &str = "io.github.deviffyy.openquota.desktop";
+const DESKTOP_FILE: &str = "io.github.estebanforge.quotagauge.desktop";
 
 #[cfg(target_os = "linux")]
 pub fn set_enabled(enabled: bool) -> Result<(), String> {
@@ -9,7 +9,7 @@ pub fn set_enabled(enabled: bool) -> Result<(), String> {
         std::env::var_os("HOME").map(PathBuf::from),
     )?;
     let executable =
-        std::env::current_exe().map_err(|_| "OpenQuota executable path could not be resolved.")?;
+        std::env::current_exe().map_err(|_| "QuotaGauge executable path could not be resolved.")?;
     set_enabled_at(&path, &executable, enabled)
 }
 
@@ -61,10 +61,10 @@ fn desktop_entry(executable: &std::path::Path) -> String {
         "[Desktop Entry]\n\
 Type=Application\n\
 Version=1.0\n\
-Name=OpenQuota\n\
+Name=QuotaGauge\n\
 Comment=Track local AI provider quotas\n\
 Exec={}\n\
-Icon=io.github.deviffyy.openquota\n\
+Icon=io.github.estebanforge.quotagauge\n\
 Terminal=false\n\
 StartupNotify=false\n\
 X-GNOME-Autostart-enabled=true\n",
@@ -98,7 +98,7 @@ mod tests {
     fn honors_absolute_xdg_config_home_and_falls_back_to_home() {
         assert_eq!(
             autostart_path(Some(PathBuf::from("/custom/config")), None).unwrap(),
-            PathBuf::from("/custom/config/autostart/io.github.deviffyy.openquota.desktop")
+            PathBuf::from("/custom/config/autostart/io.github.estebanforge.quotagauge.desktop")
         );
         assert_eq!(
             autostart_path(
@@ -106,7 +106,7 @@ mod tests {
                 Some(PathBuf::from("/home/user"))
             )
             .unwrap(),
-            PathBuf::from("/home/user/.config/autostart/io.github.deviffyy.openquota.desktop")
+            PathBuf::from("/home/user/.config/autostart/io.github.estebanforge.quotagauge.desktop")
         );
     }
 
@@ -120,10 +120,10 @@ mod tests {
     #[test]
     fn installs_and_removes_an_xdg_desktop_entry() {
         let directory = tempdir().unwrap();
-        let path = directory.path().join("autostart/openquota.desktop");
-        set_enabled_at(&path, Path::new("/opt/Open Quota/openquota"), true).unwrap();
+        let path = directory.path().join("autostart/quotagauge.desktop");
+        set_enabled_at(&path, Path::new("/opt/Open Quota/quotagauge"), true).unwrap();
         let entry = std::fs::read_to_string(&path).unwrap();
-        assert!(entry.contains("Exec=\"/opt/Open Quota/openquota\""));
+        assert!(entry.contains("Exec=\"/opt/Open Quota/quotagauge\""));
         set_enabled_at(&path, Path::new("/unused"), false).unwrap();
         assert!(!path.exists());
     }

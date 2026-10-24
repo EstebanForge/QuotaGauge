@@ -38,7 +38,7 @@
   import { createListenerRegistry } from './lib/listenerRegistry';
   import { emptyProviderCatalog, ProviderCatalogIndex } from './lib/metrics';
   import { springMotion } from './lib/motion';
-  import OpenQuotaMark from './lib/OpenQuotaMark.svelte';
+  import QuotaGaugeMark from './lib/QuotaGaugeMark.svelte';
   import { horizontalPageTransition, shouldSlideBetweenScreens } from './lib/pageTransition';
   import { desktopPlatform, shortcutLabels } from './lib/platform';
   import { withProviderName } from './lib/providerNames';
@@ -311,7 +311,7 @@
           ]),
         ),
       };
-      settingsError = 'OpenQuota could not start a provider refresh.';
+      settingsError = 'QuotaGauge could not start a provider refresh.';
     }
   }
   async function refreshProvider(providerId: string) {
@@ -589,7 +589,7 @@
         // upstream support is still unavailable.
         await getCurrentWindow().startResizeDragging(edge === 'top' ? 'North' : 'South');
       } catch {
-        settingsError = 'OpenQuota panel resize could not be started.';
+        settingsError = 'QuotaGauge panel resize could not be started.';
       } finally {
         await lockPanelResizeAxis().catch(() => undefined);
         updatePanelHeightMode();
@@ -605,7 +605,7 @@
     event.preventDefault();
     void getCurrentWindow()
       .startDragging()
-      .catch(() => (settingsError = 'OpenQuota window could not be moved.'));
+      .catch(() => (settingsError = 'QuotaGauge window could not be moved.'));
   }
   async function changePanelHeightMode(mode: PanelHeightMode) {
     if (!('__TAURI_INTERNALS__' in window)) return;
@@ -619,7 +619,7 @@
       if (request === panelHeightModeRequest) updatePanelHeightMode();
     } catch {
       if (request !== panelHeightModeRequest) return;
-      settingsError = 'OpenQuota could not change the panel height mode.';
+      settingsError = 'QuotaGauge could not change the panel height mode.';
       updatePanelHeightMode();
     }
   }
@@ -725,7 +725,7 @@
     document.addEventListener('keydown', handleKeydown);
     const clock = window.setInterval(() => (now = Date.now()), 30_000);
     const listeners = createListenerRegistry(() => {
-      settingsError ??= 'OpenQuota event bridge is unavailable.';
+      settingsError ??= 'QuotaGauge event bridge is unavailable.';
     });
     listeners.add(onUsageState((state) => (viewState = state)));
     listeners.add(
@@ -754,7 +754,7 @@
         settingsController.setState(state.settings);
         automaticUpdatesReady = true;
       })
-      .catch(() => (settingsError = 'OpenQuota backend is unavailable.'));
+      .catch(() => (settingsError = 'QuotaGauge backend is unavailable.'));
     return () => {
       document.removeEventListener('keydown', handleKeydown);
       window.clearInterval(clock);
@@ -776,7 +776,7 @@
   class="popover"
   class:popover--floating={floatingWindow}
   class:popover--macos={floatingWindow && platform === 'macos'}
-  aria-label="OpenQuota usage dashboard"
+  aria-label="QuotaGauge usage dashboard"
   oncontextmenu={(event) => event.preventDefault()}
 >
   <p id="reorder-instructions" class="sr-only">
@@ -792,15 +792,15 @@
     ></div>
   {/if}
   {#if floatingWindow}
-    <header class="floating-chrome" aria-label="OpenQuota window controls">
+    <header class="floating-chrome" aria-label="QuotaGauge window controls">
       <div class="floating-chrome__drag">
-        <OpenQuotaMark size={14} />
-        <span>OpenQuota</span>
+        <QuotaGaugeMark size={14} />
+        <span>QuotaGauge</span>
       </div>
       <button
         class="floating-chrome__close"
         type="button"
-        aria-label={settingsState?.trayAvailable ? 'Hide OpenQuota' : 'Close OpenQuota'}
+        aria-label={settingsState?.trayAvailable ? 'Hide QuotaGauge' : 'Close QuotaGauge'}
         onclick={closeMainWindow}
       >
         <Icon name="close" size={12} strokeWidth={2.1} />
@@ -938,7 +938,7 @@
           disabled={anyRefreshing}
           aria-label="Refresh all provider usage"
         >
-          <span>OpenQuota {appVersion}</span><small
+          <span>QuotaGauge {appVersion}</span><small
             >{anyRefreshing ? 'Updating…' : nextUpdateLabel(lastFullRefresh, now)}</small
           >
         </button>
@@ -1017,14 +1017,14 @@
                 >
                 <hr />
                 <button class="menu-item" type="button" onclick={openAbout}
-                  ><Icon name="about" /><span>About OpenQuota</span></button
+                  ><Icon name="about" /><span>About QuotaGauge</span></button
                 >
                 <button
                   class="menu-item menu-item--danger"
                   type="button"
-                  aria-label="Quit OpenQuota"
+                  aria-label="Quit QuotaGauge"
                   onclick={quitApp}
-                  ><Icon name="power" /><span>Quit OpenQuota</span><kbd>{shortcuts.quit}</kbd
+                  ><Icon name="power" /><span>Quit QuotaGauge</span><kbd>{shortcuts.quit}</kbd
                   ></button
                 >
               </div>
@@ -1082,7 +1082,7 @@
           role="dialog"
           tabindex="-1"
           aria-modal="true"
-          aria-label="About OpenQuota"
+          aria-label="About QuotaGauge"
         >
           <button
             bind:this={aboutCloseButton}
@@ -1092,8 +1092,8 @@
             onclick={() => void closeAbout()}
             ><Icon name="close" size={11} strokeWidth={2.3} /></button
           >
-          <OpenQuotaMark size={44} />
-          <h1>OpenQuota</h1>
+          <QuotaGaugeMark size={44} />
+          <h1>QuotaGauge</h1>
           <p>Version {appVersion}</p>
           <small>Private, local usage monitoring for your AI coding tools.</small>
         </div>
@@ -1104,7 +1104,7 @@
       {#if settingsError}
         <div class="notice notice--blocking" role="alert">{settingsError}</div>
       {:else}
-        <p class="empty-row">Loading OpenQuota…</p>
+        <p class="empty-row">Loading QuotaGauge…</p>
       {/if}
     </div>
   {/if}
