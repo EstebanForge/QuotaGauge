@@ -3,9 +3,9 @@ use std::sync::{atomic::AtomicU64, Arc};
 use tauri::{AppHandle, Emitter};
 
 use crate::{
-    commands::settings::emit_settings_if_account_changed, notifications::finish_refresh,
-    pacing::NotificationEvaluator, policy::REFRESH_INTERVAL, service::ProviderService,
-    settings::SettingsService,
+    commands::settings::emit_settings_if_account_changed,
+    notifications::publish_refresh_with_account_guard, pacing::NotificationEvaluator,
+    policy::REFRESH_INTERVAL, service::ProviderService, settings::SettingsService,
 };
 
 pub fn spawn(
@@ -33,9 +33,13 @@ pub fn spawn(
                         let _ = progress_app.emit("usage-state", state);
                     })
                     .await;
-                emit_settings_if_account_changed(&app, &settings, &observed_account_revision);
-                let _ = app.emit("usage-state", &state);
-                finish_refresh(&app, &state, &settings, &notifications);
+                publish_refresh_with_account_guard(
+                    &app,
+                    &state,
+                    &settings,
+                    &notifications,
+                    &observed_account_revision,
+                );
             }
             tokio::time::sleep(REFRESH_INTERVAL).await;
         }

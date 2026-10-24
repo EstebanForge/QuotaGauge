@@ -1,20 +1,17 @@
 use std::time::Duration;
 
-use reqwest::{blocking::Client, StatusCode, Url};
-use serde_json::Value;
+use reqwest::Url;
 
 use super::{auth::DevinAuth, DevinError};
+use crate::providers::http;
 
 const CLOUD_SERVICE: &str = "exa.seat_management_pb.SeatManagementService";
 pub(super) const CLOUD_COMPAT_VERSION: &str = "1.108.2";
 
-pub(super) struct DevinResponse {
-    pub status: StatusCode,
-    pub body: Value,
-}
+pub(super) use crate::providers::http::EndpointResponse as DevinResponse;
 
 pub(super) struct DevinClient {
-    client: Client,
+    client: reqwest::blocking::Client,
 }
 
 impl DevinClient {
@@ -23,12 +20,7 @@ impl DevinClient {
     }
 
     fn with_timeout(timeout: Duration) -> Result<Self, DevinError> {
-        let client = Client::builder()
-            .connect_timeout(Duration::from_secs(8))
-            .timeout(timeout)
-            .user_agent(concat!("QuotaGauge/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .map_err(|_| DevinError::ConnectionFailed)?;
+        let client = http::build_client(timeout).map_err(|_| DevinError::ConnectionFailed)?;
         Ok(Self { client })
     }
 
@@ -55,16 +47,7 @@ impl DevinClient {
                 crate::app_warn!("http", "devin user-status request failed (transport)");
                 DevinError::ConnectionFailed
             })?;
-        let status = response.status();
-        crate::app_debug!(
-            "http",
-            "devin user-status HTTP {} ({}ms)",
-            status.as_u16(),
-            started.elapsed().as_millis()
-        );
-        let text = response.text().map_err(|_| DevinError::InvalidResponse)?;
-        let body = serde_json::from_str(&text).unwrap_or(Value::Null);
-        Ok(DevinResponse { status, body })
+        http::parse_response(response, started, "devin user-status").map_err(DevinError::from)
     }
 }
 

@@ -73,6 +73,15 @@ pub(super) enum KimiError {
     CredentialStorage,
 }
 
+impl From<crate::providers::http::HttpError> for KimiError {
+    fn from(error: crate::providers::http::HttpError) -> Self {
+        match error {
+            crate::providers::http::HttpError::Transport => Self::ConnectionFailed,
+            crate::providers::http::HttpError::Body => Self::InvalidResponse,
+        }
+    }
+}
+
 impl From<KimiError> for ProviderError {
     fn from(error: KimiError) -> Self {
         let kind = match error {

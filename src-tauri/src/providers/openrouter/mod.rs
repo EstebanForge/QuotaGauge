@@ -117,6 +117,15 @@ enum OpenRouterError {
     CredentialStorage,
 }
 
+impl From<crate::providers::http::HttpError> for OpenRouterError {
+    fn from(error: crate::providers::http::HttpError) -> Self {
+        match error {
+            crate::providers::http::HttpError::Transport => Self::ConnectionFailed,
+            crate::providers::http::HttpError::Body => Self::InvalidResponse,
+        }
+    }
+}
+
 impl From<OpenRouterError> for ProviderError {
     fn from(error: OpenRouterError) -> Self {
         let kind = match error {

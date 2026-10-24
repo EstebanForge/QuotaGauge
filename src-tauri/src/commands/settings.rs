@@ -15,7 +15,7 @@ use crate::{
     apply_shortcut_change, autostart_is_enabled, child_process,
     desktop_integration::DesktopIntegration,
     models::{AppSettings, SettingsViewState},
-    notifications::{finish_refresh, permission as notification_permission},
+    notifications::{permission as notification_permission, publish_refresh},
     pacing::NotificationEvaluator,
     providers::{detect_local_credentials, ProviderRegistry},
     service::ProviderService,
@@ -188,8 +188,7 @@ async fn save_app_settings_inner(
             })
             .await;
         let state = service.state();
-        let _ = app.emit("usage-state", &state);
-        finish_refresh(&app, &state, &settings_service, &notifications);
+        publish_refresh(&app, &state, &settings_service, &notifications);
     }
     Ok((
         settings_view_state(&app, &settings_service),
@@ -343,8 +342,7 @@ fn spawn_provider_reseed(
                 let _ = progress_app.emit("usage-state", state);
             })
             .await;
-        let _ = app.emit("usage-state", &usage_state);
-        finish_refresh(&app, &usage_state, &settings, &notifications);
+        publish_refresh(&app, &usage_state, &settings, &notifications);
         let _ = app.emit("settings-state", settings_view_state(&app, &settings));
     });
 }

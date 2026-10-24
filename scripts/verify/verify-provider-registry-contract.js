@@ -68,16 +68,23 @@ const compositionRoot = fs.readFileSync(new URL('src-tauri/src/lib.rs', root), '
 if (/\.has_local_credentials\(\)/.test(compositionRoot)) {
   throw new Error('Tauri setup must not synchronously probe provider credentials.');
 }
-if (!/let mut providers\s*=\s*claude::runtimes\([^;]+\)\?;/.test(compositionRoot)) {
-  throw new Error('Tauri setup must seed the provider registry with Claude account runtimes.');
+const providerWiring = fs.readFileSync(new URL('src-tauri/src/providers/mod.rs', root), 'utf8');
+const buildRegistry = providerWiring.match(/pub fn build_registry\([\s\S]*?\n\}/)?.[0];
+if (!buildRegistry) {
+  throw new Error('providers::build_registry must assemble the provider runtime set.');
 }
-const runtimeBlock = compositionRoot.match(/providers\.extend\(vec!\[([\s\S]*?)\]\);/)?.[1];
+if (!/let mut providers\s*=\s*claude::runtimes\([^;]+\)\?;/.test(buildRegistry)) {
+  throw new Error('build_registry must seed the provider registry with Claude account runtimes.');
+}
+const runtimeBlock = buildRegistry.match(/providers\.extend\(vec!\[([\s\S]*?)\]\);/)?.[1];
 if (!runtimeBlock) {
-  throw new Error('Tauri setup does not expose the provider runtime list.');
+  throw new Error('build_registry does not expose the provider runtime list.');
 }
 const runtimeOrder = [
   'ClaudeProvider',
-  ...[...runtimeBlock.matchAll(/Arc::new\((\w+Provider)::new\b/g)].map(([, provider]) => provider),
+  ...[...runtimeBlock.matchAll(/Arc::new\((?:\w+::)*(\w+Provider)::new\b/g)].map(
+    ([, provider]) => provider,
+  ),
 ];
 const expectedRuntimeOrder = [
   'ClaudeProvider',

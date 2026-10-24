@@ -4,7 +4,7 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::{
     commands::settings::emit_settings_if_account_changed,
-    notifications::finish_refresh,
+    notifications::publish_refresh_with_account_guard,
     pacing::NotificationEvaluator,
     providers::codex::reset_claim::{CodexResetClaimService, ResetClaimOutcome},
     service::{ProviderService, UsageViewState},
@@ -38,9 +38,13 @@ pub async fn claim_codex_reset_credit(
         let observed_account_revision = AtomicU64::new(settings.account_revision());
         service.refresh("codex", true).await;
         let state = service.state();
-        emit_settings_if_account_changed(&app, &settings, &observed_account_revision);
-        let _ = app.emit("usage-state", &state);
-        finish_refresh(&app, &state, &settings, &notifications);
+        publish_refresh_with_account_guard(
+            &app,
+            &state,
+            &settings,
+            &notifications,
+            &observed_account_revision,
+        );
     }
     Ok(outcome)
 }
@@ -66,9 +70,13 @@ pub async fn refresh_usage(
             let _ = progress_app.emit("usage-state", state);
         })
         .await;
-    emit_settings_if_account_changed(&app, &settings, &observed_account_revision);
-    let _ = app.emit("usage-state", &state);
-    finish_refresh(&app, &state, &settings, &notifications);
+    publish_refresh_with_account_guard(
+        &app,
+        &state,
+        &settings,
+        &notifications,
+        &observed_account_revision,
+    );
     Ok(state)
 }
 
@@ -87,8 +95,12 @@ pub async fn refresh_provider_usage(
     let observed_account_revision = AtomicU64::new(settings.account_revision());
     service.refresh(&provider_id, true).await;
     let state = service.state();
-    emit_settings_if_account_changed(&app, &settings, &observed_account_revision);
-    let _ = app.emit("usage-state", &state);
-    finish_refresh(&app, &state, &settings, &notifications);
+    publish_refresh_with_account_guard(
+        &app,
+        &state,
+        &settings,
+        &notifications,
+        &observed_account_revision,
+    );
     Ok(state)
 }

@@ -75,6 +75,15 @@ pub(super) enum MiniMaxError {
     CredentialStorage,
 }
 
+impl From<crate::providers::http::HttpError> for MiniMaxError {
+    fn from(error: crate::providers::http::HttpError) -> Self {
+        match error {
+            crate::providers::http::HttpError::Transport => Self::ConnectionFailed,
+            crate::providers::http::HttpError::Body => Self::InvalidResponse,
+        }
+    }
+}
+
 impl From<MiniMaxError> for ProviderError {
     fn from(error: MiniMaxError) -> Self {
         let kind = match error {

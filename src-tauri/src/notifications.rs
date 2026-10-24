@@ -1,9 +1,11 @@
+use std::sync::atomic::AtomicU64;
 use std::thread;
 
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_notification::{NotificationExt, PermissionState};
 
 use crate::{
+    commands::settings::emit_settings_if_account_changed,
     models::{ProviderSnapshot, ProviderViewState},
     pacing::{NotificationEvaluator, PaceAlert},
     popup::PopupDismissGuard,
@@ -20,6 +22,27 @@ pub fn permission(app: &AppHandle) -> &'static str {
         Ok(PermissionState::Prompt | PermissionState::PromptWithRationale) => "prompt",
         Err(_) => "unavailable",
     }
+}
+
+pub fn publish_refresh(
+    app: &AppHandle,
+    state: &UsageViewState,
+    settings: &SettingsService,
+    notifications: &NotificationEvaluator,
+) {
+    let _ = app.emit("usage-state", state);
+    finish_refresh(app, state, settings, notifications);
+}
+
+pub fn publish_refresh_with_account_guard(
+    app: &AppHandle,
+    state: &UsageViewState,
+    settings: &SettingsService,
+    notifications: &NotificationEvaluator,
+    observed_account_revision: &AtomicU64,
+) {
+    emit_settings_if_account_changed(app, settings, observed_account_revision);
+    publish_refresh(app, state, settings, notifications);
 }
 
 pub fn finish_refresh(

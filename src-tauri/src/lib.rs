@@ -48,11 +48,7 @@ use crate::{
     pacing::NotificationEvaluator,
     pricing::PricingStore,
     providers::{
-        antigravity::AntigravityProvider, claude, codex::reset_claim::CodexResetClaimService,
-        codex::CodexProvider, copilot::CopilotProvider, cursor::CursorProvider,
-        detect_local_credentials, devin::DevinProvider, grok::GrokProvider, kimi::KimiProvider,
-        minimax::MiniMaxProvider, opencode::OpenCodeProvider, openrouter::OpenRouterProvider,
-        zai::ZaiProvider, ProviderRegistry, UsageProvider,
+        codex::reset_claim::CodexResetClaimService, detect_local_credentials, ProviderRegistry,
     },
     storage::Storage,
     window::{
@@ -253,8 +249,7 @@ fn spawn_startup_credential_detection(
             )
             .await;
         let state = service.state();
-        let _ = app.emit("usage-state", &state);
-        notifications::finish_refresh(&app, &state, &settings, &notifications);
+        notifications::publish_refresh(&app, &state, &settings, &notifications);
     });
 }
 
@@ -361,42 +356,14 @@ pub fn run() {
 
             let app_data_dir = app.path().app_data_dir()?;
             let database_path = app_data_dir.join("quotagauge.db");
-            match legacy::import_legacy_database(&app_data_dir, &database_path) {
-                Ok(legacy::LegacyDbImport::Imported { bytes }) => {
-                    app_info!(
-                        "lifecycle",
-                        "imported legacy OpenQuota database ({} bytes)",
-                        bytes
-                    );
-                }
-                Ok(_) => {}
-                Err(error) => app_warn!("lifecycle", "legacy database import skipped ({error})"),
-            }
+            legacy::import_and_log(&app_data_dir, &database_path);
             let storage = Arc::new(Storage::open(&database_path)?);
             provider_environment::initialize(storage.load_provider_environment()?);
             provider_environment::refresh_for_next_launch(storage.clone());
             app.manage(Arc::new(PanelResizeSession::new(storage.clone())));
             app_debug!("cache", "application database opened");
             let pricing = Arc::new(PricingStore::new(app_data_dir.join("pricing"))?);
-            let mut providers = claude::runtimes(storage.clone(), pricing.clone())?;
-            providers.extend(vec![
-                Arc::new(CodexProvider::new(storage.clone(), pricing.clone())?)
-                    as Arc<dyn UsageProvider>,
-                Arc::new(CursorProvider::new(pricing.clone())?) as Arc<dyn UsageProvider>,
-                Arc::new(AntigravityProvider::new(
-                    app_data_dir.join("antigravity").join("auth.json"),
-                )?) as Arc<dyn UsageProvider>,
-                Arc::new(CopilotProvider::new()?) as Arc<dyn UsageProvider>,
-                Arc::new(DevinProvider::new()?) as Arc<dyn UsageProvider>,
-                Arc::new(GrokProvider::new(storage.clone(), pricing.clone())?)
-                    as Arc<dyn UsageProvider>,
-                Arc::new(OpenCodeProvider::new(pricing.clone())) as Arc<dyn UsageProvider>,
-                Arc::new(OpenRouterProvider::new()?) as Arc<dyn UsageProvider>,
-                Arc::new(ZaiProvider::new()?) as Arc<dyn UsageProvider>,
-                Arc::new(KimiProvider::new()?) as Arc<dyn UsageProvider>,
-                Arc::new(MiniMaxProvider::new()?) as Arc<dyn UsageProvider>,
-            ]);
-            let registry = Arc::new(ProviderRegistry::new(providers)?);
+            let registry = providers::build_registry(&storage, &pricing, &app_data_dir)?;
             let (settings_service, credential_detection_plan) =
                 SettingsService::new_deferred(storage.clone(), registry.clone())?;
             let settings = Arc::new(settings_service);

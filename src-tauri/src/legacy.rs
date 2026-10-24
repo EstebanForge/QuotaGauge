@@ -53,6 +53,22 @@ pub fn import_legacy_database(
     Ok(LegacyDbImport::Imported { bytes })
 }
 
+/// Runs the legacy import and records the outcome; startup continues with a
+/// fresh database when the import fails.
+pub fn import_and_log(app_data_dir: &Path, database_path: &Path) {
+    match import_legacy_database(app_data_dir, database_path) {
+        Ok(LegacyDbImport::Imported { bytes }) => {
+            crate::app_info!(
+                "lifecycle",
+                "imported legacy OpenQuota database ({} bytes)",
+                bytes
+            );
+        }
+        Ok(_) => {}
+        Err(error) => crate::app_warn!("lifecycle", "legacy database import skipped ({error})"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

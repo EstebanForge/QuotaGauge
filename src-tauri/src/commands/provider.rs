@@ -7,7 +7,7 @@ use zeroize::Zeroizing;
 use crate::{
     commands::settings::settings_view_state,
     models::{ApiKeyMutationOutcome, ApiKeyStatus, ProviderApiKeyState, ProviderLink},
-    notifications::finish_refresh,
+    notifications::publish_refresh,
     pacing::NotificationEvaluator,
     providers::{ProviderRegistry, UsageProvider},
     service::ProviderService,
@@ -141,6 +141,95 @@ fn incomplete_mutation_warning(action: &str) -> String {
     )
 }
 
+async fn apply_api_key_mutation(
+    app: &AppHandle,
+    registry: &Arc<ProviderRegistry>,
+    service: &Arc<ProviderService>,
+    settings: &Arc<SettingsService>,
+    notifications: &Arc<NotificationEvaluator>,
+    provider_id: &str,
+    api_key: Option<Zeroizing<String>>,
+) -> Result<ApiKeyMutationOutcome, String> {
+    let saving = api_key.is_some();
+    let (join_failure, reconcile_context, uncertain_context, info_line, action) = if saving {
+        (
+            "The API key could not be saved.",
+            "API key save",
+            "after saving",
+            format!("API key saved for {provider_id}"),
+            "saved securely",
+        )
+    } else {
+        (
+            "The API key could not be removed.",
+            "API key removal",
+            "after removal",
+            format!("saved API key removed for {provider_id}"),
+            "removed",
+        )
+    };
+    let runtime = registry
+        .runtime(provider_id)
+        .ok_or_else(|| "Unknown provider.".to_owned())?;
+    let credential_guard = settings.lock_credential_mutation().await;
+    settings.record_provider_credential_mutation();
+    let provider_for_mutation = provider_id.to_owned();
+    let applied = tauri::async_runtime::spawn_blocking(move || {
+        let mutation = match &api_key {
+            Some(key) => ApiKeyMutation::Save(key.as_str()),
+            None => ApiKeyMutation::Delete,
+        };
+        mutate_api_key(runtime.as_ref(), provider_for_mutation, mutation)
+    })
+    .await
+    .map_err(|_| join_failure.to_owned())??;
+
+    let command_guard = settings.lock_command_mutation().await;
+    let detected = saving || applied.state.status != ApiKeyStatus::NotSet;
+    let settings_reconciled = match reconcile_provider_credential_state(
+        app,
+        service,
+        settings,
+        provider_id,
+        detected,
+        saving,
+    ) {
+        Ok(()) => true,
+        Err(error) => {
+            crate::app_warn!(
+                "auth",
+                "provider state after {reconcile_context} could not be reconciled for {provider_id}: {error}"
+            );
+            false
+        }
+    };
+    if applied.status_uncertain {
+        crate::app_warn!(
+            "auth",
+            "API key status could not be confirmed {uncertain_context} for {provider_id}"
+        );
+    }
+    let should_refresh = saving
+        || settings
+            .get()
+            .providers
+            .iter()
+            .any(|provider| provider.id == provider_id && provider.enabled);
+    drop(command_guard);
+    drop(credential_guard);
+    if should_refresh {
+        service.refresh(provider_id, true).await;
+        let usage = service.state();
+        publish_refresh(app, &usage, settings, notifications);
+    }
+    crate::app_info!("auth", "{info_line}");
+    Ok(ApiKeyMutationOutcome {
+        state: applied.state,
+        warning: (applied.status_uncertain || !settings_reconciled)
+            .then(|| incomplete_mutation_warning(action)),
+    })
+}
+
 #[tauri::command]
 pub async fn get_provider_api_key_state(
     registry: State<'_, Arc<ProviderRegistry>>,
@@ -160,58 +249,16 @@ pub async fn save_provider_api_key(
     api_key: String,
 ) -> Result<ApiKeyMutationOutcome, String> {
     let api_key = Zeroizing::new(api_key);
-    let runtime = registry
-        .runtime(&provider_id)
-        .ok_or_else(|| "Unknown provider.".to_owned())?;
-    let credential_guard = settings.lock_credential_mutation().await;
-    settings.record_provider_credential_mutation();
-    let provider_for_save = provider_id.clone();
-    let applied = tauri::async_runtime::spawn_blocking(move || {
-        mutate_api_key(
-            runtime.as_ref(),
-            provider_for_save,
-            ApiKeyMutation::Save(api_key.as_str()),
-        )
-    })
-    .await
-    .map_err(|_| "The API key could not be saved.".to_owned())??;
-
-    let command_guard = settings.lock_command_mutation().await;
-    let settings_reconciled = match reconcile_provider_credential_state(
+    apply_api_key_mutation(
         &app,
-        &service,
-        &settings,
+        registry.inner(),
+        service.inner(),
+        settings.inner(),
+        notifications.inner(),
         &provider_id,
-        true,
-        true,
-    ) {
-        Ok(()) => true,
-        Err(error) => {
-            crate::app_warn!(
-                "auth",
-                "provider state after API key save could not be reconciled for {provider_id}: {error}"
-            );
-            false
-        }
-    };
-    if applied.status_uncertain {
-        crate::app_warn!(
-            "auth",
-            "API key status could not be confirmed after saving for {provider_id}"
-        );
-    }
-    drop(command_guard);
-    drop(credential_guard);
-    service.refresh(&provider_id, true).await;
-    let usage = service.state();
-    let _ = app.emit("usage-state", &usage);
-    finish_refresh(&app, &usage, &settings, &notifications);
-    crate::app_info!("auth", "API key saved for {provider_id}");
-    Ok(ApiKeyMutationOutcome {
-        state: applied.state,
-        warning: (applied.status_uncertain || !settings_reconciled)
-            .then(|| incomplete_mutation_warning("saved securely")),
-    })
+        Some(api_key),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -223,66 +270,16 @@ pub async fn delete_provider_api_key(
     notifications: State<'_, Arc<NotificationEvaluator>>,
     provider_id: String,
 ) -> Result<ApiKeyMutationOutcome, String> {
-    let runtime = registry
-        .runtime(&provider_id)
-        .ok_or_else(|| "Unknown provider.".to_owned())?;
-    let credential_guard = settings.lock_credential_mutation().await;
-    settings.record_provider_credential_mutation();
-    let provider_for_delete = provider_id.clone();
-    let applied = tauri::async_runtime::spawn_blocking(move || {
-        mutate_api_key(
-            runtime.as_ref(),
-            provider_for_delete,
-            ApiKeyMutation::Delete,
-        )
-    })
-    .await
-    .map_err(|_| "The API key could not be removed.".to_owned())??;
-
-    let command_guard = settings.lock_command_mutation().await;
-    let detected = applied.state.status != ApiKeyStatus::NotSet;
-    let settings_reconciled = match reconcile_provider_credential_state(
+    apply_api_key_mutation(
         &app,
-        &service,
-        &settings,
+        registry.inner(),
+        service.inner(),
+        settings.inner(),
+        notifications.inner(),
         &provider_id,
-        detected,
-        false,
-    ) {
-        Ok(()) => true,
-        Err(error) => {
-            crate::app_warn!(
-                "auth",
-                "provider state after API key removal could not be reconciled for {provider_id}: {error}"
-            );
-            false
-        }
-    };
-    if applied.status_uncertain {
-        crate::app_warn!(
-            "auth",
-            "API key status could not be confirmed after removal for {provider_id}"
-        );
-    }
-    let should_refresh = settings
-        .get()
-        .providers
-        .iter()
-        .any(|provider| provider.id == provider_id && provider.enabled);
-    drop(command_guard);
-    drop(credential_guard);
-    if should_refresh {
-        service.refresh(&provider_id, true).await;
-        let usage = service.state();
-        let _ = app.emit("usage-state", &usage);
-        finish_refresh(&app, &usage, &settings, &notifications);
-    }
-    crate::app_info!("auth", "saved API key removed for {provider_id}");
-    Ok(ApiKeyMutationOutcome {
-        state: applied.state,
-        warning: (applied.status_uncertain || !settings_reconciled)
-            .then(|| incomplete_mutation_warning("removed")),
-    })
+        None,
+    )
+    .await
 }
 
 #[cfg(test)]

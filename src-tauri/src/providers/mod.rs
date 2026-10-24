@@ -9,6 +9,7 @@ mod daily_usage;
 mod detection;
 pub mod devin;
 pub mod grok;
+pub mod http;
 pub mod kimi;
 mod log_usage;
 pub mod minimax;
@@ -24,6 +25,37 @@ pub use detection::{detect_local_credentials, CredentialProbeResults, Credential
 pub use registry::ProviderRegistry;
 
 use crate::models::{ApiKeyStatus, ProviderDefinition, ProviderErrorKind, ProviderSnapshot};
+use crate::pricing::PricingStore;
+use crate::storage::Storage;
+use std::sync::Arc;
+
+/// The single construction site for the full provider set; bootstrap-only,
+/// so a boxed error is fine here.
+pub fn build_registry(
+    storage: &Arc<Storage>,
+    pricing: &Arc<PricingStore>,
+    app_data_dir: &std::path::Path,
+) -> Result<Arc<ProviderRegistry>, Box<dyn std::error::Error>> {
+    let mut providers = claude::runtimes(storage.clone(), pricing.clone())?;
+    providers.extend(vec![
+        Arc::new(codex::CodexProvider::new(storage.clone(), pricing.clone())?)
+            as Arc<dyn UsageProvider>,
+        Arc::new(cursor::CursorProvider::new(pricing.clone())?) as Arc<dyn UsageProvider>,
+        Arc::new(antigravity::AntigravityProvider::new(
+            app_data_dir.join("antigravity").join("auth.json"),
+        )?) as Arc<dyn UsageProvider>,
+        Arc::new(copilot::CopilotProvider::new()?) as Arc<dyn UsageProvider>,
+        Arc::new(devin::DevinProvider::new()?) as Arc<dyn UsageProvider>,
+        Arc::new(grok::GrokProvider::new(storage.clone(), pricing.clone())?)
+            as Arc<dyn UsageProvider>,
+        Arc::new(opencode::OpenCodeProvider::new(pricing.clone())) as Arc<dyn UsageProvider>,
+        Arc::new(openrouter::OpenRouterProvider::new()?) as Arc<dyn UsageProvider>,
+        Arc::new(zai::ZaiProvider::new()?) as Arc<dyn UsageProvider>,
+        Arc::new(kimi::KimiProvider::new()?) as Arc<dyn UsageProvider>,
+        Arc::new(minimax::MiniMaxProvider::new()?) as Arc<dyn UsageProvider>,
+    ]);
+    Ok(Arc::new(ProviderRegistry::new(providers)?))
+}
 
 pub fn provider_family(provider_id: &str) -> &str {
     provider_id

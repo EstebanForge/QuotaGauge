@@ -81,6 +81,15 @@ pub(crate) enum DevinError {
     QuotaUnavailable,
 }
 
+impl From<crate::providers::http::HttpError> for DevinError {
+    fn from(error: crate::providers::http::HttpError) -> Self {
+        match error {
+            crate::providers::http::HttpError::Transport => Self::ConnectionFailed,
+            crate::providers::http::HttpError::Body => Self::InvalidResponse,
+        }
+    }
+}
+
 impl From<DevinError> for ProviderError {
     fn from(error: DevinError) -> Self {
         let kind = match error {
