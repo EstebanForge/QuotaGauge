@@ -1,4 +1,6 @@
 version: 2
+# CI is stood down while the project is private; raise this to re-enable Dependabot.
+open-pull-requests-limit: 0
 updates:
   - package-ecosystem: npm
     directory: /
