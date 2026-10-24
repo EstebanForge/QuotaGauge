@@ -15,12 +15,9 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
 </p>
 
-QuotaGauge brings usage data from Claude Code, Codex, Cursor, Copilot, and other AI coding providers
-into one compact panel. See session and weekly limits, reset times, token usage, and estimated
-spend at a glance.
+Every AI coding tool tracks your usage somewhere else. Claude Code in the terminal, Codex in the browser, Copilot in a settings page, and the rest wherever they felt like putting it. QuotaGauge puts all of it in one compact panel that lives in your tray or menu bar: session and weekly limits, reset times, token usage, and estimated spend.
 
-QuotaGauge is the maintained continuation of [OpenUsage](https://github.com/robinebers/openusage)
-by robinebers.
+I picked this project up from [OpenUsage](https://github.com/robinebers/openusage) after it went quiet, and I keep it alive as a maintained continuation for Windows, Linux, and macOS. Thanks, robinebers, for the original work.
 
 <p align="center">
   <img src="assets/quotagauge-demo.gif" alt="QuotaGauge dashboard showing animated AI usage in light and dark themes" width="840">
@@ -28,117 +25,46 @@ by robinebers.
 
 ## Download
 
-| Platform | Available builds                           | Download                                                                      |
-| -------- | ------------------------------------------ | ----------------------------------------------------------------------------- |
-| Windows  | x64 and ARM64 installers                   | [Download for Windows](https://github.com/EstebanForge/QuotaGauge/releases/latest) |
-| macOS    | Universal DMG for Apple Silicon and Intel  | [Download for macOS](https://github.com/EstebanForge/QuotaGauge/releases/latest)   |
-| Linux    | x64 and ARM64 AppImage and Debian packages | [Download for Linux](https://github.com/EstebanForge/QuotaGauge/releases/latest)   |
+Grab the latest build for your platform from the [releases page](https://github.com/EstebanForge/QuotaGauge/releases/latest). Fair warning: the installers are not signed with paid certificates yet, so Windows SmartScreen and macOS Gatekeeper will ask for confirmation. [Installation](docs/installation.md) covers the details, plus how to bring your OpenQuota data along on first launch.
 
-Open the latest release and choose the file for your platform:
+## Providers
 
-- **Windows:** `_x64-setup.exe` or `_arm64-setup.exe`
-- **macOS:** `_universal.dmg` — requires macOS 11 or later
-- **Linux:** `.AppImage` or `.deb`
+QuotaGauge reads 12 providers out of the box. Most of them use the credentials already sitting on your machine. OpenRouter, Z.ai, Kimi, and MiniMax need an API key you add in Customize, and Codex subscription limits need a ChatGPT login.
 
-QuotaGauge checks for updates automatically. Update payloads are cryptographically signed with the
-project's updater key, independently from operating-system package signing.
+- [Claude Code](docs/providers/claude.md)
+- [Codex](docs/providers/codex.md)
+- [Cursor](docs/providers/cursor.md)
+- [Antigravity](docs/providers/antigravity.md)
+- [Copilot](docs/providers/copilot.md)
+- [Devin](docs/providers/devin.md)
+- [Grok](docs/providers/grok.md)
+- [OpenCode](docs/providers/opencode.md)
+- [OpenRouter](docs/providers/openrouter.md)
+- [Z.ai](docs/providers/zai.md)
+- [Kimi](docs/providers/kimi.md)
+- [MiniMax](docs/providers/minimax.md)
 
-When native signing is disabled (the current default), Windows installers are not
-Authenticode-signed, while the macOS app uses an ad-hoc signature and is not Apple-notarized.
-Windows SmartScreen or macOS Gatekeeper may therefore ask for confirmation. Download QuotaGauge only
-from this repository's official release page; on macOS, manual approval may be required in Privacy
-& Security. Each release states its exact native-signing status in its notes.
-
-## Migrating from OpenQuota
-
-On first launch, QuotaGauge imports your existing OpenQuota settings database and saved API keys
-automatically. Your OpenQuota installation and its data stay untouched.
-
-## Supported providers
-
-- **[Claude Code](docs/providers/claude.md)** — multiple accounts, session and weekly limits,
-  model-specific usage, token history, and estimated spend
-- **[Codex](docs/providers/codex.md)** — session and weekly limits, credits, token history, model
-  breakdown, and estimated spend
-- **[Cursor](docs/providers/cursor.md)** — total, Auto and API usage, credits, token history, and
-  estimated spend
-- **[Antigravity](docs/providers/antigravity.md)** — shared Gemini and Claude quota pools
-- **[Copilot](docs/providers/copilot.md)** — premium requests, extra usage, chat and completion
-  quotas, plus organization billing
-- **[Devin](docs/providers/devin.md)** — daily and weekly limits, reset times, and extra usage balance
-- **[Grok](docs/providers/grok.md)** — weekly allowance, extra usage status, token history, and
-  estimated spend
-- **[OpenCode](docs/providers/opencode.md)** — OpenCode Go session, weekly and monthly spend caps,
-  plus local hosted usage history
-- **[OpenRouter](docs/providers/openrouter.md)** — credit balance and daily, weekly and monthly spend
-  (API key)
-- **[Z.ai](docs/providers/zai.md)** — GLM Coding Plan session, weekly, and web-search quotas (API key)
-- **[Kimi](docs/providers/kimi.md)** — Kimi Code session and weekly quotas (API key)
-- **[MiniMax](docs/providers/minimax.md)** — Token Plan session and weekly quotas (API key)
-
-Most providers use credentials already available on your computer. OpenRouter, Z.ai, Kimi, and
-MiniMax require API keys, which you can add in Customize; QuotaGauge stores them securely in your
-operating system's credential store. Codex subscription limits require a ChatGPT login and are not
-available in API-key-only sessions.
+Each provider has its own guide with everything it reads and where it reads it from.
 
 ## Features
 
-- **Tray or floating dashboard.** View quotas in a compact popup, or keep the panel open and move it
-  around your desktop.
-- **Pinned metrics.** Keep important values visible in the tray or macOS menu bar.
-- **Used or left.** Display how much quota you have consumed or how much remains.
-- **Usage history.** Review today, yesterday, and the last 30 days of token usage and estimated
-  spend.
-- **Pacing alerts.** See whether your current usage is likely to last until the next reset.
-- **Custom layouts.** Reorder providers and metrics, hide rows, and choose what stays visible.
-- **Desktop integration.** Launch at login, use a global shortcut, and follow the system theme.
-- **Fast refresh.** Cached values appear immediately and providers refresh automatically in the
-  background.
+- Tray or floating dashboard, with pinned metrics in the tray or macOS menu bar
+- Show quota used or quota remaining
+- 30 days of usage history with estimated spend
+- Pacing alerts: will your quota last until the next reset?
+- Custom layouts: reorder providers, hide rows, choose what stays visible
+- Launch at login, global shortcut, system theme
+- Cached values show instantly, refreshes happen in the background
 
-QuotaGauge runs locally and has no account, cloud backend, analytics, or usage telemetry of its own.
+Everything runs locally. No account, no cloud backend, no analytics, no telemetry of its own.
 
 ## Development
 
-Requirements:
-
-- Node.js 22 or later
-- pnpm 11.11.0
-- Stable Rust toolchain
-- [Tauri 2 platform prerequisites](https://v2.tauri.app/start/prerequisites/)
-
-Install dependencies and start the development app:
-
-```sh
-corepack pnpm install --frozen-lockfile
-corepack pnpm tauri dev
-```
-
-Run the complete quality checks:
-
-```sh
-corepack pnpm verify
-```
-
-Build an installer for the current platform:
-
-```sh
-corepack pnpm build:installer             # Windows
-corepack pnpm build:linux                 # Linux
-corepack pnpm tauri build --bundles dmg   # macOS
-```
-
-Maintainers can review updater and optional native-signing requirements in
-[docs/releasing.md](docs/releasing.md).
+You need Node.js 22 or later, pnpm 11.11.0, and a stable Rust toolchain. [Development](docs/development.md) has the setup, the quality checks, and the build commands.
 
 ## Contributing
 
-Issues and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) before contributing,
-and report security problems privately as described in [SECURITY.md](SECURITY.md).
-
-## Acknowledgements
-
-QuotaGauge was inspired by [OpenUsage](https://github.com/robinebers/openusage) and developed as a
-cross-platform alternative for Windows, Linux, and macOS.
+Issues and pull requests are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) first, and report security problems privately through [SECURITY.md](SECURITY.md).
 
 ## License
 
