@@ -61,7 +61,9 @@
   "plugins": {
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQ1MDJGRUM1QUY2QzgyRDQKUldUVWdteXZ4ZjRDUlFveldMMVAzOHNqcnhJNkdzVVo5YXpnSU5ZWk4zR3VkRUFTQVY3VWV6REgK",
-      "endpoints": ["https://github.com/EstebanForge/QuotaGauge/releases/latest/download/latest.json"]
+      "endpoints": [
+        "https://github.com/EstebanForge/QuotaGauge/releases/latest/download/latest.json"
+      ]
     }
   }
 }

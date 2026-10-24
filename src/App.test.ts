@@ -98,7 +98,8 @@ describe('QuotaGauge dashboard', () => {
       if (command === 'set_panel_height_manual') return Promise.resolve();
       if (command === 'begin_panel_resize') return Promise.resolve('bottom');
       if (command === 'lock_panel_resize_axis') return Promise.resolve();
-      if (command === 'get_log_path') return Promise.resolve('C:\\QuotaGauge\\logs\\QuotaGauge.log');
+      if (command === 'get_log_path')
+        return Promise.resolve('C:\\QuotaGauge\\logs\\QuotaGauge.log');
       if (command === 'open_log_folder') return Promise.resolve();
       if (command === 'dismiss_main_window') return Promise.resolve();
       if (command === 'check_for_updates')

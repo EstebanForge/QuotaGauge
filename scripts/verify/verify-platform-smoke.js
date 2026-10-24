@@ -16,7 +16,7 @@ const windowsSigner = read('.github/scripts/sign-windows.ps1');
 const windowsSignShim = read('.github/scripts/quotagauge-sign-windows.cmd');
 const windowsSigningConfig = JSON.parse(read('src-tauri/tauri.windows-signing.conf.json'));
 const releaseTagVerification = read('.github/scripts/verify-release-tag.sh');
-const readme = read('README.md');
+const installation = read('docs/installation.md');
 const releasing = read('docs/releasing.md');
 
 const requireContracts = (source, content, contracts) => {
@@ -232,7 +232,7 @@ requireContracts('release documentation', releasing, [
   'does not weaken updater verification',
 ]);
 
-requireContracts('download documentation', readme, [
+requireContracts('download documentation', installation, [
   'Update payloads are cryptographically signed',
   'Authenticode-signed',
   'ad-hoc',
