@@ -5,7 +5,7 @@ use crate::{
 
 use super::MiniMaxError;
 
-const CONFIG_PATHS: &[&str] = &["~/.config/openquota/minimax.json"];
+const CONFIG_PATHS: &[&str] = &["~/.config/quotagauge/minimax.json"];
 const ENVIRONMENT_NAMES: &[&str] = &["MINIMAX_API_KEY"];
 
 #[derive(Clone)]

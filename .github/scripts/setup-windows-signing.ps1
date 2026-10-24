@@ -27,7 +27,7 @@ foreach ($name in $requiredVariables) {
   }
 }
 
-$workingDirectory = Join-Path $env:RUNNER_TEMP "openquota-codesigntool-$([Guid]::NewGuid().ToString('N'))"
+$workingDirectory = Join-Path $env:RUNNER_TEMP "quotagauge-codesigntool-$([Guid]::NewGuid().ToString('N'))"
 $archivePath = Join-Path $workingDirectory 'CodeSignTool.zip'
 $toolDirectory = Join-Path $workingDirectory 'tool'
 
@@ -61,8 +61,8 @@ try {
   }
 
   @(
-    "OPENQUOTA_CODESIGNTOOL_JAVA=$javaPath"
-    "OPENQUOTA_CODESIGNTOOL_JAR=$($jars[0].FullName)"
+    "QUOTAGAUGE_CODESIGNTOOL_JAVA=$javaPath"
+    "QUOTAGAUGE_CODESIGNTOOL_JAR=$($jars[0].FullName)"
   ) | Out-File -LiteralPath $env:GITHUB_ENV -Encoding utf8 -Append
   $PSScriptRoot | Out-File -LiteralPath $env:GITHUB_PATH -Encoding utf8 -Append
 

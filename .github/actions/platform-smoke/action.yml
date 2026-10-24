@@ -1,5 +1,5 @@
-name: OpenQuota platform smoke
-description: Starts a packaged OpenQuota build with the native platform smoke harness.
+name: QuotaGauge platform smoke
+description: Starts a packaged QuotaGauge build with the native platform smoke harness.
 
 inputs:
   artifact-root:
@@ -26,34 +26,34 @@ runs:
       if: runner.os == 'Windows'
       shell: pwsh
       env:
-        OPENQUOTA_SMOKE_ARTIFACT_ROOT: ${{ inputs.artifact-root }}
-        OPENQUOTA_SMOKE_RELEASE_VALIDATION: ${{ inputs.release-validation }}
-        OPENQUOTA_EXPECTED_WINDOWS_SIGNER_SUBJECT: ${{ inputs.windows-signer-subject }}
+        QUOTAGAUGE_SMOKE_ARTIFACT_ROOT: ${{ inputs.artifact-root }}
+        QUOTAGAUGE_SMOKE_RELEASE_VALIDATION: ${{ inputs.release-validation }}
+        QUOTAGAUGE_EXPECTED_WINDOWS_SIGNER_SUBJECT: ${{ inputs.windows-signer-subject }}
       run: >-
         & "$env:GITHUB_ACTION_PATH/scripts/windows.ps1"
-        -InstallerDirectory "$env:OPENQUOTA_SMOKE_ARTIFACT_ROOT/nsis"
-        -ReleaseValidation "$env:OPENQUOTA_SMOKE_RELEASE_VALIDATION"
+        -InstallerDirectory "$env:QUOTAGAUGE_SMOKE_ARTIFACT_ROOT/nsis"
+        -ReleaseValidation "$env:QUOTAGAUGE_SMOKE_RELEASE_VALIDATION"
 
     - name: Smoke test macOS tray startup
       if: runner.os == 'macOS'
       shell: bash
       env:
-        OPENQUOTA_SMOKE_ARTIFACT_ROOT: ${{ inputs.artifact-root }}
-        OPENQUOTA_SMOKE_RELEASE_VALIDATION: ${{ inputs.release-validation }}
-        OPENQUOTA_EXPECTED_APPLE_TEAM_ID: ${{ inputs.apple-team-id }}
+        QUOTAGAUGE_SMOKE_ARTIFACT_ROOT: ${{ inputs.artifact-root }}
+        QUOTAGAUGE_SMOKE_RELEASE_VALIDATION: ${{ inputs.release-validation }}
+        QUOTAGAUGE_EXPECTED_APPLE_TEAM_ID: ${{ inputs.apple-team-id }}
       run: >-
         bash "$GITHUB_ACTION_PATH/scripts/macos.sh"
-        "$OPENQUOTA_SMOKE_ARTIFACT_ROOT/dmg"
-        "$OPENQUOTA_SMOKE_RELEASE_VALIDATION"
+        "$QUOTAGAUGE_SMOKE_ARTIFACT_ROOT/dmg"
+        "$QUOTAGAUGE_SMOKE_RELEASE_VALIDATION"
 
     - name: Exercise Linux AppImage and Debian packages
       if: runner.os == 'Linux'
       shell: bash
       env:
-        OPENQUOTA_SMOKE_ARTIFACT_ROOT: ${{ inputs.artifact-root }}
-        OPENQUOTA_SMOKE_RELEASE_VALIDATION: ${{ inputs.release-validation }}
+        QUOTAGAUGE_SMOKE_ARTIFACT_ROOT: ${{ inputs.artifact-root }}
+        QUOTAGAUGE_SMOKE_RELEASE_VALIDATION: ${{ inputs.release-validation }}
       run: >-
         bash "$GITHUB_ACTION_PATH/scripts/linux-packages.sh"
-        "$OPENQUOTA_SMOKE_ARTIFACT_ROOT/appimage"
-        "$OPENQUOTA_SMOKE_ARTIFACT_ROOT/deb"
-        "$OPENQUOTA_SMOKE_RELEASE_VALIDATION"
+        "$QUOTAGAUGE_SMOKE_ARTIFACT_ROOT/appimage"
+        "$QUOTAGAUGE_SMOKE_ARTIFACT_ROOT/deb"
+        "$QUOTAGAUGE_SMOKE_RELEASE_VALIDATION"

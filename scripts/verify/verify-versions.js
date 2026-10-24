@@ -19,7 +19,7 @@ const uniqueVersions = new Set(Object.values(versions));
 
 if (uniqueVersions.size !== 1) {
   throw new Error(
-    `OpenQuota version mismatch: ${Object.entries(versions)
+    `QuotaGauge version mismatch: ${Object.entries(versions)
       .map(([source, version]) => `${source}=${version}`)
       .join(', ')}`,
   );
@@ -32,4 +32,4 @@ if (expectedTag && expectedTag !== `v${versions.package}`) {
   );
 }
 
-console.log(`OpenQuota version ${versions.package} is consistent.`);
+console.log(`QuotaGauge version ${versions.package} is consistent.`);

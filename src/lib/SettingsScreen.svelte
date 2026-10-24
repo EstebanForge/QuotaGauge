@@ -160,7 +160,7 @@
           type="button"
           aria-pressed={recording}
           aria-describedby="shortcut-recording-help"
-          data-tooltip="Open OpenQuota from anywhere"
+          data-tooltip="Open QuotaGauge from anywhere"
           onclick={() => (recording = !recording)}
           onkeydown={record}
           onblur={() => (recording = false)}
@@ -358,7 +358,7 @@
                 : 'Permission is required'}</b
             ><small
               >{settingsView.notificationPermission === 'denied'
-                ? 'Enable OpenQuota notifications in system settings.'
+                ? 'Enable QuotaGauge notifications in system settings.'
                 : 'Allow notifications to receive the alerts selected above.'}</small
             ></span
           >

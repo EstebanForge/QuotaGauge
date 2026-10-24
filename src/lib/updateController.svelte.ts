@@ -49,7 +49,7 @@ export class UpdateController {
     try {
       await openUpdatePage();
     } catch (error) {
-      this.error = updateFailure(error, 'The OpenQuota download page could not be opened.');
+      this.error = updateFailure(error, 'The QuotaGauge download page could not be opened.');
     }
   }
 
@@ -93,8 +93,8 @@ export function updateFailure(error: unknown, fallback: string): UpdateFailure {
 }
 
 function updateCheckMessage(status: UpdateStatus) {
-  if (!status.available) return `OpenQuota ${status.currentVersion} is up to date.`;
+  if (!status.available) return `QuotaGauge ${status.currentVersion} is up to date.`;
   return status.version
-    ? `OpenQuota ${status.version} is available.`
-    : 'An OpenQuota update is available.';
+    ? `QuotaGauge ${status.version} is available.`
+    : 'An QuotaGauge update is available.';
 }
