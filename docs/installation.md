@@ -2,8 +2,8 @@
 
 ## Download
 
-| Platform | Available builds                           | Download                                                                      |
-| -------- | ------------------------------------------ | ----------------------------------------------------------------------------- |
+| Platform | Available builds                           | Download                                                                           |
+| -------- | ------------------------------------------ | ---------------------------------------------------------------------------------- |
 | Windows  | x64 and ARM64 installers                   | [Download for Windows](https://github.com/EstebanForge/QuotaGauge/releases/latest) |
 | macOS    | Universal DMG for Apple Silicon and Intel  | [Download for macOS](https://github.com/EstebanForge/QuotaGauge/releases/latest)   |
 | Linux    | x64 and ARM64 AppImage and Debian packages | [Download for Linux](https://github.com/EstebanForge/QuotaGauge/releases/latest)   |
@@ -18,9 +18,17 @@ QuotaGauge checks for updates automatically. Update payloads are cryptographical
 
 ## Package signing
 
-Native signing is disabled by default today. Windows installers are not Authenticode-signed, and the macOS app uses an ad-hoc signature without Apple notarization. Windows SmartScreen and macOS Gatekeeper may therefore ask for confirmation.
+Native signing is disabled by default today. Windows installers are not Authenticode-signed, so SmartScreen may ask for confirmation on first run. The macOS app uses an ad-hoc signature without Apple notarization, because Apple charges yearly for the certificates that would change this.
 
-Download QuotaGauge only from this repository's official release page. On macOS, manual approval may be required under Privacy & Security. Each release states its exact native-signing status in the release notes.
+macOS checks anything you download through a browser (that's Gatekeeper) and refuses apps without paid signing. Depending on your macOS version you may see a "cannot verify the developer" or a "damaged and can't be opened" warning. The app is fine. After moving QuotaGauge into Applications, run this once:
+
+```
+xattr -cr /Applications/QuotaGauge.app
+```
+
+This clears the quarantine flag that browser downloads carry. QuotaGauge opens normally afterwards, and automatic updates never carry the flag because the updater verifies them with its own key instead.
+
+Download QuotaGauge only from this repository's official release page. Each release's notes state its exact native-signing status.
 
 ## Coming from OpenQuota
 

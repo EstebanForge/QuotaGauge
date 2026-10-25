@@ -25,7 +25,7 @@ I picked this project up from [OpenUsage](https://github.com/robinebers/openusag
 
 ## Download
 
-Grab the latest build for your platform from the [releases page](https://github.com/EstebanForge/QuotaGauge/releases/latest). Fair warning: the installers are not signed with paid certificates yet, so Windows SmartScreen and macOS Gatekeeper will ask for confirmation. [Installation](docs/installation.md) covers the details, plus how to bring your OpenQuota data along on first launch.
+Grab the latest build for your platform from the [releases page](https://github.com/EstebanForge/QuotaGauge/releases/latest). Fair warning: the installers are not signed with paid certificates yet, so Windows SmartScreen and macOS Gatekeeper will push back on first run. [Installation](docs/installation.md) covers the details, including the one command that clears macOS's warning, plus how to bring your OpenQuota data along on first launch.
 
 ## Providers
 
