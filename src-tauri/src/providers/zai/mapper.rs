@@ -62,11 +62,9 @@ pub fn map_quota(body: &Value) -> Result<Vec<QuotaWindow>, ZaiError> {
 
     let mut session = None;
     let mut weekly = None;
-    for entry in limits
-        .iter()
-        .copied()
-        .filter(|entry| matches_limit(entry, "TOKENS_LIMIT"))
-    {
+    for entry in limits.iter().copied().filter(|entry| {
+        matches_limit(entry, "CREDIT_LIMIT") || matches_limit(entry, "TOKENS_LIMIT")
+    }) {
         let Some(window) = classify_token_window(entry)? else {
             continue;
         };
@@ -257,6 +255,20 @@ mod tests {
         assert_eq!(web.period_seconds, MONTHLY_PERIOD_SECONDS);
         assert!(!web.estimated);
         assert_eq!(web.source_note, None);
+    }
+
+    #[test]
+    fn credit_limit_is_the_current_name_for_token_windows() {
+        let mapped = map_quota(&json!({"data":{"limits":[
+            {"type":"CREDIT_LIMIT","unit":3,"number":5,"percentage":30},
+            {"name":"CREDIT_LIMIT","unit":4,"number":2,"percentage":80}
+        ]}}))
+        .unwrap();
+
+        assert_eq!(mapped[0].id, "session");
+        assert_eq!(mapped[0].period_seconds, 5 * 60 * 60);
+        assert_eq!(mapped[1].id, "weekly");
+        assert_eq!(mapped[1].period_seconds, 2 * 24 * 60 * 60);
     }
 
     #[test]
