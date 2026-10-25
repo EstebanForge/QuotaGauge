@@ -420,7 +420,7 @@ mod tests {
         }
 
         let service = format!(
-            "io.github.estebanforge.quotagauge.credential-test.{}",
+            "xyz.actitud.quotagauge.credential-test.{}",
             std::process::id()
         );
         let account = "round-trip";

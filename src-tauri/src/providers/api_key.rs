@@ -5,7 +5,7 @@ use zeroize::Zeroizing;
 
 use super::credential_store::{delete_owned_password, read_owned_password, write_owned_password};
 
-const SERVICE: &str = "io.github.estebanforge.quotagauge.api-key";
+const SERVICE: &str = "xyz.actitud.quotagauge.api-key";
 const LEGACY_SERVICE: &str = "io.github.deviffyy.openquota.api-key";
 
 pub struct SecretBytes(Zeroizing<Vec<u8>>);

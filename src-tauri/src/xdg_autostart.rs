@@ -1,6 +1,6 @@
 use std::{fs, path::PathBuf};
 
-const DESKTOP_FILE: &str = "io.github.estebanforge.quotagauge.desktop";
+const DESKTOP_FILE: &str = "xyz.actitud.quotagauge.desktop";
 
 #[cfg(target_os = "linux")]
 pub fn set_enabled(enabled: bool) -> Result<(), String> {
@@ -64,7 +64,7 @@ Version=1.0\n\
 Name=QuotaGauge\n\
 Comment=Track local AI provider quotas\n\
 Exec={}\n\
-Icon=io.github.estebanforge.quotagauge\n\
+Icon=xyz.actitud.quotagauge\n\
 Terminal=false\n\
 StartupNotify=false\n\
 X-GNOME-Autostart-enabled=true\n",
@@ -98,7 +98,7 @@ mod tests {
     fn honors_absolute_xdg_config_home_and_falls_back_to_home() {
         assert_eq!(
             autostart_path(Some(PathBuf::from("/custom/config")), None).unwrap(),
-            PathBuf::from("/custom/config/autostart/io.github.estebanforge.quotagauge.desktop")
+            PathBuf::from("/custom/config/autostart/xyz.actitud.quotagauge.desktop")
         );
         assert_eq!(
             autostart_path(
@@ -106,7 +106,7 @@ mod tests {
                 Some(PathBuf::from("/home/user"))
             )
             .unwrap(),
-            PathBuf::from("/home/user/.config/autostart/io.github.estebanforge.quotagauge.desktop")
+            PathBuf::from("/home/user/.config/autostart/xyz.actitud.quotagauge.desktop")
         );
     }
 

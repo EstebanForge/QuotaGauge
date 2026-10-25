@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Assembles QuotaGauge.app from a macOS-cross-compiled binary.
+# Usage: bundle-app.sh <binary> [output-dir]
+# The binary must be built for aarch64/x86_64/universal2-apple-darwin.
+set -euo pipefail
+
+BIN=""
+OUT=""
+if [[ $# -ge 1 ]]; then BIN=$1; fi
+if [[ $# -ge 2 ]]; then OUT=$2; fi
+if [[ -z $BIN || ! -e $BIN ]]; then
+  echo "usage: $0 <binary> [output-dir]" >&2
+  exit 1
+fi
+BIN=$(readlink -f "$BIN")
+
+APP_NAME=QuotaGauge
+VERSION=$(grep -oP '(?<="version": ")[^"]+' src-tauri/tauri.conf.json | head -1)
+OUT=${OUT:-dist-cross}
+APP_DIR="$OUT/$APP_NAME.app"
+CONTENTS="$APP_DIR/Contents"
+
+rm -rf "$APP_DIR"
+mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
+
+cat > "$CONTENTS/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>$APP_NAME</string>
+    <key>CFBundleDisplayName</key>
+    <string>$APP_NAME</string>
+    <key>CFBundleIdentifier</key>
+    <string>xyz.actitud.quotagauge</string>
+    <key>CFBundleExecutable</key>
+    <string>quotagauge</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>$VERSION</string>
+    <key>CFBundleVersion</key>
+    <string>$VERSION</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>11.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+</dict>
+</plist>
+PLIST
+
+cp "$BIN" "$CONTENTS/MacOS/quotagauge"
+chmod +x "$CONTENTS/MacOS/quotagauge"
+
+echo "assembled $APP_DIR (v$VERSION)"
+file "$CONTENTS/MacOS/quotagauge"

@@ -77,7 +77,7 @@ mod tests {
     fn reports_copy_failure_when_target_directory_is_missing() {
         let base = tempfile::tempdir().unwrap();
         let legacy_dir = new_dir(base.path(), LEGACY_APP_IDENTIFIER);
-        let new_dir = new_dir(base.path(), "io.github.estebanforge.quotagauge");
+        let new_dir = new_dir(base.path(), "xyz.actitud.quotagauge");
 
         fs::write(legacy_dir.join(LEGACY_DB_FILENAME), b"legacy").unwrap();
 
@@ -97,7 +97,7 @@ mod tests {
     fn imports_legacy_database_when_new_one_is_absent() {
         let base = tempfile::tempdir().unwrap();
         let legacy_dir = new_dir(base.path(), LEGACY_APP_IDENTIFIER);
-        let new_dir = new_dir(base.path(), "io.github.estebanforge.quotagauge");
+        let new_dir = new_dir(base.path(), "xyz.actitud.quotagauge");
 
         let legacy_db = legacy_dir.join(LEGACY_DB_FILENAME);
         fs::write(&legacy_db, b"sqlite-payload").unwrap();
@@ -115,7 +115,7 @@ mod tests {
     fn keeps_existing_new_database_untouched() {
         let base = tempfile::tempdir().unwrap();
         let legacy_dir = new_dir(base.path(), LEGACY_APP_IDENTIFIER);
-        let new_dir = new_dir(base.path(), "io.github.estebanforge.quotagauge");
+        let new_dir = new_dir(base.path(), "xyz.actitud.quotagauge");
 
         fs::write(legacy_dir.join(LEGACY_DB_FILENAME), b"legacy").unwrap();
         let database_path = new_dir.join("quotagauge.db");
@@ -130,7 +130,7 @@ mod tests {
     #[test]
     fn reports_missing_legacy_install_as_no_op() {
         let base = tempfile::tempdir().unwrap();
-        let new_dir = new_dir(base.path(), "io.github.estebanforge.quotagauge");
+        let new_dir = new_dir(base.path(), "xyz.actitud.quotagauge");
         let database_path = new_dir.join("quotagauge.db");
 
         let outcome = import_legacy_database(&new_dir, &database_path).unwrap();
@@ -143,7 +143,7 @@ mod tests {
     fn ignores_legacy_entry_that_is_not_a_file() {
         let base = tempfile::tempdir().unwrap();
         let legacy_dir = new_dir(base.path(), LEGACY_APP_IDENTIFIER);
-        let new_dir = new_dir(base.path(), "io.github.estebanforge.quotagauge");
+        let new_dir = new_dir(base.path(), "xyz.actitud.quotagauge");
 
         fs::create_dir(legacy_dir.join(LEGACY_DB_FILENAME)).unwrap();
 
