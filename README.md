@@ -55,6 +55,12 @@ You need Node.js 22 or later, pnpm 11.11.0, and a stable Rust toolchain. [Develo
 
 Issues and pull requests are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) first, and report security problems privately through [SECURITY.md](SECURITY.md).
 
+## Credits
+
+Thanks to [robinebers](https://github.com/robinebers) ([OpenUsage](https://github.com/robinebers/openusage)) for the original idea this whole project was born from.
+
+Thanks to [deviffyy](https://github.com/deviffyy) ([OpenQuota](https://github.com/deviffyy/OpenQuota)) for forking the original app before it dropped Windows and Linux support to go macOS-only, and for keeping those versions alive until I picked the project up.
+
 ## License
 
 [MIT](LICENSE)
