@@ -19,6 +19,12 @@ VERSION=$(grep -oP '(?<="version": ")[^"]+' src-tauri/tauri.conf.json | head -1)
 OUT=${OUT:-dist-cross}
 APP_DIR="$OUT/$APP_NAME.app"
 CONTENTS="$APP_DIR/Contents"
+ICON_SRC=$(dirname "$0")/../../src-tauri/icons/icon.icns
+
+if [[ ! -e $ICON_SRC ]]; then
+  echo "missing $ICON_SRC" >&2
+  exit 1
+fi
 
 rm -rf "$APP_DIR"
 mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
@@ -36,6 +42,8 @@ cat > "$CONTENTS/Info.plist" <<PLIST
     <string>xyz.actitud.quotagauge</string>
     <key>CFBundleExecutable</key>
     <string>quotagauge</string>
+    <key>CFBundleIconFile</key>
+    <string>icon</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -54,6 +62,7 @@ PLIST
 
 cp "$BIN" "$CONTENTS/MacOS/quotagauge"
 chmod +x "$CONTENTS/MacOS/quotagauge"
+cp "$ICON_SRC" "$CONTENTS/Resources/icon.icns"
 
 echo "assembled $APP_DIR (v$VERSION)"
 file "$CONTENTS/MacOS/quotagauge"

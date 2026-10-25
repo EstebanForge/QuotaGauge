@@ -61,6 +61,8 @@ Thanks to [robinebers](https://github.com/robinebers) ([OpenUsage](https://githu
 
 Thanks to [deviffyy](https://github.com/deviffyy) ([OpenQuota](https://github.com/deviffyy/OpenQuota)) for forking the original app before it dropped Windows and Linux support to go macOS-only, and for keeping this cross OS compatible version alive.
 
+The app icon is by [improstudio](https://www.flaticon.com/authors/improstudio) on [Flaticon](https://www.flaticon.com), thanks for licensing it for use in projects like this one.
+
 ## License
 
 [MIT](LICENSE)
