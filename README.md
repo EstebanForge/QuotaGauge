@@ -1,18 +1,7 @@
-<p align="center">
-  <img src="assets/quotagauge-icon.png" alt="QuotaGauge logo" width="88">
-</p>
-
 <h1 align="center">QuotaGauge</h1>
 
 <p align="center">
   Track usage and limits across your AI coding tools.
-</p>
-
-<p align="center">
-  <a href="https://github.com/EstebanForge/QuotaGauge/actions/workflows/ci.yml"><img src="https://github.com/EstebanForge/QuotaGauge/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
-  <a href="https://github.com/EstebanForge/QuotaGauge/releases/latest"><img src="https://img.shields.io/github/v/release/EstebanForge/QuotaGauge" alt="Latest release"></a>
-  <a href="https://github.com/EstebanForge/QuotaGauge/releases"><img src="https://img.shields.io/github/downloads/EstebanForge/QuotaGauge/total" alt="Total downloads"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
 </p>
 
 Every AI coding tool tracks your usage somewhere else. Claude Code in the terminal, Codex in the browser, Copilot in a settings page, and the rest wherever they felt like putting it. QuotaGauge puts all of it in one compact panel that lives in your tray or menu bar: session and weekly limits, reset times, token usage, and estimated spend.
