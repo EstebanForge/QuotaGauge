@@ -731,7 +731,7 @@ impl Default for AppSettings {
             density: DensityPreference::Default,
             reduce_animations: false,
             window_mode: WindowMode::Popup,
-            menu_bar_style: MenuBarStyle::Text,
+            menu_bar_style: MenuBarStyle::Bars,
             usage_display: UsageDisplay::Left,
             reset_display: ResetDisplay::Countdown,
             time_format: TimeFormatPreference::System,
