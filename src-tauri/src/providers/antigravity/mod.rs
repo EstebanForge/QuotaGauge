@@ -4,6 +4,7 @@ mod discovery;
 mod mapper;
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use chrono::Utc;
 use serde_json::{json, Value};
@@ -15,11 +16,12 @@ use crate::models::{
 
 use self::{
     auth::{load_token, AccessTokenCache},
-    client::{AntigravityClient, CloudOutcome, CloudUserAgent, RefreshOutcome},
+    client::{AntigravityClient, CloudOutcome, RefreshOutcome},
     discovery::discover,
     mapper::{
-        build_legacy_quotas, parse_cloud_models, parse_command_model_configs, parse_plan,
-        parse_quota_buckets, parse_quota_summary, parse_user_status,
+        build_legacy_quotas, insert_argon, parse_agy_cli_quota, parse_cloud_models,
+        parse_command_model_configs, parse_plan, parse_quota_buckets, parse_quota_summaries,
+        parse_quota_summary, parse_user_status,
     },
 };
 
@@ -27,6 +29,9 @@ const QUOTA_SUMMARY_PATH: &str = "/v1internal:retrieveUserQuotaSummary";
 const FETCH_MODELS_PATH: &str = "/v1internal:fetchAvailableModels";
 const LOAD_CODE_ASSIST_PATH: &str = "/v1internal:loadCodeAssist";
 const RETRIEVE_QUOTA_PATH: &str = "/v1internal:retrieveUserQuota";
+/// A warm `agy` answers in a couple of seconds; a cold one needs its own sign-in, which we never
+/// drive from a refresh.
+const AGY_CLI_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub(crate) fn definition() -> ProviderDefinition {
     ProviderDefinition {
@@ -56,6 +61,16 @@ pub(crate) fn definition() -> ProviderDefinition {
                 MetricSection::AlwaysVisible,
                 true,
                 "W",
+            ),
+            MetricDefinition::quota(
+                "antigravity.argonWeekly",
+                "Argon Weekly",
+                "argonWeekly",
+                false,
+                true,
+                MetricSection::AlwaysVisible,
+                false,
+                "AW",
             ),
             MetricDefinition::quota(
                 "antigravity.claude",
@@ -114,7 +129,8 @@ impl AntigravityProvider {
                 .client
                 .call_language_server(&server, "RetrieveUserQuotaSummary")
             {
-                if let Some(quotas) = parse_quota_summary(&summary) {
+                if let Some(mut quotas) = parse_quota_summary(&summary) {
+                    self.augment_missing_argon(&mut quotas);
                     let plan = self
                         .client
                         .call_language_server(&server, "GetUserStatus")
@@ -212,27 +228,21 @@ impl AntigravityProvider {
     }
 
     fn fetch_remote(&self, token: &str) -> Result<ProviderSnapshot, AntigravityError> {
-        match self.client.cloud_code(
-            QUOTA_SUMMARY_PATH,
-            token,
-            json!({}),
-            CloudUserAgent::Antigravity,
-        ) {
-            CloudOutcome::Ok(value) => {
-                if let Some(quotas) = parse_quota_summary(&value) {
-                    return Ok(snapshot(self.load_remote_plan(token), quotas));
-                }
+        let (summaries, summary_auth_failed) =
+            self.client
+                .cloud_code_all(QUOTA_SUMMARY_PATH, token, json!({}));
+        if !summaries.is_empty() {
+            if let Some(mut quotas) = parse_quota_summaries(&summaries) {
+                self.augment_missing_session_pool(token, &mut quotas);
+                self.augment_missing_argon(&mut quotas);
+                return Ok(snapshot(self.load_remote_plan(token), quotas));
             }
-            CloudOutcome::AuthFailed => return Err(AntigravityError::AuthExpired),
-            CloudOutcome::Unavailable => {}
+        }
+        if summary_auth_failed {
+            return Err(AntigravityError::AuthExpired);
         }
 
-        match self.client.cloud_code(
-            FETCH_MODELS_PATH,
-            token,
-            json!({}),
-            CloudUserAgent::Antigravity,
-        ) {
+        match self.client.cloud_code(FETCH_MODELS_PATH, token, json!({})) {
             CloudOutcome::Ok(value) => {
                 let quotas = build_legacy_quotas(parse_cloud_models(&value));
                 if !quotas.is_empty() {
@@ -243,12 +253,10 @@ impl AntigravityProvider {
             CloudOutcome::Unavailable => {}
         }
 
-        let (plan, project) = match self.client.cloud_code(
-            LOAD_CODE_ASSIST_PATH,
-            token,
-            json!({}),
-            CloudUserAgent::Agy,
-        ) {
+        let (plan, project) = match self
+            .client
+            .cloud_code(LOAD_CODE_ASSIST_PATH, token, json!({}))
+        {
             CloudOutcome::Ok(value) => (
                 remote_plan(&value),
                 value
@@ -265,13 +273,11 @@ impl AntigravityProvider {
             .as_ref()
             .map(|project| json!({"project": project}))
             .unwrap_or_else(|| json!({}));
-        let mut quota =
-            self.client
-                .cloud_code(RETRIEVE_QUOTA_PATH, token, body, CloudUserAgent::Agy);
+        let mut quota = self.client.cloud_code(RETRIEVE_QUOTA_PATH, token, body);
         if matches!(quota, CloudOutcome::Unavailable) && project.is_some() {
-            quota =
-                self.client
-                    .cloud_code(RETRIEVE_QUOTA_PATH, token, json!({}), CloudUserAgent::Agy);
+            quota = self
+                .client
+                .cloud_code(RETRIEVE_QUOTA_PATH, token, json!({}));
         }
         match quota {
             CloudOutcome::Ok(value) => {
@@ -289,10 +295,54 @@ impl AntigravityProvider {
     fn load_remote_plan(&self, token: &str) -> Option<String> {
         match self
             .client
-            .cloud_code(LOAD_CODE_ASSIST_PATH, token, json!({}), CloudUserAgent::Agy)
+            .cloud_code(LOAD_CODE_ASSIST_PATH, token, json!({}))
         {
             CloudOutcome::Ok(value) => remote_plan(&value),
             _ => None,
+        }
+    }
+
+    /// The local language server omits Argon while the IDE is running; the `agy` print report still
+    /// carries it. Best effort: a missing CLI or a cold/unresponsive one just keeps the meter absent.
+    fn augment_missing_argon(&self, quotas: &mut Vec<crate::models::QuotaWindow>) {
+        if quotas.iter().any(|quota| quota.id == "argonWeekly") {
+            return;
+        }
+        let output = crate::child_process::output_with_timeout(
+            crate::child_process::background_command("agy").args([
+                "-p",
+                "/quota",
+                "--output-format",
+                "json",
+            ]),
+            AGY_CLI_TIMEOUT,
+        )
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| serde_json::from_slice(&output.stdout).ok());
+        if let Some(argon) = output.as_ref().and_then(parse_agy_cli_quota) {
+            insert_argon(quotas, argon);
+        }
+    }
+
+    /// The daily host omits the Gemini session pool; `fetchAvailableModels` still carries the live
+    /// rolling quota for it.
+    fn augment_missing_session_pool(
+        &self,
+        token: &str,
+        quotas: &mut Vec<crate::models::QuotaWindow>,
+    ) {
+        if quotas.iter().any(|quota| quota.id == "geminiPro") {
+            return;
+        }
+        if let CloudOutcome::Ok(value) = self.client.cloud_code(FETCH_MODELS_PATH, token, json!({}))
+        {
+            if let Some(session) = build_legacy_quotas(parse_cloud_models(&value))
+                .into_iter()
+                .find(|quota| quota.id == "geminiPro")
+            {
+                quotas.insert(0, session);
+            }
         }
     }
 }

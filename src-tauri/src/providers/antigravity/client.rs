@@ -30,19 +30,20 @@ pub enum CloudOutcome {
     Unavailable,
 }
 
-#[derive(Clone, Copy)]
-pub enum CloudUserAgent {
-    Antigravity,
-    Agy,
-}
-
-impl CloudUserAgent {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Antigravity => "antigravity",
-            Self::Agy => "agy",
-        }
-    }
+/// Google rejects plain product names with UNSUPPORTED_CLIENT; the hub identity is what the
+/// Antigravity client itself sends.
+pub fn cloud_user_agent() -> String {
+    #[cfg(target_os = "macos")]
+    const OS: &str = "darwin";
+    #[cfg(target_os = "linux")]
+    const OS: &str = "linux";
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    const OS: &str = "windows";
+    #[cfg(target_arch = "aarch64")]
+    const ARCH: &str = "arm64";
+    #[cfg(not(target_arch = "aarch64"))]
+    const ARCH: &str = "amd64";
+    format!("antigravity/hub/2.9.1 {OS}/{ARCH}")
 }
 
 pub enum RefreshOutcome {
@@ -137,44 +138,73 @@ impl AntigravityClient {
         None
     }
 
-    pub fn cloud_code(
+    fn post_cloud(
         &self,
+        base: &str,
         path: &str,
         token: &str,
-        body: Value,
-        user_agent: CloudUserAgent,
-    ) -> CloudOutcome {
-        for base in &self.cloud_bases {
-            let response = self
-                .remote
-                .post(format!("{base}{path}"))
-                .bearer_auth(token)
-                .header("Accept", "application/json")
-                .header("User-Agent", user_agent.as_str())
-                .json(&body)
-                .send();
-            let Ok(response) = response else {
+        body: &Value,
+    ) -> Result<reqwest::blocking::Response, CloudOutcome> {
+        let response = self
+            .remote
+            .post(format!("{base}{path}"))
+            .bearer_auth(token)
+            .header("Accept", "application/json")
+            .header("User-Agent", cloud_user_agent())
+            .json(body)
+            .send()
+            .map_err(|_| {
                 crate::app_warn!("http", "antigravity cloud request failed (transport)");
-                continue;
-            };
-            crate::app_debug!(
-                "http",
-                "antigravity cloud request HTTP {}",
-                response.status().as_u16()
-            );
-            if matches!(
-                response.status(),
-                StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
-            ) {
-                return CloudOutcome::AuthFailed;
-            }
-            if response.status().is_success() {
-                if let Ok(body) = response.json() {
-                    return CloudOutcome::Ok(body);
+                CloudOutcome::Unavailable
+            })?;
+        crate::app_debug!(
+            "http",
+            "antigravity cloud request HTTP {}",
+            response.status().as_u16()
+        );
+        if matches!(
+            response.status(),
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+        ) {
+            return Err(CloudOutcome::AuthFailed);
+        }
+        Ok(response)
+    }
+
+    pub fn cloud_code(&self, path: &str, token: &str, body: Value) -> CloudOutcome {
+        for base in &self.cloud_bases {
+            match self.post_cloud(base, path, token, &body) {
+                Err(outcome) => return outcome,
+                Ok(response) if response.status().is_success() => {
+                    if let Ok(body) = response.json() {
+                        return CloudOutcome::Ok(body);
+                    }
                 }
+                Ok(_) => {}
             }
         }
         CloudOutcome::Unavailable
+    }
+
+    /// Successful JSON bodies from every host: pool summaries merge by bucket id because one host
+    /// can omit a whole pool.
+    pub fn cloud_code_all(&self, path: &str, token: &str, body: Value) -> (Vec<Value>, bool) {
+        let mut bodies = Vec::new();
+        let mut auth_failed = false;
+        for base in &self.cloud_bases {
+            match self.post_cloud(base, path, token, &body) {
+                Err(CloudOutcome::AuthFailed) => auth_failed = true,
+                Err(_) => {}
+                Ok(response) => {
+                    if response.status().is_success() {
+                        if let Ok(body) = response.json() {
+                            bodies.push(body);
+                        }
+                    }
+                }
+            }
+        }
+        (bodies, auth_failed)
     }
 
     pub fn refresh_google_token(&self, refresh_token: &str) -> RefreshOutcome {
@@ -238,7 +268,7 @@ mod tests {
 
     use serde_json::json;
 
-    use super::{AntigravityClient, CloudOutcome, CloudUserAgent, RefreshOutcome};
+    use super::{AntigravityClient, CloudOutcome, RefreshOutcome};
     use crate::providers::test_http;
 
     fn client(base: &str) -> AntigravityClient {
@@ -253,12 +283,7 @@ mod tests {
     #[test]
     fn cloud_success_and_auth_failures_are_distinct() {
         let success = test_http::serve_once(200, &[], r#"{"quota":"available"}"#);
-        match client(&success).cloud_code(
-            "/quota",
-            "secret-token",
-            json!({}),
-            CloudUserAgent::Antigravity,
-        ) {
+        match client(&success).cloud_code("/quota", "secret-token", json!({})) {
             CloudOutcome::Ok(body) => assert_eq!(body["quota"], "available"),
             _ => panic!("successful cloud response should be returned"),
         }
@@ -266,12 +291,7 @@ mod tests {
         for status in [401, 403] {
             let base = test_http::serve_once(status, &[], r#"{"token":"secret-token"}"#);
             assert!(matches!(
-                client(&base).cloud_code(
-                    "/quota",
-                    "secret-token",
-                    json!({}),
-                    CloudUserAgent::Antigravity,
-                ),
+                client(&base).cloud_code("/quota", "secret-token", json!({})),
                 CloudOutcome::AuthFailed
             ));
         }
@@ -281,14 +301,13 @@ mod tests {
     fn cloud_rate_limits_and_malformed_json_are_unavailable() {
         let limited = test_http::serve_once(429, &[], r#"{"error":"slow_down"}"#);
         assert!(matches!(
-            client(&limited).cloud_code("/quota", "secret-token", json!({}), CloudUserAgent::Agy,),
+            client(&limited).cloud_code("/quota", "secret-token", json!({})),
             CloudOutcome::Unavailable
         ));
 
         let malformed = test_http::serve_once(200, &[], "secret-token: not-json");
         assert!(matches!(
-            client(&malformed)
-                .cloud_code("/quota", "secret-token", json!({}), CloudUserAgent::Agy,),
+            client(&malformed).cloud_code("/quota", "secret-token", json!({})),
             CloudOutcome::Unavailable
         ));
     }

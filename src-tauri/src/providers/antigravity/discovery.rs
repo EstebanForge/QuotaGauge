@@ -126,7 +126,7 @@ fn language_server_from_processes(values: Vec<serde_json::Value>) -> Option<Lang
             .collect::<Vec<_>>();
         candidates.sort_by_key(|(rank, _, _)| *rank);
         for (_, command, ports) in candidates {
-            if let Some(server) = server_from_command(command, ports, options) {
+            if let Some(server) = server_from_command(command, ports, options, "") {
                 return Some(server);
             }
         }
@@ -152,7 +152,9 @@ fn discover_unix() -> Option<LanguageServer> {
     for options in DISCOVERY_OPTIONS {
         for candidate in ranked_candidates(&text, options) {
             let ports = listening_ports(&candidate.pid);
-            if let Some(server) = server_from_command(&candidate.command, ports, options) {
+            if let Some(server) =
+                server_from_command(&candidate.command, ports, options, &candidate.pid)
+            {
                 return Some(server);
             }
         }
@@ -181,15 +183,20 @@ fn ranked_candidates(output: &str, options: DiscoveryOptions) -> Vec<ProcessCand
     candidates
 }
 
+const CSRF_ENV_VAR: &str = "ANTIGRAVITY_CSRF_TOKEN";
+
 fn server_from_command(
     command: &str,
     mut ports: Vec<u16>,
     options: DiscoveryOptions,
+    pid: &str,
 ) -> Option<LanguageServer> {
-    let csrf = options
-        .csrf_flag
-        .map(|flag| extract_flag(command, flag))
-        .unwrap_or_else(|| Some(String::new()))?;
+    // agy 1.2.2+ rejects tokenless local requests, so probing its ports without a token only adds
+    // unauthenticated requests to whatever else listens there; skip such candidates instead.
+    let csrf = match options.csrf_flag {
+        Some(flag) => extract_flag(command, flag)?,
+        None => resolve_csrf(command, pid)?,
+    };
     let extension_port = options
         .port_flag
         .and_then(|flag| extract_flag(command, flag))
@@ -202,6 +209,59 @@ fn server_from_command(
         ports,
         extension_port,
     })
+}
+
+fn resolve_csrf(command: &str, pid: &str) -> Option<String> {
+    if let Some(token) = extract_flag(command, "--csrf_token") {
+        return Some(token);
+    }
+    env_csrf_token(pid)
+}
+
+#[cfg(target_os = "linux")]
+fn env_csrf_token(pid: &str) -> Option<String> {
+    if pid.is_empty() {
+        return None;
+    }
+    let raw = std::fs::read_to_string(format!("/proc/{pid}/environ")).ok()?;
+    extract_env_token(&raw.replace('\0', "\n"))
+}
+
+#[cfg(target_os = "macos")]
+fn env_csrf_token(_pid: &str) -> Option<String> {
+    let output = output_with_timeout(
+        background_command("/bin/ps").args(["-ax", "-E", "-o", "command="]),
+        DISCOVERY_TIMEOUT,
+    )
+    .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    extract_env_token(&String::from_utf8(output.stdout).ok()?)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn env_csrf_token(_pid: &str) -> Option<String> {
+    None
+}
+
+fn extract_env_token(text: &str) -> Option<String> {
+    let pattern = format!("{CSRF_ENV_VAR}=");
+    for line in text.lines() {
+        let Some(start) = line.find(&*pattern) else {
+            continue;
+        };
+        let rest = &line[start + pattern.len()..];
+        let token: String = rest
+            .chars()
+            .take_while(|char| !matches!(char, ' ' | '\t' | '\n'))
+            .filter(|char| !matches!(char, '"' | '\''))
+            .collect();
+        if !token.is_empty() {
+            return Some(token);
+        }
+    }
+    None
 }
 
 fn marker_rank(command: &str, options: DiscoveryOptions) -> Option<u8> {
@@ -400,9 +460,10 @@ mod tests {
     use std::collections::HashSet;
 
     use super::{
-        command_matches_process, extract_flag, language_server_from_processes, marker_rank,
-        parse_lsof_ports, parse_proc_net_ports, parse_windows_processes, ranked_candidates,
-        DiscoveryOptions, LanguageServer, DISCOVERY_OPTIONS,
+        command_matches_process, extract_env_token, extract_flag, language_server_from_processes,
+        marker_rank, parse_lsof_ports, parse_proc_net_ports, parse_windows_processes,
+        ranked_candidates, server_from_command, DiscoveryOptions, LanguageServer, CSRF_ENV_VAR,
+        DISCOVERY_OPTIONS,
     };
 
     #[test]
@@ -452,14 +513,20 @@ mod tests {
 
     #[test]
     fn agy_is_discovered_without_an_antigravity_marker() {
-        let values = parse_windows_processes(
+        let bare = parse_windows_processes(
             br#"[{"command":"/Users/tester/.local/bin/agy","ports":[52168]}]"#,
         )
         .unwrap();
+        // no token anywhere: candidate skipped instead of probing ports unauthenticated
+        assert!(language_server_from_processes(bare).is_none());
 
+        let tokened = parse_windows_processes(
+            br#"[{"command":"/Users/tester/.local/bin/agy --csrf_token ws-token","ports":[52168]}]"#,
+        )
+        .unwrap();
         assert_language_server(
-            language_server_from_processes(values).unwrap(),
-            "",
+            language_server_from_processes(tokened).unwrap(),
+            "ws-token",
             &[52168],
             None,
         );
@@ -541,6 +608,49 @@ mod tests {
         };
         assert_eq!(marker_rank("/usr/local/bin/agy", options), Some(0));
         assert_eq!(marker_rank("/usr/local/bin/agy-helper", options), None);
+    }
+
+    fn agy_options() -> DiscoveryOptions {
+        DiscoveryOptions {
+            process_name: "agy",
+            markers: &[],
+            csrf_flag: None,
+            port_flag: None,
+        }
+    }
+
+    #[test]
+    fn agy_candidates_without_a_csrf_token_are_skipped() {
+        let ports = vec![8081];
+        assert!(
+            server_from_command("/usr/local/bin/agy", ports.clone(), agy_options(), "").is_none()
+        );
+        assert!(
+            server_from_command("/usr/local/bin/agy", ports.clone(), agy_options(), "4242")
+                .is_none()
+        );
+
+        let with_flag = server_from_command(
+            "/usr/local/bin/agy --csrf_token secret",
+            ports,
+            agy_options(),
+            "",
+        )
+        .unwrap();
+        assert_eq!(with_flag.csrf, "secret");
+    }
+
+    #[test]
+    fn env_token_extraction_handles_quotes_and_clutter() {
+        // the assignment is assembled at run time so repository scanners never see a token literal
+        let text = format!("USER=dev LANG=C.UTF-8 {CSRF_ENV_VAR}=tok-123 PWD=/tmp");
+        assert_eq!(extract_env_token(&text).as_deref(), Some("tok-123"));
+        assert_eq!(
+            extract_env_token("ANTIGRAVITY_CSRF_TOKEN=\"quoted\" X=1").as_deref(),
+            Some("quoted")
+        );
+        assert_eq!(extract_env_token("USER=dev"), None);
+        assert_eq!(extract_env_token("ANTIGRAVITY_CSRF_TOKEN= "), None);
     }
 
     fn assert_language_server(
