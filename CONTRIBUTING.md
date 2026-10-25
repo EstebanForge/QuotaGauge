@@ -3,8 +3,6 @@
 Thanks for helping improve QuotaGauge. Bug reports, feature ideas, documentation fixes, and focused
 pull requests are welcome.
 
-By participating, you agree to follow the project [Code of Conduct](CODE_OF_CONDUCT.md).
-
 ## Project philosophy
 
 QuotaGauge aims for clean design, fast performance, and a focused user experience. Its purpose is
