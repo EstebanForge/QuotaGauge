@@ -59,7 +59,7 @@ Issues and pull requests are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING
 
 Thanks to [robinebers](https://github.com/robinebers) ([OpenUsage](https://github.com/robinebers/openusage)) for the original idea this whole project was born from.
 
-Thanks to [deviffyy](https://github.com/deviffyy) ([OpenQuota](https://github.com/deviffyy/OpenQuota)) for forking the original app before it dropped Windows and Linux support to go macOS-only, and for keeping those versions alive until I picked the project up.
+Thanks to [deviffyy](https://github.com/deviffyy) ([OpenQuota](https://github.com/deviffyy/OpenQuota)) for forking the original app before it dropped Windows and Linux support to go macOS-only, and for keeping this cross OS compatible version alive.
 
 ## License
 
