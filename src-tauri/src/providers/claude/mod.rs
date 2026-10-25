@@ -179,6 +179,16 @@ pub struct ClaudeProvider {
     cached_credential_fingerprint: Mutex<Option<[u8; 32]>>,
     last_good: Mutex<Option<ProviderSnapshot>>,
     rate_limited_until: Mutex<Option<chrono::DateTime<Utc>>>,
+    reset_grants_cache: Mutex<Option<ResetGrantsCheck>>,
+}
+
+/// Anthropic rate-limits the reset-grants read hard, so it runs at most hourly per credential.
+const RESET_GRANTS_CHECK_INTERVAL: chrono::Duration = Duration::seconds(60 * 60);
+
+struct ResetGrantsCheck {
+    credential_fingerprint: [u8; 32],
+    checked_at: chrono::DateTime<Utc>,
+    status: Option<crate::providers::claude::mapper::ResetGrantStatus>,
 }
 
 struct ClaudeRuntimeConfig {
@@ -286,6 +296,7 @@ impl ClaudeProvider {
             cached_credential_fingerprint: Mutex::new(None),
             last_good: Mutex::new(None),
             rate_limited_until: Mutex::new(None),
+            reset_grants_cache: Mutex::new(None),
         }
     }
 
@@ -533,24 +544,79 @@ impl ClaudeProvider {
                 refreshed_at: now,
             });
         }
-        self.build_snapshot(status, &body, credential, usage, warnings, now)
+        self.build_snapshot(
+            status,
+            &body,
+            credential,
+            &config.usage_url,
+            usage,
+            warnings,
+            now,
+        )
     }
 
+    /// Best-effort "Rate Limit Resets" row: hourly per credential, previous status held on error.
+    fn reset_grants_metric(
+        &self,
+        credential: &ClaudeCredential,
+        usage_url: &str,
+        now: chrono::DateTime<Utc>,
+    ) -> Option<crate::models::ValueMetric> {
+        let fingerprint = credential.fingerprint();
+        if let Ok(cache) = self.reset_grants_cache.lock() {
+            if let Some(check) = cache.as_ref() {
+                if check.credential_fingerprint == fingerprint
+                    && now.signed_duration_since(check.checked_at) < RESET_GRANTS_CHECK_INTERVAL
+                {
+                    return check
+                        .status
+                        .as_ref()
+                        .and_then(|status| mapper::reset_grants_metric(status, now));
+                }
+            }
+        }
+        let fetched = self
+            .client
+            .fetch_reset_grants(credential.access_token()?, usage_url)
+            .ok()
+            .filter(|(status, _)| status.is_success())
+            .and_then(|(_, body)| mapper::parse_reset_grants(&body));
+        if fetched.is_none() {
+            crate::app_warn!("claude", "reset grants lookup failed; retrying in an hour");
+        }
+        if let Ok(mut cache) = self.reset_grants_cache.lock() {
+            *cache = Some(ResetGrantsCheck {
+                credential_fingerprint: fingerprint,
+                checked_at: now,
+                status: fetched.clone(),
+            });
+        }
+        fetched
+            .as_ref()
+            .and_then(|status| mapper::reset_grants_metric(status, now))
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn build_snapshot(
         &self,
         status: StatusCode,
         body: &serde_json::Value,
         credential: &ClaudeCredential,
+        usage_url: &str,
         usage: crate::models::UsageHistory,
         warnings: Vec<String>,
         now: chrono::DateTime<Utc>,
     ) -> Result<ProviderSnapshot, ClaudeError> {
         let mapped = map_usage(status, body, &credential.oauth)?;
+        let mut value_metrics = mapped.value_metrics;
+        if let Some(metric) = self.reset_grants_metric(credential, usage_url, now) {
+            value_metrics.push(metric);
+        }
         let snapshot = ProviderSnapshot {
             provider_id: self.provider_id().into(),
             plan: mapped.plan,
             quotas: mapped.quotas,
-            value_metrics: mapped.value_metrics,
+            value_metrics,
             status_metrics: Vec::new(),
             notices: Vec::new(),
             usage,

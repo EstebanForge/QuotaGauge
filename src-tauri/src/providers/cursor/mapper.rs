@@ -4,12 +4,13 @@ use serde_json::Value;
 use crate::{
     models::{MetricValue, MetricValueKind, QuotaFormat, QuotaWindow, UsageHistory, ValueMetric},
     pricing::ModelPricing,
-    providers::{cursor::csv::CursorCsvRow, daily_usage::DailyUsageAccumulator},
+    providers::{cursor::events::CursorUsageRow, daily_usage::DailyUsageAccumulator},
 };
 
 use super::CursorError;
 
 const BILLING_PERIOD_SECONDS: u64 = 30 * 24 * 60 * 60;
+const WEEK_SECONDS: u64 = 7 * 24 * 60 * 60;
 
 #[derive(Debug)]
 pub struct CursorMappedUsage {
@@ -474,6 +475,49 @@ fn summary_billing_cycle(
     )
 }
 
+/// Cursor's Sand product ("Grok Bot") carries its own weekly allowance. Pooled enterprise
+/// accounts and accounts without an included allowance have no separate personal meter.
+pub fn map_sand_usage(data: &serde_json::Map<String, Value>) -> Option<QuotaWindow> {
+    if data
+        .get("usesPooledEnterpriseAllowance")
+        .and_then(Value::as_bool)
+        == Some(true)
+        || data.get("hasNonZeroIncludedLimit").and_then(Value::as_bool) == Some(false)
+        || data.get("includedLimitZero").and_then(Value::as_bool) == Some(true)
+    {
+        return None;
+    }
+    let percent = data
+        .get("usagePercent")
+        .and_then(number)
+        .filter(|value| *value >= 0.0)?;
+    let reset = data.get("nextResetTimestampUtc").and_then(iso_timestamp);
+    let start = data.get("currentPeriodStart").and_then(iso_timestamp);
+    let (resets_at, period_seconds) = start
+        .zip(reset)
+        .filter(|(start, reset)| reset > start)
+        .map(|(start, reset)| {
+            (
+                Some(reset),
+                reset.signed_duration_since(start).num_seconds().max(1) as u64,
+            )
+        })
+        .unwrap_or((reset, WEEK_SECONDS));
+    Some(QuotaWindow {
+        id: "grokBot".into(),
+        label: "Grok Bot usage".into(),
+        used_percent: percent.clamp(0.0, 100.0),
+        resets_at,
+        period_seconds,
+        format: QuotaFormat::Percent,
+        used_value: None,
+        limit_value: None,
+        unit: None,
+        estimated: false,
+        source_note: None,
+    })
+}
+
 fn iso_timestamp(value: &Value) -> Option<DateTime<Utc>> {
     value
         .as_str()
@@ -492,7 +536,7 @@ pub fn stripe_balance_cents(response: Option<&Value>) -> f64 {
 }
 
 pub fn usage_history(
-    rows: &[CursorCsvRow],
+    rows: &[CursorUsageRow],
     now: DateTime<Utc>,
     pricing: &ModelPricing,
 ) -> UsageHistory {
@@ -673,6 +717,56 @@ mod tests {
 
     use crate::pricing::{PricingCatalog, PricingSupplement, TokenBreakdown};
 
+    #[test]
+    fn sand_usage_maps_a_grok_bot_meter_with_payload_window() {
+        let mapped = super::map_sand_usage(
+            &serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(json!({
+                "usagePercent": 25,
+                "nextResetTimestampUtc": "2026-10-26T00:00:00Z",
+                "currentPeriodStart": "2026-10-19T00:00:00Z"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(mapped.id, "grokBot");
+        assert_eq!(mapped.used_percent, 25.0);
+        assert_eq!(mapped.period_seconds, 7 * 24 * 60 * 60);
+        assert_eq!(
+            mapped.resets_at,
+            chrono::Utc.timestamp_opt(1_792_972_800, 0).single()
+        );
+    }
+
+    #[test]
+    fn sand_usage_is_hidden_for_pooled_or_allowanceless_accounts() {
+        let pooled = json!({"usagePercent": 25, "usesPooledEnterpriseAllowance": true});
+        let zero_limit = json!({"usagePercent": 25, "includedLimitZero": true});
+        let no_allowance = json!({"usagePercent": 25, "hasNonZeroIncludedLimit": false});
+        let no_percent = json!({"nextResetTimestampUtc": "2026-10-26T00:00:00Z"});
+
+        for body in [pooled, zero_limit, no_allowance, no_percent] {
+            let object =
+                serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(body).unwrap();
+            assert!(super::map_sand_usage(&object).is_none());
+        }
+    }
+
+    #[test]
+    fn sand_usage_falls_back_to_a_week_without_period_dates() {
+        let mapped = super::map_sand_usage(
+            &serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(json!({
+                "usagePercent": 130,
+                "nextResetTimestampUtc": "2026-10-26T00:00:00Z"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(mapped.period_seconds, 7 * 24 * 60 * 60);
+        assert_eq!(mapped.used_percent, 100.0);
+    }
+
     use super::*;
 
     #[test]
@@ -820,7 +914,7 @@ mod tests {
     }
 
     #[test]
-    fn csv_history_groups_cursor_variants_and_scopes_unknown_models() {
+    fn event_history_groups_cursor_variants_and_scopes_unknown_models() {
         let supplement = PricingSupplement::decode(
             br#"{
               "pricing":{"claude-opus-4-8":{"input_per_million":1,"output_per_million":2}},
@@ -840,7 +934,7 @@ mod tests {
         );
         let now = Utc.with_ymd_and_hms(2026, 7, 15, 12, 0, 0).unwrap();
         let rows = vec![
-            CursorCsvRow {
+            CursorUsageRow {
                 date: now,
                 model: "claude-opus-4-8-thinking-max".into(),
                 tokens: TokenBreakdown {
@@ -849,7 +943,7 @@ mod tests {
                 },
                 estimated_cost_usd: Some(3.004),
             },
-            CursorCsvRow {
+            CursorUsageRow {
                 date: now,
                 model: "claude-opus-4-8-thinking-high".into(),
                 tokens: TokenBreakdown {
@@ -858,7 +952,7 @@ mod tests {
                 },
                 estimated_cost_usd: Some(1.006),
             },
-            CursorCsvRow {
+            CursorUsageRow {
                 date: now,
                 model: "unknown-cursor-model".into(),
                 tokens: TokenBreakdown {

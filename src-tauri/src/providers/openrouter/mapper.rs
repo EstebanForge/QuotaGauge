@@ -45,12 +45,10 @@ pub fn map_key(data: &serde_json::Map<String, Value>) -> KeyMetrics {
     let quota = number(data.get("limit"))
         .filter(|limit| *limit > 0.0)
         .map(|limit| {
-            dollars_quota(
-                "keyLimit",
-                "Key Limit",
-                number(data.get("usage")).unwrap_or(0.0).max(0.0),
-                limit,
-            )
+            // `usage` is lifetime spend on the key; the cap window is what limit_remaining leaves.
+            let remaining = number(data.get("limit_remaining")).unwrap_or(0.0).max(0.0);
+            let used = (limit - remaining).max(0.0);
+            dollars_quota("keyLimit", "Key Limit", used, limit)
         });
     let plan = data
         .get("is_free_tier")
@@ -146,6 +144,7 @@ mod tests {
             "usage_weekly":1.25,
             "usage_monthly":"4.5",
             "usage":2,
+            "limit_remaining":3,
             "limit":5
         }});
         let mapped = map_key(data_object(&body).unwrap());
@@ -158,6 +157,22 @@ mod tests {
                 .collect::<Vec<_>>(),
             [("today", 0.0), ("week", 1.25), ("month", 4.5)]
         );
-        assert_eq!(mapped.quota.unwrap().used_value, Some(2.0));
+        // Windowed spend, not lifetime: limit - limit_remaining.
+        assert_eq!(mapped.quota.as_ref().unwrap().used_value, Some(2.0));
+    }
+
+    #[test]
+    fn key_cap_without_limit_remaining_reads_as_spent_in_full() {
+        let body = json!({"data":{"usage":2,"limit":5}});
+        let mapped = map_key(data_object(&body).unwrap());
+        assert_eq!(mapped.quota.as_ref().unwrap().used_value, Some(5.0));
+
+        let overdrawn = map_key(
+            data_object(&json!({"data":{
+                "limit_remaining":"9","limit":5
+            }}))
+            .unwrap(),
+        );
+        assert_eq!(overdrawn.quota.as_ref().unwrap().used_value, Some(0.0));
     }
 }

@@ -160,6 +160,81 @@ fn append_percent(
     });
 }
 
+/// Anthropic's one-off usage-limit reset grants (`cedar_ember` block of the usage endpoint).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResetGrantStatus {
+    pub eligible: bool,
+    pub grants: Vec<ResetGrant>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResetGrant {
+    pub resets_left: i64,
+    pub ends_at: Option<DateTime<Utc>>,
+}
+
+pub fn parse_reset_grants(body: &Value) -> Option<ResetGrantStatus> {
+    let block = body.get("cedar_ember")?.as_object()?;
+    let mut grants = Vec::new();
+    for entry in block
+        .get("grants")
+        .and_then(Value::as_array)
+        .unwrap_or(&Vec::new())
+    {
+        let id = entry.get("id").and_then(Value::as_str).unwrap_or("");
+        if id.is_empty() {
+            return None;
+        }
+        let resets_left = entry
+            .get("resets_left")
+            .and_then(number)
+            .filter(|value| value.is_finite())?;
+        grants.push(ResetGrant {
+            resets_left: resets_left.floor().max(0.0) as i64,
+            ends_at: entry.get("ends_at").and_then(reset_date),
+        });
+    }
+    Some(ResetGrantStatus {
+        eligible: block.get("eligible").and_then(Value::as_bool) == Some(true),
+        grants,
+    })
+}
+
+/// A "Rate Limit Resets" values metric counting the still-future grants; elapsed grants drop out.
+pub fn reset_grants_metric(status: &ResetGrantStatus, now: DateTime<Utc>) -> Option<ValueMetric> {
+    if !status.eligible {
+        return None;
+    }
+    let mut count = 0_i64;
+    let mut expiries_at = Vec::new();
+    for grant in &status.grants {
+        if grant.resets_left < 1 {
+            continue;
+        }
+        if grant.ends_at.is_some_and(|ends_at| ends_at <= now) {
+            continue;
+        }
+        count += grant.resets_left;
+        if let Some(ends_at) = grant.ends_at {
+            expiries_at.extend(std::iter::repeat_n(ends_at, grant.resets_left as usize));
+        }
+    }
+    Some(ValueMetric {
+        id: "rateLimitResets".into(),
+        label: "Rate Limit Resets".into(),
+        values: vec![MetricValue {
+            number: count as f64,
+            kind: MetricValueKind::Count,
+            label: Some("available".into()),
+            estimated: false,
+        }],
+        expiries_at: {
+            expiries_at.sort();
+            expiries_at
+        },
+    })
+}
+
 fn number(value: &Value) -> Option<f64> {
     value
         .as_f64()
@@ -218,7 +293,14 @@ mod tests {
     use reqwest::StatusCode;
     use serde_json::Value;
 
-    use super::map_usage;
+    use super::{map_usage, parse_reset_grants, reset_grants_metric};
+
+    use chrono::TimeZone;
+
+    fn grants_body(block: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({ "cedar_ember": block })
+    }
+
     use crate::providers::claude::auth::ClaudeOAuth;
 
     #[test]
@@ -274,5 +356,55 @@ mod tests {
             mapped.quotas[0].resets_at.unwrap().to_rfc3339(),
             "2099-06-01T12:00:00.123456+00:00"
         );
+    }
+    #[test]
+    fn reset_grants_parse_counts_future_grants_and_skips_elapsed_ones() {
+        let body = grants_body(serde_json::json!({
+            "eligible": true,
+            "next_grant_id": "g2",
+            "grants": [
+                {"id": "g1", "resets_left": 2, "ends_at": "2099-01-01T00:00:00Z", "clears": ["five_hour"]},
+                {"id": "g2", "resets_left": 1},
+                {"id": "g3", "resets_left": 3, "ends_at": "2000-01-01T00:00:00Z"}
+            ]
+        }));
+        let status = parse_reset_grants(&body).unwrap();
+        assert!(status.eligible);
+        assert_eq!(status.grants.len(), 3);
+
+        let now = chrono::Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        let metric = reset_grants_metric(&status, now).unwrap();
+        assert_eq!(metric.id, "rateLimitResets");
+        assert_eq!(metric.values[0].number, 3.0);
+        assert_eq!(metric.expiries_at.len(), 2);
+    }
+
+    #[test]
+    fn reset_grants_block_is_rejected_when_a_grant_is_malformed() {
+        let malformed_id = grants_body(serde_json::json!({
+            "eligible": true,
+            "grants": [{"id": "", "resets_left": 1}]
+        }));
+        assert!(parse_reset_grants(&malformed_id).is_none());
+
+        let missing_count = grants_body(serde_json::json!({
+            "eligible": true,
+            "grants": [{"id": "g1"}]
+        }));
+        assert!(parse_reset_grants(&missing_count).is_none());
+    }
+
+    #[test]
+    fn reset_grants_without_eligibility_or_block_produce_nothing() {
+        let now = chrono::Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+
+        let ineligible = grants_body(serde_json::json!({
+            "eligible": false,
+            "grants": [{"id": "g1", "resets_left": 2}]
+        }));
+        let status = parse_reset_grants(&ineligible).unwrap();
+        assert!(reset_grants_metric(&status, now).is_none());
+
+        assert!(parse_reset_grants(&serde_json::json!({})).is_none());
     }
 }

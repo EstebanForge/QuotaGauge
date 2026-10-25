@@ -349,6 +349,17 @@ fn credential_failure(
 }
 
 fn remote_plan(value: &Value) -> Option<String> {
+    // paidTier.id is stabler than the display name Google may localize.
+    const PAID_TIER_PLANS: &[(&str, &str)] = &[
+        ("g1-pro-tier", "Pro"),
+        ("g1-ultra-tier", "Ultra"),
+        ("g1-ultra-lite-tier", "Ultra Lite"),
+    ];
+    if let Some(id) = value.pointer("/paidTier/id").and_then(Value::as_str) {
+        if let Some((_, plan)) = PAID_TIER_PLANS.iter().find(|(known, _)| *known == id) {
+            return Some((*plan).into());
+        }
+    }
     let raw = value
         .pointer("/paidTier/name")
         .or_else(|| value.pointer("/currentTier/name"))
@@ -418,8 +429,26 @@ mod tests {
 
     use super::{
         access_token_candidates, auth::AntigravityToken, credential_failure, has_refresh_source,
-        should_refresh_access_token, AntigravityError,
+        remote_plan, should_refresh_access_token, AntigravityError,
     };
+
+    #[test]
+    fn remote_plan_prefers_the_stable_paid_tier_id() {
+        let by_id = remote_plan(&serde_json::json!({
+            "paidTier": {"id": "g1-ultra-lite-tier", "name": "Google AI Ultra Lite"}
+        }));
+        assert_eq!(by_id.as_deref(), Some("Ultra Lite"));
+
+        let unknown_id_falls_back_to_name = remote_plan(&serde_json::json!({
+            "paidTier": {"id": "future-tier", "name": "Google AI Pro"}
+        }));
+        assert_eq!(unknown_id_falls_back_to_name.as_deref(), Some("Pro"));
+
+        let no_paid_tier = remote_plan(&serde_json::json!({
+            "currentTier": {"name": "Free"}
+        }));
+        assert_eq!(no_paid_tier.as_deref(), Some("Free"));
+    }
 
     #[test]
     fn keychain_access_token_precedes_a_distinct_cached_token() {

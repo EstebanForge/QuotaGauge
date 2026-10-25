@@ -5,6 +5,8 @@ use reqwest::{blocking::Client, StatusCode, Url};
 use super::{auth::token_subject, CursorError};
 
 const USAGE_URL: &str = "https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage";
+const SAND_USAGE_URL: &str =
+    "https://api2.cursor.sh/aiserver.v1.DashboardService/GetSandUsageStatus";
 const PLAN_URL: &str = "https://api2.cursor.sh/aiserver.v1.DashboardService/GetPlanInfo";
 const CREDITS_URL: &str =
     "https://api2.cursor.sh/aiserver.v1.DashboardService/GetCreditGrantsBalance";
@@ -12,7 +14,7 @@ const REFRESH_URL: &str = "https://api2.cursor.sh/oauth/token";
 const REST_USAGE_URL: &str = "https://cursor.com/api/usage";
 const USAGE_SUMMARY_URL: &str = "https://cursor.com/api/usage-summary";
 const STRIPE_URL: &str = "https://cursor.com/api/auth/stripe";
-const CSV_URL: &str = "https://cursor.com/api/dashboard/export-usage-events-csv";
+const EVENTS_URL: &str = "https://cursor.com/api/dashboard/get-filtered-usage-events";
 const CLIENT_ID: &str = "KbZUR41cY7W6zRSdpSUJ7I7mLYBKOCmB";
 
 #[derive(Debug)]
@@ -36,26 +38,28 @@ pub struct CursorSession {
 #[derive(Clone)]
 pub(super) struct Endpoints {
     pub usage: String,
+    pub sand_usage: String,
     pub plan: String,
     pub credits: String,
     pub refresh: String,
     pub rest_usage: String,
     pub usage_summary: String,
     pub stripe: String,
-    pub csv: String,
+    pub events: String,
 }
 
 impl Default for Endpoints {
     fn default() -> Self {
         Self {
             usage: USAGE_URL.into(),
+            sand_usage: SAND_USAGE_URL.into(),
             plan: PLAN_URL.into(),
             credits: CREDITS_URL.into(),
             refresh: REFRESH_URL.into(),
             rest_usage: REST_USAGE_URL.into(),
             usage_summary: USAGE_SUMMARY_URL.into(),
             stripe: STRIPE_URL.into(),
-            csv: CSV_URL.into(),
+            events: EVENTS_URL.into(),
         }
     }
 }
@@ -81,6 +85,10 @@ impl CursorClient {
 
     pub fn fetch_usage(&self, access_token: &str) -> Result<CursorResponse, CursorError> {
         self.connect_post("usage", &self.endpoints.usage, access_token)
+    }
+
+    pub fn fetch_sand_usage(&self, access_token: &str) -> Result<CursorResponse, CursorError> {
+        self.connect_post("sand-usage", &self.endpoints.sand_usage, access_token)
     }
 
     pub fn fetch_plan(&self, access_token: &str) -> Result<CursorResponse, CursorError> {
@@ -170,29 +178,33 @@ impl CursorClient {
         .map(Some)
     }
 
-    pub fn fetch_usage_csv(
+    pub fn fetch_usage_events(
         &self,
         access_token: &str,
         start_millis: i64,
         end_millis: i64,
+        page: i64,
+        page_size: i64,
     ) -> Result<Option<CursorResponse>, CursorError> {
         let Some(session) = session(access_token) else {
             return Ok(None);
         };
-        let mut url = Url::parse(&self.endpoints.csv).map_err(|_| CursorError::InvalidResponse)?;
-        url.query_pairs_mut()
-            .append_pair("startDate", &start_millis.to_string())
-            .append_pair("endDate", &end_millis.to_string())
-            .append_pair("strategy", "tokens");
         self.send(
-            "usage-csv",
+            "usage-events",
             self.client
-                .get(url)
+                .post(&self.endpoints.events)
                 .header(
                     "Cookie",
                     format!("WorkosCursorSessionToken={}", session.session_token),
                 )
-                .header("Accept", "text/csv")
+                .header("Content-Type", "application/json")
+                .header("Origin", "https://cursor.com")
+                .json(&serde_json::json!({
+                    "startDate": start_millis.to_string(),
+                    "endDate": end_millis.to_string(),
+                    "page": page,
+                    "pageSize": page_size,
+                }))
                 .timeout(Duration::from_secs(30)),
         )
         .map(Some)
@@ -270,13 +282,14 @@ mod tests {
     fn client(base: &str) -> CursorClient {
         CursorClient::with_endpoints(Endpoints {
             usage: format!("{base}/usage"),
+            sand_usage: format!("{base}/sand-usage"),
             plan: format!("{base}/plan"),
             credits: format!("{base}/credits"),
             refresh: format!("{base}/token"),
             rest_usage: format!("{base}/rest"),
             usage_summary: format!("{base}/summary"),
             stripe: format!("{base}/stripe"),
-            csv: format!("{base}/csv"),
+            events: format!("{base}/events"),
         })
         .unwrap()
     }
@@ -298,9 +311,9 @@ mod tests {
     }
 
     #[test]
-    fn csv_without_jwt_session_skips_network() {
+    fn events_without_jwt_session_skip_network() {
         assert!(client("http://127.0.0.1:1")
-            .fetch_usage_csv("not-a-jwt", 1_000_000, 2_000_000)
+            .fetch_usage_events("not-a-jwt", 1_000_000, 2_000_000, 0, 1000)
             .unwrap()
             .is_none());
     }

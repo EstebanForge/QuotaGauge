@@ -68,6 +68,40 @@ impl ClaudeClient {
         Ok((status, body, retry_after))
     }
 
+    pub fn fetch_reset_grants(
+        &self,
+        token: &str,
+        usage_url: &str,
+    ) -> Result<(StatusCode, Value), ClaudeError> {
+        let started = std::time::Instant::now();
+        let url = reqwest::Url::parse_with_params(
+            usage_url,
+            &[("cedar_ember", "1"), ("skip_spend", "1")],
+        )
+        .map_err(|_| ClaudeError::InvalidResponse)?;
+        let response = self
+            .client
+            .get(url)
+            .bearer_auth(token.trim())
+            .header("Accept", "application/json")
+            .header("anthropic-beta", "oauth-2025-04-20")
+            .header("User-Agent", "claude-code/2.1.69")
+            .send()
+            .map_err(|_| {
+                crate::app_warn!("http", "claude reset grants request failed (transport)");
+                ClaudeError::ConnectionFailed
+            })?;
+        let status = response.status();
+        crate::app_debug!(
+            "http",
+            "claude reset grants HTTP {} ({}ms)",
+            status.as_u16(),
+            started.elapsed().as_millis()
+        );
+        let body = response.json().map_err(|_| ClaudeError::InvalidResponse)?;
+        Ok((status, body))
+    }
+
     pub fn refresh_token(
         &self,
         token: &str,

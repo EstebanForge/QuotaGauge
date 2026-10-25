@@ -1,6 +1,6 @@
 pub mod auth;
 pub mod client;
-pub mod csv;
+pub mod events;
 pub mod mapper;
 
 use std::sync::Arc;
@@ -21,9 +21,9 @@ use crate::{
 use self::{
     auth::CursorAuthState,
     client::{CursorClient, CursorResponse},
-    csv::parse_usage_csv,
+    events::parse_usage_events,
     mapper::{
-        map_live_usage, map_request_usage, map_summary_usage, request_fallback,
+        map_live_usage, map_request_usage, map_sand_usage, map_summary_usage, request_fallback,
         stripe_balance_cents, usage_history, PlanUsageFacts,
     },
 };
@@ -229,12 +229,25 @@ impl CursorProvider {
             .flatten()
             .filter(|response| response.status.is_success())
             .and_then(|response| response.json());
-        let mapped = map_live_usage(
+        let sand_usage = self
+            .client
+            .fetch_sand_usage(current_token)
+            .ok()
+            .filter(|response| response.status.is_success())
+            .and_then(|response| response.json())
+            .and_then(|value| {
+                let object = value.as_object()?;
+                map_sand_usage(object)
+            });
+        let mut mapped = map_live_usage(
             &usage,
             plan_name.as_deref(),
             credits.as_ref(),
             stripe_balance_cents(stripe.as_ref()),
         )?;
+        if let Some(sand) = sand_usage {
+            mapped.quotas.push(sand);
+        }
         let history = self.fetch_usage_history(current_token, now);
         Ok(snapshot(mapped, history, Vec::new(), now))
     }
@@ -404,6 +417,8 @@ impl CursorProvider {
     }
 
     fn fetch_usage_history(&self, access_token: &str, now: chrono::DateTime<Utc>) -> UsageHistory {
+        const PAGE_SIZE: i64 = 1000;
+        const MAX_PAGES: i64 = 50;
         let local_now = now.with_timezone(&Local);
         let start_date = local_now.date_naive().checked_sub_days(Days::new(29));
         let Some(start) = start_date
@@ -412,24 +427,40 @@ impl CursorProvider {
         else {
             return UsageHistory::default();
         };
-        let Some(response) = self
-            .client
-            .fetch_usage_csv(
-                access_token,
-                start.timestamp_millis(),
-                now.timestamp_millis(),
-            )
-            .ok()
-            .flatten()
-            .filter(|response| response.status.is_success())
-        else {
-            return UsageHistory::default();
-        };
-        let Ok(csv) = std::str::from_utf8(&response.body) else {
-            return UsageHistory::default();
-        };
         let pricing = self.pricing.current();
-        let rows = parse_usage_csv(csv, &pricing);
+        let mut rows = Vec::new();
+        let mut fetched = 0_i64;
+        for page in 0..MAX_PAGES {
+            let Some(response) = self
+                .client
+                .fetch_usage_events(
+                    access_token,
+                    start.timestamp_millis(),
+                    now.timestamp_millis(),
+                    page,
+                    PAGE_SIZE,
+                )
+                .ok()
+                .flatten()
+                .filter(|response| response.status.is_success())
+            else {
+                return UsageHistory::default();
+            };
+            let Some(body) = response.json() else {
+                return UsageHistory::default();
+            };
+            let page_events = body
+                .get("usageEventsDisplay")
+                .and_then(|events| events.as_array())
+                .map(|events| events.len() as i64)
+                .unwrap_or(0);
+            rows.extend(parse_usage_events(&body, &pricing));
+            fetched += page_events;
+            match body.get("totalUsageEventsCount").and_then(Value::as_i64) {
+                Some(total) if total > 0 && fetched < total => continue,
+                _ => break,
+            }
+        }
         usage_history(&rows, now, &pricing)
     }
 }
@@ -545,7 +576,7 @@ mod tests {
         let recorded = requests.clone();
         thread::spawn(move || {
             let mut usage_calls = 0;
-            for _ in 0..7 {
+            for _ in 0..8 {
                 let Ok((mut stream, _)) = listener.accept() else {
                     return;
                 };
@@ -594,12 +625,20 @@ mod tests {
                         "application/json",
                         r#"{"customerBalance":-1000}"#.to_owned(),
                     )
-                } else {
+                } else if path.starts_with("/sand-usage") {
                     (
                         200,
-                        "text/csv",
-                        "Date,Model,Input (w/o Cache Write),Output Tokens\n2026-07-15T12:00:00Z,composer-1,100,0".to_owned(),
+                        "application/json",
+                        r#"{"usagePercent":40,"nextResetTimestampUtc":"2026-07-20T00:00:00Z","currentPeriodStart":"2026-07-13T00:00:00Z"}"#.to_owned(),
                     )
+                } else if path.starts_with("/events") {
+                    (
+                        200,
+                        "application/json",
+                        r#"{"totalUsageEventsCount":1,"usageEventsDisplay":[{"timestamp":"1784116800000","model":"composer-1","tokenUsage":{"inputTokens":100}}]}"#.to_owned(),
+                    )
+                } else {
+                    (200, "text/csv", "unreachable".to_owned())
                 };
                 let response = format!(
                     "HTTP/1.1 {status} Test\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -651,11 +690,13 @@ mod tests {
                         "application/json",
                         r#"{"gpt-4":{"numRequests":37,"numRequestsTotal":37,"maxRequestUsage":750},"startOfMonth":"2026-07-01T00:00:00Z"}"#.to_owned(),
                     )
-                } else {
+                } else if path.starts_with("/events") {
                     (
-                        "text/csv",
-                        "Date,Model,Input (w/o Cache Write),Output Tokens\n2026-07-15T12:00:00Z,composer-1,100,0".to_owned(),
+                        "application/json",
+                        r#"{"totalUsageEventsCount":1,"usageEventsDisplay":[{"timestamp":"1784116800000","model":"composer-1","tokenUsage":{"inputTokens":100}}]}"#.to_owned(),
                     )
+                } else {
+                    ("text/csv", "unreachable".to_owned())
                 };
                 let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -697,7 +738,7 @@ mod tests {
     }
 
     #[test]
-    fn provider_retries_auth_and_keeps_optional_csv_spend_additive() {
+    fn provider_retries_auth_and_keeps_optional_event_spend_additive() {
         let directory = tempdir().unwrap();
         let database = directory.path().join("state.vscdb");
         let connection = Connection::open(&database).unwrap();
@@ -712,13 +753,14 @@ mod tests {
         let (base, requests) = routing_server(refreshed.clone());
         let endpoints = Endpoints {
             usage: format!("{base}/usage"),
+            sand_usage: format!("{base}/sand-usage"),
             plan: format!("{base}/plan"),
             credits: format!("{base}/credits"),
             refresh: format!("{base}/token"),
             rest_usage: format!("{base}/rest"),
             usage_summary: format!("{base}/summary"),
             stripe: format!("{base}/stripe"),
-            csv: format!("{base}/csv"),
+            events: format!("{base}/events"),
         };
         let pricing = Arc::new(PricingStore::new(directory.path().join("pricing")).unwrap());
         let provider = CursorProvider {
@@ -735,7 +777,8 @@ mod tests {
         let snapshot = provider.refresh_with_auth(auth, now).unwrap();
 
         assert_eq!(snapshot.plan.as_deref(), Some("Pro Plan"));
-        assert_eq!(snapshot.quotas.len(), 3);
+        assert_eq!(snapshot.quotas.len(), 4);
+        assert_eq!(snapshot.quotas[3].id, "grokBot");
         assert_eq!(snapshot.value_metrics[0].id, "credits");
         assert_eq!(snapshot.usage.today.as_ref().unwrap().tokens, 100);
         assert!(snapshot.warnings.is_empty());
@@ -756,7 +799,8 @@ mod tests {
                 .count(),
             2
         );
-        assert!(requests.iter().any(|path| path.starts_with("/csv?")));
+        assert!(requests.iter().any(|path| path.starts_with("/events")));
+        assert!(requests.iter().any(|path| path.starts_with("/sand-usage")));
     }
 
     #[test]
@@ -766,13 +810,14 @@ mod tests {
         let (base, _) = routing_server(refreshed);
         let endpoints = Endpoints {
             usage: format!("{base}/usage"),
+            sand_usage: format!("{base}/sand-usage"),
             plan: format!("{base}/plan"),
             credits: format!("{base}/credits"),
             refresh: format!("{base}/token"),
             rest_usage: format!("{base}/rest"),
             usage_summary: format!("{base}/summary"),
             stripe: format!("{base}/stripe"),
-            csv: format!("{base}/csv"),
+            events: format!("{base}/events"),
         };
         let pricing = Arc::new(PricingStore::new(directory.path().join("pricing")).unwrap());
         let provider = CursorProvider {
@@ -794,18 +839,19 @@ mod tests {
     }
 
     #[test]
-    fn enterprise_fallback_combines_summary_requests_and_csv_history() {
+    fn enterprise_fallback_combines_summary_requests_and_event_history() {
         let directory = tempdir().unwrap();
         let (base, requests) = enterprise_server();
         let endpoints = Endpoints {
             usage: format!("{base}/usage"),
+            sand_usage: format!("{base}/sand-usage"),
             plan: format!("{base}/plan"),
             credits: format!("{base}/credits"),
             refresh: format!("{base}/token"),
             rest_usage: format!("{base}/rest"),
             usage_summary: format!("{base}/summary"),
             stripe: format!("{base}/stripe"),
-            csv: format!("{base}/csv"),
+            events: format!("{base}/events"),
         };
         let pricing = Arc::new(PricingStore::new(directory.path().join("pricing")).unwrap());
         let provider = CursorProvider {
@@ -838,6 +884,6 @@ mod tests {
         assert!(requests
             .iter()
             .any(|path| path.starts_with("/rest?user=enterprise-user")));
-        assert!(requests.iter().any(|path| path.starts_with("/csv?")));
+        assert!(requests.iter().any(|path| path.starts_with("/events")));
     }
 }
