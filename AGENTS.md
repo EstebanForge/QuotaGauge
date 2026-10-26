@@ -100,7 +100,9 @@ Data flow: providers -> UsageService refresh (events `usage-state`, `open-screen
   LEGACY_SERVICE, README/installation.md migration notes, one log line). Do not "clean them up".
 - Repo is currently PRIVATE with CI + Release workflows disabled and Dependabot at 0 (stand-down);
   pushes trigger no runs. Re-enable: `gh workflow enable CI` + `gh workflow enable Release` and
-  raise `.github/dependabot.yml`'s `open-pull-requests-limit`.
+  raise `.github/dependabot.yml`'s `open-pull-requests-limit`. Exception: `macOS app`
+  (`.github/workflows/macos-app.yml`) is dispatch-only by design — it signs the arm64 .app zip
+  with the Apple Development identity imported from the MACOS_SIGNING_P12 secrets.
 - Platform: macOS is an accessory app (LSUIElement, tray-driven); Linux falls back to a floating
   window when no tray host exists (`desktop_integration.rs`, `OPENQUOTA_LINUX_TRAY_HOST` test
   override). Keep platform-specific behavior working on all three OSes.

@@ -1,0 +1,79 @@
+name: macOS app
+
+# Dispatch-only, exempt from the CI stand-down by design: builds the arm64 app
+# bundle, signs it with the Apple Development identity imported from secrets,
+# and uploads it as a versioned zip artifact.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and sign the macOS app
+    runs-on: macos-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Import signing identity
+        env:
+          MACOS_SIGNING_P12: ${{ secrets.MACOS_SIGNING_P12 }}
+          MACOS_SIGNING_P12_PASSWORD: ${{ secrets.MACOS_SIGNING_P12_PASSWORD }}
+        run: |
+          set -euo pipefail
+          keychain_password="$(openssl rand -hex 16)"
+          keychain="${RUNNER_TEMP}/signing.keychain-db"
+          security create-keychain -p "${keychain_password}" "${keychain}"
+          security unlock-keychain -p "${keychain_password}" "${keychain}"
+          security list-keychains -d user -s "${keychain}"
+          echo "${MACOS_SIGNING_P12}" | base64 --decode > "${RUNNER_TEMP}/identity.p12"
+          security import "${RUNNER_TEMP}/identity.p12" \
+            -k "${keychain}" -P "${MACOS_SIGNING_P12_PASSWORD}" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -k "${keychain_password}" "${keychain}"
+          rm "${RUNNER_TEMP}/identity.p12"
+
+      - name: Build and sign the app bundle
+        run: npm run tauri -- build --target aarch64-apple-darwin --bundles app
+        env:
+          APPLE_SIGNING_IDENTITY: Apple Development
+
+      - name: Verify signature
+        run: |
+          set -euo pipefail
+          app="src-tauri/target/aarch64-apple-darwin/release/bundle/macos/QuotaGauge.app"
+          codesign --verify --strict "${app}"
+          codesign -dv "${app}" 2>&1 | grep -E "Authority=|TeamIdentifier="
+
+      - name: Zip for distribution
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          ditto -c -k --sequesterRsrc --keepParent \
+            "src-tauri/target/aarch64-apple-darwin/release/bundle/macos/QuotaGauge.app" \
+            "QuotaGauge-${version}-macos-arm64.zip"
+
+      - name: Upload signed app zip
+        uses: actions/upload-artifact@v7
+        with:
+          name: QuotaGauge-macos-arm64-zip
+          path: QuotaGauge-*-macos-arm64.zip
+          if-no-files-found: error
+          retention-days: 14
