@@ -26,6 +26,20 @@ if [[ ! -e $ICON_SRC ]]; then
   exit 1
 fi
 
+# Renewal nag: macOS assemblies all pass through here, so this is where an
+# aging Apple Development cert gets noticed (renewal itself is a manual,
+# Xcode-only step on free Apple IDs). The PEM is the public cert only.
+CERT_PEM=${HOME}/.local/opt/apple-dev-cert.pem
+if [[ -r $CERT_PEM ]]; then
+  end_date=$(openssl x509 -in "$CERT_PEM" -noout -enddate | cut -d= -f2)
+  end_epoch=$(date -d "$end_date" +%s)
+  days_left=$(((end_epoch - $(date +%s)) / 86400))
+  if ((days_left < 60)); then
+    echo "WARNING: Apple Development cert expires in ${days_left} days ($end_date)." >&2
+    echo "Renew in Xcode > Settings > Accounts > Manage Certificates, then re-export the PEM here." >&2
+  fi
+fi
+
 rm -rf "$APP_DIR"
 mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
 
