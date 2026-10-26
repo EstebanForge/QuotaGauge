@@ -20,6 +20,14 @@ I picked this project up from [OpenUsage](https://github.com/robinebers/openusag
 
 Grab the latest build for your platform from the [releases page](https://github.com/EstebanForge/QuotaGauge/releases/latest). Fair warning: the installers are not signed with paid certificates yet, so Windows SmartScreen and macOS Gatekeeper will push back on first run. [Installation](docs/installation.md) covers the details, including the one command that clears macOS's warning, plus how to bring your OpenQuota data along on first launch.
 
+### Is the binary signed? (macOS Gatekeeper / Windows SmartScreen warnings)
+
+No. Code signing requires recurring annual fees (Apple Developer Program, Windows EV/Azure certificates). This is a free, personal open-source project, and I will not pay platform gatekeeper fees to distribute free software I maintain for free.
+
+Bypassing the warning takes five seconds, as covered in the [Installation Guide](docs/installation.md). If you prefer not to run unsigned pre-built binaries, you are encouraged to audit the source code and build directly from source.
+
+If you dislike these artificial platform hurdles, direct your feedback to Apple and Microsoft. Please.
+
 ## Providers
 
 QuotaGauge reads 12 providers out of the box. Most of them use the credentials already sitting on your machine. OpenRouter, Z.ai, Kimi, and MiniMax need an API key you add in Customize, and Codex subscription limits need a ChatGPT login.
