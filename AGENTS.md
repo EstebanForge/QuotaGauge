@@ -96,8 +96,8 @@ Data flow: providers -> UsageService refresh (events `usage-state`, `open-screen
   -Wl,-platform_version,macos,11.0,27.0 — and run cargo via PATH="$HOME/.cargo/bin:$PATH"
   because brew's rust shadows rustup's and lacks the darwin std),
   `scripts/macos-cross/bundle-app.sh`, Apple-sign the .app with
-  `rcodesign sign --timestamp-url none --p12-file ~/Dev/Signing-Keys-Certs/apple-dev.p12
---p12-password-file ~/Dev/Signing-Keys-Certs/apple-dev.p12.pass` (Apple's timestamp server is
+  `rcodesign sign --timestamp-url none --p12-file ~/Dev/Sign-Keys-Certs/apple-dev.p12
+--p12-password-file ~/Dev/Sign-Keys-Certs/apple-dev.p12.pass` (Apple's timestamp server is
   unreachable from this box; Apple Development signatures need none), re-tar with
   `QuotaGauge.app/` as the only root, updater-sign with `tauri signer sign`, then upload the
   tarball + .sig + a fresh latest.json (three platform keys) to the release. Never rebuild
