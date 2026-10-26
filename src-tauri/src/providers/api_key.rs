@@ -1,4 +1,9 @@
-use std::{fs, path::PathBuf, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::PathBuf,
+    sync::{Arc, Mutex, OnceLock, PoisonError},
+};
 
 use crate::models::ApiKeyStatus;
 use zeroize::Zeroizing;
@@ -7,6 +12,18 @@ use super::credential_store::{delete_owned_password, read_owned_password, write_
 
 const SERVICE: &str = "xyz.actitud.quotagauge.api-key";
 const LEGACY_SERVICE: &str = "io.github.deviffyy.openquota.api-key";
+const COMBINED_ACCOUNT: &str = "api-keys";
+// Windows Credential Manager caps the credential blob at 2560 bytes; enforce
+// the same limit on every platform so oversize keys fail the same way.
+const MAX_ITEM_BYTES: usize = 2560;
+
+static SYSTEM_BACKEND: OnceLock<Arc<dyn SecretBackend>> = OnceLock::new();
+
+fn system_backend() -> Arc<dyn SecretBackend> {
+    SYSTEM_BACKEND
+        .get_or_init(|| Arc::new(LegacyImportBackend::system()))
+        .clone()
+}
 
 pub struct SecretBytes(Zeroizing<Vec<u8>>);
 
@@ -58,6 +75,135 @@ impl SecretBackend for ServiceSecretBackend {
     }
 }
 
+/// Stores every provider key as one JSON map inside a single credential-store
+/// item, so an ad-hoc signed build triggers one access prompt per launch
+/// instead of one per provider. On a map miss it folds in that account's
+/// per-account item and removes it.
+struct CombinedSecretBackend {
+    inner: Arc<dyn SecretBackend>,
+    lock: Mutex<()>,
+}
+
+impl CombinedSecretBackend {
+    fn new(inner: Arc<dyn SecretBackend>) -> Self {
+        Self {
+            inner,
+            lock: Mutex::new(()),
+        }
+    }
+
+    fn guard(&self, account: &str) -> Result<(), String> {
+        if account == COMBINED_ACCOUNT {
+            return Err(format!(
+                "The account name {COMBINED_ACCOUNT:?} is reserved."
+            ));
+        }
+        Ok(())
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.lock.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn load(&self) -> Result<BTreeMap<String, String>, String> {
+        let Some(bytes) = self.inner.read(COMBINED_ACCOUNT)? else {
+            return Ok(BTreeMap::new());
+        };
+        serde_json::from_slice(bytes.as_slice())
+            .map_err(|_| "The combined API key item could not be read.".to_owned())
+    }
+
+    fn store(&self, map: &BTreeMap<String, String>) -> Result<(), String> {
+        let serialized = Zeroizing::new(
+            serde_json::to_vec(map)
+                .map_err(|_| "The combined API key item could not be encoded.".to_owned())?,
+        );
+        if serialized.len() > MAX_ITEM_BYTES {
+            return Err(format!(
+                "Storing all API keys together would exceed the {MAX_ITEM_BYTES}-byte limit of the system credential store."
+            ));
+        }
+        self.inner.write(COMBINED_ACCOUNT, serialized.as_slice())
+    }
+}
+
+impl SecretBackend for CombinedSecretBackend {
+    fn read(&self, account: &str) -> Result<Option<SecretBytes>, String> {
+        self.guard(account)?;
+        let _guard = self.lock();
+        let mut map = self.load()?;
+        if let Some(value) = map.get(account) {
+            return Ok(Some(SecretBytes::new(value.clone().into_bytes())));
+        }
+        let Some(old) = self.inner.read(account)? else {
+            return Ok(None);
+        };
+        let value = String::from_utf8(old.as_slice().to_vec())
+            .map_err(|_| "The saved API key has an unsupported encoding.".to_owned())?;
+        map.insert(account.to_owned(), value.clone());
+        match self.store(&map) {
+            Ok(()) => {
+                if let Err(error) = self.inner.delete(account) {
+                    crate::app_warn!(
+                        &format!("auth:{account}"),
+                        "old credential item not removed ({error})"
+                    );
+                }
+            }
+            Err(error) => {
+                crate::app_warn!(
+                    &format!("auth:{account}"),
+                    "combined credential item not updated ({error})"
+                );
+            }
+        }
+        Ok(Some(SecretBytes::new(value.into_bytes())))
+    }
+
+    fn write(&self, account: &str, value: &[u8]) -> Result<(), String> {
+        self.guard(account)?;
+        let text = std::str::from_utf8(value)
+            .map_err(|_| "The API key has an unsupported encoding.".to_owned())?;
+        let _guard = self.lock();
+        let mut map = match self.load() {
+            Ok(map) => map,
+            Err(error) => {
+                crate::app_warn!(
+                    &format!("auth:{account}"),
+                    "unreadable combined credential item replaced ({error})"
+                );
+                BTreeMap::new()
+            }
+        };
+        map.insert(account.to_owned(), text.to_owned());
+        self.store(&map)
+    }
+
+    fn delete(&self, account: &str) -> Result<(), String> {
+        self.guard(account)?;
+        // Remove the per-account item first so a failed sweep can never
+        // resurrect a deleted key through the fold path.
+        self.inner.delete(account)?;
+        let _guard = self.lock();
+        let mut map = match self.load() {
+            Ok(map) => map,
+            Err(error) => {
+                crate::app_warn!(
+                    &format!("auth:{account}"),
+                    "unreadable combined credential item cleared ({error})"
+                );
+                BTreeMap::new()
+            }
+        };
+        map.remove(account);
+        if map.is_empty() {
+            self.inner.delete(COMBINED_ACCOUNT)
+        } else {
+            self.store(&map)
+        }
+    }
+}
+
 /// Serves entries from the current keychain service and, on first access,
 /// copies them over from the pre-rename service so OpenQuota users keep
 /// their saved API keys.
@@ -69,7 +215,9 @@ struct LegacyImportBackend {
 impl LegacyImportBackend {
     fn system() -> Self {
         Self {
-            current: Arc::new(ServiceSecretBackend(SERVICE)),
+            current: Arc::new(CombinedSecretBackend::new(Arc::new(ServiceSecretBackend(
+                SERVICE,
+            )))),
             legacy: Arc::new(ServiceSecretBackend(LEGACY_SERVICE)),
         }
     }
@@ -167,7 +315,7 @@ impl ApiKeyStore {
                 .iter()
                 .map(|value| (*value).to_owned())
                 .collect(),
-            secrets: Arc::new(LegacyImportBackend::system()),
+            secrets: system_backend(),
             environment: Arc::new(ProcessEnvironment),
             config_files: Arc::new(ProcessConfigFiles),
         }
@@ -681,5 +829,413 @@ mod tests {
             .map(|value| value.as_str().to_owned());
 
         assert_eq!(loaded.as_deref(), Some("legacy-key"));
+    }
+
+    struct InnerWithFailingAccount {
+        inner: MemorySecrets,
+        fail_write_for: &'static str,
+        fail_delete_for: &'static str,
+        combined_write_armed: std::sync::atomic::AtomicBool,
+    }
+
+    impl InnerWithFailingAccount {
+        fn new(fail_write_for: &'static str, fail_delete_for: &'static str) -> Self {
+            Self {
+                inner: MemorySecrets::default(),
+                fail_write_for,
+                fail_delete_for,
+                combined_write_armed: std::sync::atomic::AtomicBool::new(false),
+            }
+        }
+
+        fn arm_combined_write_failure(&self) {
+            self.combined_write_armed
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    impl SecretBackend for InnerWithFailingAccount {
+        fn read(&self, account: &str) -> Result<Option<SecretBytes>, String> {
+            self.inner.read(account)
+        }
+
+        fn write(&self, account: &str, value: &[u8]) -> Result<(), String> {
+            if account == self.fail_write_for
+                || (account == super::COMBINED_ACCOUNT
+                    && self
+                        .combined_write_armed
+                        .swap(false, std::sync::atomic::Ordering::SeqCst))
+            {
+                return Err("The combined item could not be stored.".into());
+            }
+            self.inner.write(account, value)
+        }
+
+        fn delete(&self, account: &str) -> Result<(), String> {
+            if account == self.fail_delete_for {
+                return Err("The old item could not be removed.".into());
+            }
+            self.inner.delete(account)
+        }
+    }
+
+    fn combined(inner: Arc<dyn SecretBackend>) -> super::CombinedSecretBackend {
+        super::CombinedSecretBackend::new(inner)
+    }
+
+    fn entries(backend: &super::CombinedSecretBackend) -> Vec<String> {
+        match backend.inner.read(super::COMBINED_ACCOUNT).unwrap() {
+            Some(value) => serde_json::from_slice::<std::collections::BTreeMap<String, String>>(
+                value.as_slice(),
+            )
+            .unwrap()
+            .into_keys()
+            .collect(),
+            None => Vec::new(),
+        }
+    }
+
+    #[test]
+    fn combined_writes_keep_one_item_and_other_accounts() {
+        let inner = Arc::new(MemorySecrets::default());
+        let backend = combined(inner.clone());
+
+        backend.write("openrouter", b"first").unwrap();
+        backend.write("zai", b"second").unwrap();
+        backend.write("openrouter", b"third").unwrap();
+
+        assert_eq!(
+            entries(&backend),
+            ["openrouter".to_owned(), "zai".to_owned()]
+        );
+        assert_eq!(
+            backend.read("openrouter").unwrap().unwrap().as_slice(),
+            b"third"
+        );
+        assert_eq!(backend.read("zai").unwrap().unwrap().as_slice(), b"second");
+        assert!(inner.read("openrouter").unwrap().is_none());
+        assert!(inner.read("zai").unwrap().is_none());
+    }
+
+    #[test]
+    fn delete_keeps_other_accounts_and_the_last_delete_empties_inner() {
+        let inner = Arc::new(MemorySecrets::default());
+        let backend = combined(inner.clone());
+        backend.write("openrouter", b"first").unwrap();
+        backend.write("zai", b"second").unwrap();
+
+        backend.delete("openrouter").unwrap();
+        assert!(backend.read("openrouter").unwrap().is_none());
+        assert_eq!(backend.read("zai").unwrap().unwrap().as_slice(), b"second");
+
+        backend.delete("zai").unwrap();
+        assert!(inner.read(super::COMBINED_ACCOUNT).unwrap().is_none());
+    }
+
+    #[test]
+    fn missing_accounts_are_served_without_creating_items() {
+        let inner = Arc::new(MemorySecrets::default());
+        let backend = combined(inner.clone());
+
+        assert!(backend.read("openrouter").unwrap().is_none());
+        backend.delete("openrouter").unwrap();
+
+        assert!(inner.read(super::COMBINED_ACCOUNT).unwrap().is_none());
+    }
+
+    #[test]
+    fn the_reserved_account_name_is_rejected() {
+        let backend = combined(Arc::new(MemorySecrets::default()));
+
+        assert!(backend.read(super::COMBINED_ACCOUNT).is_err());
+        assert!(backend.write(super::COMBINED_ACCOUNT, b"value").is_err());
+        assert!(backend.delete(super::COMBINED_ACCOUNT).is_err());
+    }
+
+    #[test]
+    fn a_corrupt_map_blocks_reads_until_a_write_replaces_it() {
+        let inner = Arc::new(MemorySecrets::default());
+        let backend = combined(inner.clone());
+        inner.write(super::COMBINED_ACCOUNT, b"not-json").unwrap();
+
+        assert!(backend.read("openrouter").is_err());
+
+        backend.write("openrouter", b"value").unwrap();
+        assert_eq!(
+            backend.read("openrouter").unwrap().unwrap().as_slice(),
+            b"value"
+        );
+    }
+
+    #[test]
+    fn an_oversize_write_is_rejected_and_leaves_the_previous_map() {
+        let inner = Arc::new(MemorySecrets::default());
+        let backend = combined(inner.clone());
+        backend.write("openrouter", b"kept").unwrap();
+
+        let oversize = vec![b'x'; super::MAX_ITEM_BYTES];
+        assert!(backend.write("zai", &oversize).is_err());
+        assert_eq!(
+            backend.read("openrouter").unwrap().unwrap().as_slice(),
+            b"kept"
+        );
+        assert!(backend.read("zai").unwrap().is_none());
+    }
+
+    #[test]
+    fn a_non_utf8_write_is_rejected() {
+        let backend = combined(Arc::new(MemorySecrets::default()));
+
+        assert!(backend.write("openrouter", &[0xff, 0xfe]).is_err());
+    }
+
+    #[test]
+    fn an_inner_write_failure_leaves_the_previous_map() {
+        let inner = Arc::new(InnerWithFailingAccount::new("", ""));
+        let backend = combined(inner.clone());
+        backend.write("openrouter", b"kept").unwrap();
+        inner.arm_combined_write_failure();
+
+        assert!(backend.write("zai", b"value").is_err());
+        assert_eq!(
+            backend.read("openrouter").unwrap().unwrap().as_slice(),
+            b"kept"
+        );
+        assert_eq!(entries(&backend), ["openrouter".to_owned()]);
+    }
+
+    #[test]
+    fn a_miss_folds_the_old_item_into_the_map_and_removes_it() {
+        let inner = Arc::new(MemorySecrets::default());
+        inner.write("openrouter", b"old-key").unwrap();
+        let backend = combined(inner.clone());
+
+        assert_eq!(
+            backend.read("openrouter").unwrap().unwrap().as_slice(),
+            b"old-key"
+        );
+        assert!(inner.read("openrouter").unwrap().is_none());
+        assert_eq!(entries(&backend), ["openrouter".to_owned()]);
+    }
+
+    #[test]
+    fn folding_one_account_leaves_other_old_items_alone() {
+        let inner = Arc::new(MemorySecrets::default());
+        inner.write("openrouter", b"old-a").unwrap();
+        inner.write("zai", b"old-b").unwrap();
+        let backend = combined(inner.clone());
+
+        backend.read("openrouter").unwrap();
+
+        assert_eq!(inner.read("zai").unwrap().unwrap().as_slice(), b"old-b");
+    }
+
+    #[test]
+    fn the_map_entry_wins_over_a_stray_old_item() {
+        let inner = Arc::new(MemorySecrets::default());
+        let backend = combined(inner.clone());
+        backend.write("openrouter", b"map-key").unwrap();
+        inner.write("openrouter", b"old-key").unwrap();
+
+        assert_eq!(
+            backend.read("openrouter").unwrap().unwrap().as_slice(),
+            b"map-key"
+        );
+    }
+
+    #[test]
+    fn delete_removes_the_old_item_too_and_a_failed_old_delete_stops_it() {
+        let failing = Arc::new(InnerWithFailingAccount::new("", "openrouter"));
+        failing.write("openrouter", b"old-key").unwrap();
+        let backend = combined(failing.clone());
+        backend.read("openrouter").unwrap();
+        // simulate the crash window: the fold could not remove the old item
+        failing.inner.write("openrouter", b"old-key").unwrap();
+
+        assert!(backend.delete("openrouter").is_err());
+        assert_eq!(entries(&backend), ["openrouter".to_owned()]);
+
+        let inner = Arc::new(MemorySecrets::default());
+        inner.write("openrouter", b"old-key").unwrap();
+        let backend = combined(inner.clone());
+        backend.read("openrouter").unwrap();
+        backend.delete("openrouter").unwrap();
+        assert!(backend.read("openrouter").unwrap().is_none());
+        assert!(inner.read("openrouter").unwrap().is_none());
+    }
+
+    #[test]
+    fn a_failed_old_item_read_on_a_miss_is_an_error() {
+        let backend = combined(Arc::new(ReadErrorSecrets));
+
+        assert!(backend.read("openrouter").is_err());
+    }
+
+    #[test]
+    fn an_oversize_fold_serves_the_value_without_persisting_it() {
+        let inner = Arc::new(MemorySecrets::default());
+        let oversize = vec![b'x'; super::MAX_ITEM_BYTES];
+        inner.write("openrouter", &oversize).unwrap();
+        let backend = combined(inner.clone());
+
+        let served = backend.read("openrouter").unwrap().unwrap();
+        assert_eq!(served.as_slice().len(), super::MAX_ITEM_BYTES);
+        assert!(inner.read(super::COMBINED_ACCOUNT).unwrap().is_none());
+    }
+
+    struct SleepySecrets {
+        inner: MemorySecrets,
+    }
+
+    impl SecretBackend for SleepySecrets {
+        fn read(&self, account: &str) -> Result<Option<SecretBytes>, String> {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            self.inner.read(account)
+        }
+
+        fn write(&self, account: &str, value: &[u8]) -> Result<(), String> {
+            self.inner.write(account, value)
+        }
+
+        fn delete(&self, account: &str) -> Result<(), String> {
+            self.inner.delete(account)
+        }
+    }
+
+    #[test]
+    fn concurrent_writes_and_folds_all_land_without_duplication() {
+        let inner = Arc::new(SleepySecrets {
+            inner: MemorySecrets::default(),
+        });
+        for account in ["a", "b", "c", "d"] {
+            inner
+                .write(account, format!("old-{account}").as_bytes())
+                .unwrap();
+        }
+        let backend = Arc::new(combined(inner.clone()));
+
+        let handles: Vec<_> = ["a", "b", "c", "d"]
+            .into_iter()
+            .map(|account| {
+                let backend = backend.clone();
+                std::thread::spawn(move || {
+                    backend
+                        .write(account, format!("new-{account}").as_bytes())
+                        .unwrap();
+                    assert_eq!(
+                        backend.read(account).unwrap().unwrap().as_slice(),
+                        format!("new-{account}").as_bytes()
+                    );
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        assert_eq!(
+            entries(&backend),
+            [
+                "a".to_owned(),
+                "b".to_owned(),
+                "c".to_owned(),
+                "d".to_owned()
+            ]
+        );
+        for account in ["a", "b", "c", "d"] {
+            assert_eq!(
+                backend.read(account).unwrap().unwrap().as_slice(),
+                format!("new-{account}").as_bytes()
+            );
+        }
+    }
+
+    #[test]
+    fn the_system_chain_is_a_single_shared_instance() {
+        assert!(Arc::ptr_eq(
+            &super::system_backend(),
+            &super::system_backend()
+        ));
+    }
+
+    #[test]
+    fn a_legacy_hit_lands_in_the_combined_map_not_a_per_account_item() {
+        let inner = Arc::new(MemorySecrets::default());
+        let legacy = Arc::new(MemorySecrets::default());
+        legacy.write("provider", b"legacy-key").unwrap();
+        let backend = Arc::new(super::LegacyImportBackend {
+            current: Arc::new(combined(inner.clone())),
+            legacy,
+        });
+
+        let loaded = {
+            let store = ApiKeyStore::with_source_backends(
+                "provider",
+                &["PROVIDER_API_KEY"],
+                &[],
+                backend,
+                Arc::new(MemoryEnvironment(HashMap::new())),
+                Arc::new(MemoryConfigFiles(HashMap::new())),
+            );
+            store.load().unwrap().map(|value| value.as_str().to_owned())
+        };
+
+        assert_eq!(loaded.as_deref(), Some("legacy-key"));
+        assert_eq!(
+            {
+                let combined = super::CombinedSecretBackend::new(inner.clone());
+                combined
+                    .read("provider")
+                    .unwrap()
+                    .map(|value| value.as_slice().to_owned())
+            },
+            Some(b"legacy-key".to_vec())
+        );
+        assert!(inner.read("provider").unwrap().is_none());
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn combined_store_round_trip_and_fold_when_requested() {
+        if std::env::var("QUOTAGAUGE_TEST_CREDENTIAL_STORE").as_deref() != Ok("1") {
+            return;
+        }
+
+        let leaked: &'static str = Box::leak(
+            format!(
+                "xyz.actitud.quotagauge.combined-test.{}",
+                std::process::id()
+            )
+            .into_boxed_str(),
+        );
+        let inner = Arc::new(super::ServiceSecretBackend(leaked));
+        let result = (|| -> Result<(), String> {
+            super::ServiceSecretBackend(leaked).write("openrouter", b"old-value")?;
+            let backend = combined(inner.clone());
+            let served = backend
+                .read("openrouter")?
+                .ok_or("The folded key was missing.")?;
+            if served.as_slice() != b"old-value" {
+                return Err("The folded key did not match.".into());
+            }
+            if inner.read("openrouter")?.is_some() {
+                return Err("The old item survived the fold.".into());
+            }
+            backend.write("zai", b"new-value")?;
+            let served = backend.read("zai")?;
+            if served.map(|value| value.as_slice().to_vec()) != Some(b"new-value".to_vec()) {
+                return Err("The combined write did not round-trip.".into());
+            }
+            backend.delete("openrouter")?;
+            backend.delete("zai")?;
+            if inner.read(super::COMBINED_ACCOUNT)?.is_some() {
+                return Err("The combined item survived the last delete.".into());
+            }
+            Ok(())
+        })();
+        let cleanup = inner.delete(super::COMBINED_ACCOUNT);
+
+        result.unwrap();
+        cleanup.unwrap();
     }
 }

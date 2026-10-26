@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.4 - 2026-10-26
+
+### Changed
+
+- Saved API keys now live in a single system credential item, so a new macOS build asks for keychain access once instead of once per saved key. Existing keys move over automatically on first use.
+
 ## 0.5.3 - 2026-10-26
 
 The first QuotaGauge release. Everything below happened before at OpenQuota 0.5.0 version and below.
