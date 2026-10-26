@@ -881,12 +881,7 @@
                 onOpenProviderLink={openProviderLink}
                 onContentMorph={beginContentMorph}
                 {reducedMotion}
-                updateStatus={updates.status}
-                installingUpdate={updates.installing}
-                updateProgress={updates.progress}
-                updateError={updates.error}
-                onInstallUpdate={() => updates.install()}
-                onOpenUpdatePage={() => updates.openDownloadPage()}
+                {updates}
               />
             {:else if screen === 'settings'}
               <SettingsScreen

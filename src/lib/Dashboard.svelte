@@ -8,6 +8,8 @@
   import ProviderLinks from './ProviderLinks.svelte';
   import ProviderNoticeRow from './ProviderNoticeRow.svelte';
   import Icon from './Icon.svelte';
+  import UpdateBanner from './UpdateBanner.svelte';
+  import type { UpdateController } from './updateController.svelte';
   import MetricRenderer from './MetricRenderer.svelte';
   import TotalSpend from './TotalSpend.svelte';
   import type { SpendProjection } from './totalSpend';
@@ -18,11 +20,8 @@
     MetricLayout,
     ProviderLayout,
     ProviderSnapshot,
-    UpdateProgress,
-    UpdateFailure,
     UsageHistory,
     UsageViewState,
-    UpdateStatus,
   } from './types';
 
   interface Props {
@@ -44,12 +43,7 @@
     onOpenProviderLink: (providerId: string, linkIndex: number) => void;
     onContentMorph: () => void;
     reducedMotion: boolean;
-    updateStatus: UpdateStatus | null;
-    installingUpdate: boolean;
-    updateProgress: UpdateProgress | null;
-    updateError: UpdateFailure | null;
-    onInstallUpdate: () => void;
-    onOpenUpdatePage: () => void;
+    updates: UpdateController;
   }
   let {
     viewState,
@@ -70,12 +64,7 @@
     onOpenProviderLink,
     onContentMorph,
     reducedMotion,
-    updateStatus,
-    installingUpdate,
-    updateProgress,
-    updateError,
-    onInstallUpdate,
-    onOpenUpdatePage,
+    updates,
   }: Props = $props();
   const metricDefinition = (id: string) => catalog.metric(id);
   const providerDisplayName = (id: string) => catalog.displayName(id, settings.providerNames);
@@ -108,10 +97,12 @@
     await tick();
     if (!button.isConnected) providerSection?.focus({ preventScroll: true });
   }
-  let providerMenu = $state<{ id: string; x: number; y: number } | null>(null);
-  let metricMenu = $state<{ providerId: string; metricId: string; x: number; y: number } | null>(
-    null,
-  );
+  type ContextMenu =
+    | { kind: 'provider'; id: string; x: number; y: number }
+    | { kind: 'metric'; providerId: string; metricId: string; x: number; y: number };
+  let contextMenu = $state<ContextMenu | null>(null);
+  const providerMenu = $derived(contextMenu?.kind === 'provider' ? contextMenu : null);
+  const metricMenu = $derived(contextMenu?.kind === 'metric' ? contextMenu : null);
   let demandMorphing = $state(false);
   let demandMorphTimer: ReturnType<typeof setTimeout> | undefined;
   const enabledProviders = $derived(
@@ -143,12 +134,17 @@
       })),
   );
 
-  function updateProvider(next: ProviderLayout, customization = true) {
-    const changed = {
+  function commitProvider(next: ProviderLayout, onChange: (settings: AppSettings) => void) {
+    onChange({
       ...settings,
       providers: settings.providers.map((item) => (item.id === next.id ? next : item)),
-    };
-    (customization ? onCustomizationChange : onSettingsChange)(changed);
+    });
+  }
+  function updateProvider(next: ProviderLayout) {
+    commitProvider(next, onCustomizationChange);
+  }
+  function updateProviderView(next: ProviderLayout) {
+    commitProvider(next, onSettingsChange);
   }
   function toggleDemandMetrics(provider: ProviderLayout) {
     window.clearTimeout(demandMorphTimer);
@@ -160,7 +156,7 @@
       );
     }
     onContentMorph();
-    updateProvider({ ...provider, expanded: !provider.expanded }, false);
+    updateProviderView({ ...provider, expanded: !provider.expanded });
   }
   onDestroy(() => window.clearTimeout(demandMorphTimer));
   function reorderProvider(draggedId: string, targetId: string) {
@@ -227,11 +223,11 @@
   }
   function openProviderMenu(event: MouseEvent, providerId: string) {
     event.preventDefault();
-    metricMenu = null;
     const focusFirstItem = event.button !== 2;
     const provider = settings.providers.find((item) => item.id === providerId);
     const menuHeight = provider && canRenameProvider(provider.id, renamableProviderIds) ? 204 : 174;
-    providerMenu = {
+    contextMenu = {
+      kind: 'provider',
       id: providerId,
       x: Math.max(6, Math.min(event.clientX, window.innerWidth - 196)),
       y: Math.max(6, Math.min(event.clientY, window.innerHeight - menuHeight)),
@@ -241,9 +237,9 @@
   function openMetricMenu(event: MouseEvent, providerId: string, metricId: string) {
     event.preventDefault();
     event.stopPropagation();
-    providerMenu = null;
     const focusFirstItem = event.button !== 2;
-    metricMenu = {
+    contextMenu = {
+      kind: 'metric',
       providerId,
       metricId,
       x: Math.max(6, Math.min(event.clientX, window.innerWidth - 196)),
@@ -262,8 +258,7 @@
     if (event.key === 'Escape') {
       event.preventDefault();
       event.stopPropagation();
-      providerMenu = null;
-      metricMenu = null;
+      contextMenu = null;
       return;
     }
     if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key) || items.length === 0) return;
@@ -292,12 +287,12 @@
         metric.id === metricId ? { ...metric, ...patch } : metric,
       ),
     });
-    metricMenu = null;
+    contextMenu = null;
   }
   function hideProvider(providerId: string) {
     const provider = settings.providers.find((item) => item.id === providerId);
     if (provider) updateProvider({ ...provider, enabled: false });
-    providerMenu = null;
+    contextMenu = null;
   }
   function dismissDetection() {
     onSettingsChange({ ...settings, detectionNoticeDismissed: true });
@@ -316,82 +311,11 @@
 
 <svelte:window
   onclick={() => {
-    providerMenu = null;
-    metricMenu = null;
+    contextMenu = null;
   }}
 />
 
-{#if updateStatus?.available && updateStatus.version !== settings.dismissedUpdateVersion}
-  <section class="hint-card update-banner" aria-label="Update Available">
-    <span class="hint-card__icon"><Icon name="refresh" size={16} strokeWidth={2} /></span>
-    <div>
-      <strong>Update Available</strong>
-      <span>QuotaGauge {updateStatus.version} is ready to download.</span>
-      {#if updateStatus.body}<details class="update-notes">
-          <summary>What’s new</summary>
-          <p>{updateStatus.body}</p>
-        </details>{/if}
-      {#if installingUpdate && updateProgress}
-        <div
-          class="update-progress"
-          role="progressbar"
-          aria-label="Update download"
-          aria-valuemin="0"
-          aria-valuemax="100"
-          aria-valuenow={updateProgress.phase === 'installing'
-            ? 100
-            : (updateProgress.percent ?? undefined)}
-        >
-          <span
-            style:width={`${updateProgress.phase === 'installing' ? 100 : (updateProgress.percent ?? 8)}%`}
-          ></span>
-        </div>
-        <small>
-          {updateProgress.phase === 'installing'
-            ? 'Installing update…'
-            : updateProgress.phase === 'retrying'
-              ? 'Download interrupted. Retrying…'
-              : updateProgress.percent === null
-                ? 'Downloading update…'
-                : `Downloading update… ${updateProgress.percent}%`}
-        </small>
-      {/if}
-      {#if updateError}<div class="update-error" role="alert">
-          <strong>{updateError.message}</strong><small>{updateError.action}</small>
-        </div>{/if}
-    </div>
-    <div class="update-actions">
-      <button
-        type="button"
-        class="update-primary-action"
-        onclick={updateStatus.installable ? onInstallUpdate : onOpenUpdatePage}
-        disabled={installingUpdate}
-        >{updateStatus.installable
-          ? installingUpdate
-            ? 'Updating…'
-            : updateError?.retryable
-              ? 'Try Again'
-              : 'Install Update'
-          : 'Download from GitHub'}</button
-      >
-      {#if updateStatus.installable && !installingUpdate}
-        <button type="button" class="update-release-action" onclick={onOpenUpdatePage}
-          >View Release</button
-        >
-      {/if}
-    </div>
-    <button
-      class="hint-card__dismiss"
-      type="button"
-      aria-label="Dismiss"
-      onclick={() =>
-        onSettingsChange({
-          ...settings,
-          dismissedUpdateVersion: updateStatus?.version ?? null,
-        })}><Icon name="close" size={10} strokeWidth={2.2} /></button
-    >
-  </section>
-{/if}
+<UpdateBanner {updates} {settings} onChange={onSettingsChange} />
 
 {#if !settings.detectionNoticeDismissed}
   <section class="detection-card" out:scale={{ start: 0.95, ...springMotion(reducedMotion) }}>
@@ -416,6 +340,20 @@
     onShare={onShareTotal}
   />
 {/if}
+
+{#snippet metricRowInner(metric: MetricLayout, snapshot: ProviderSnapshot)}
+  <button
+    class="metric-reorder-handle"
+    data-reorder-handle
+    data-reorder-touch-handle
+    type="button"
+    aria-label={`Move ${metricDefinition(metric.id)?.label ?? metric.id}`}
+    aria-describedby="reorder-instructions"
+    aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
+    ><Icon name="grip-lines" size={13} strokeWidth={2} /></button
+  >
+  <MetricRenderer layout={metric} {snapshot} {settings} {now} {catalog} {onSettingsChange} />
+{/snippet}
 
 {#each dashboardProviders as { provider, state, snapshot, alwaysMetrics, demandMetrics, links } (provider.id)}
   <div
@@ -544,24 +482,7 @@
             animate:flip={reorderFlip(reducedMotion || demandMorphing)}
             oncontextmenu={(event) => openMetricMenu(event, provider.id, metric.id)}
           >
-            <button
-              class="metric-reorder-handle"
-              data-reorder-handle
-              data-reorder-touch-handle
-              type="button"
-              aria-label={`Move ${metricDefinition(metric.id)?.label ?? metric.id}`}
-              aria-describedby="reorder-instructions"
-              aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
-              ><Icon name="grip-lines" size={13} strokeWidth={2} /></button
-            >
-            <MetricRenderer
-              layout={metric}
-              {snapshot}
-              {settings}
-              {now}
-              {catalog}
-              {onSettingsChange}
-            />
+            {@render metricRowInner(metric, snapshot)}
           </div>
         {/each}
         {#if demandMetrics.length > 0 || links.length > 0}
@@ -603,24 +524,7 @@
                   animate:flip={reorderFlip(reducedMotion || demandMorphing)}
                   oncontextmenu={(event) => openMetricMenu(event, provider.id, metric.id)}
                 >
-                  <button
-                    class="metric-reorder-handle"
-                    data-reorder-handle
-                    data-reorder-touch-handle
-                    type="button"
-                    aria-label={`Move ${metricDefinition(metric.id)?.label ?? metric.id}`}
-                    aria-describedby="reorder-instructions"
-                    aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
-                    ><Icon name="grip-lines" size={13} strokeWidth={2} /></button
-                  >
-                  <MetricRenderer
-                    layout={metric}
-                    {snapshot}
-                    {settings}
-                    {now}
-                    {catalog}
-                    {onSettingsChange}
-                  />
+                  {@render metricRowInner(metric, snapshot)}
                 </div>
               {/each}
               {#if links.length > 0}
@@ -903,6 +807,13 @@
       transform: none !important;
     }
 
+    .detection-card .dismiss:hover,
+    .detection-card .dismiss:focus-visible {
+      outline: none;
+      color: var(--text);
+      background: var(--button-hover);
+    }
+
     .detection-card {
       position: relative;
       display: grid;
@@ -912,162 +823,6 @@
       padding: 10px 28px 10px 11px;
       border-radius: 11px;
       background: color-mix(in srgb, var(--provider) 11%, var(--card));
-    }
-
-    .hint-card {
-      position: relative;
-      display: grid;
-      grid-template-columns: auto 1fr;
-      gap: 3px 10px;
-      margin-bottom: 14px;
-      padding: 11px 32px 11px 12px;
-      border-radius: 12px;
-      background: var(--card);
-    }
-
-    .hint-card__icon {
-      display: grid;
-      width: 22px;
-      height: 22px;
-      grid-row: 1 / span 2;
-      color: var(--meter-fill);
-      place-items: center;
-    }
-
-    .hint-card > div {
-      display: flex;
-      min-width: 0;
-      flex-direction: column;
-      gap: 2px;
-    }
-
-    .hint-card strong {
-      font-size: 12px;
-    }
-
-    .hint-card span {
-      color: var(--secondary);
-      font-size: 10px;
-      line-height: 13px;
-    }
-
-    .update-actions button {
-      width: fit-content;
-      padding: 4px 8px;
-      border: 0;
-      border-radius: 6px;
-      color: var(--text);
-      background: var(--button-hover);
-      font-size: 10px;
-    }
-
-    .hint-card > .update-actions {
-      display: flex;
-      grid-column: 2;
-      align-items: center;
-      flex-direction: row;
-      gap: 6px;
-      margin-top: 5px;
-    }
-
-    .update-actions .update-primary-action {
-      color: white;
-      background: var(--meter-fill);
-      font-weight: 600;
-    }
-
-    .update-actions .update-release-action {
-      color: var(--secondary);
-      background: transparent;
-    }
-
-    .update-actions .update-release-action:hover,
-    .update-actions .update-release-action:focus-visible {
-      color: var(--text);
-      background: var(--button-hover);
-    }
-
-    .hint-card__dismiss {
-      position: absolute;
-      top: 5px;
-      right: 6px;
-      display: grid;
-      width: 20px;
-      height: 20px;
-      padding: 0;
-      border: 0;
-      border-radius: 5px;
-      color: var(--secondary);
-      background: transparent;
-      cursor: pointer;
-      place-items: center;
-    }
-
-    .hint-card__dismiss:hover,
-    .hint-card__dismiss:focus-visible,
-    .detection-card .dismiss:hover,
-    .detection-card .dismiss:focus-visible {
-      outline: none;
-      color: var(--text);
-      background: var(--button-hover);
-    }
-
-    .update-notes {
-      margin-top: 3px;
-      color: var(--secondary);
-      font-size: 9px;
-      line-height: 12px;
-    }
-
-    .update-notes summary {
-      width: fit-content;
-      color: var(--secondary);
-      cursor: pointer;
-      font-size: 10px;
-    }
-
-    .update-notes p {
-      max-height: 72px;
-      margin: 5px 0 0;
-      padding-right: 3px;
-      overflow-y: auto;
-      white-space: pre-line;
-    }
-
-    .update-error {
-      gap: 1px;
-      margin-top: 4px;
-      padding: 6px 7px;
-      border-radius: 7px;
-      color: var(--error);
-      background: var(--error-bg);
-    }
-
-    .update-error strong {
-      font-size: 10px;
-    }
-
-    .update-error small {
-      color: var(--error);
-      font-size: 9px;
-      line-height: 12px;
-    }
-
-    .update-progress {
-      height: 4px;
-      margin-top: 4px;
-      overflow: hidden;
-      border-radius: 999px;
-      background: var(--meter-track);
-    }
-
-    .update-progress span {
-      display: block;
-      min-width: 8%;
-      height: 100%;
-      border-radius: inherit;
-      background: var(--meter-fill);
-      transition: width 160ms ease;
     }
 
     .detection-card div {
