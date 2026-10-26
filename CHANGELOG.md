@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.6 - 2026-10-26
+
+### Fixed
+
+- The panel now drops down under the tray icon on every display. On macOS with more than one monitor, scaled or mixed resolution setups included, it used to appear on the wrong screen or roughly centered instead.
+
 ## 0.5.5 - 2026-10-26
 
 ### Changed
