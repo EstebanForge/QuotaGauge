@@ -2,8 +2,7 @@ import { currentMonitor, getCurrentWindow } from '@tauri-apps/api/window';
 import { fitPanelToContent } from './backend';
 import { springMotion } from './motion';
 import { panelTargetHeight, screenPanelHeight, shouldDeferPanelFit } from './panelSizing';
-
-export type AppScreen = 'dashboard' | 'customize' | 'settings' | `provider:${string}`;
+import type { AppScreen } from './screens';
 
 interface WindowControllerOptions {
   screen: () => AppScreen;

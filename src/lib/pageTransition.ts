@@ -1,12 +1,11 @@
 import type { EasingFunction, TransitionConfig } from 'svelte/transition';
+import type { AppScreen } from './screens';
 
 interface PageTransitionOptions {
   direction: number;
   duration: number;
   easing: EasingFunction;
 }
-
-type AppScreen = 'dashboard' | 'customize' | 'settings' | `provider:${string}`;
 
 export function shouldSlideBetweenScreens(from: AppScreen, to: AppScreen) {
   return from !== to;

@@ -44,6 +44,8 @@
   import { desktopPlatform, shortcutLabels } from './lib/platform';
   import { withProviderName } from './lib/providerNames';
   import RenameProviderSheet from './lib/RenameProviderSheet.svelte';
+  import { createShareController } from './lib/shareController.svelte';
+  import { isProviderScreen, providerIdFromScreen, type AppScreen } from './lib/screens';
   import {
     buildProviderShareRows,
     renderProviderShareCard,
@@ -55,9 +57,14 @@
   import type { AppSettings, UsageViewState } from './lib/types';
   import { nextUpdateLabel, UpdateController } from './lib/updateController.svelte';
   import { automaticUpdateDelay, UPDATE_CHECK_INTERVAL_MS } from './lib/updateSchedule';
-  import { createWindowController, type AppScreen } from './lib/windowController';
+  import { createWindowController } from './lib/windowController';
 
   type Screen = AppScreen;
+  type Overlay =
+    | { kind: 'about' }
+    | { kind: 'provider-reset' }
+    | { kind: 'settings-reset' }
+    | { kind: 'rename'; id: string; initialValue: string };
   let appVersion = $state('');
   const emptyView: UsageViewState = { providers: {} };
 
@@ -73,19 +80,19 @@
   let customizationHistory = $state<AppSettings[]>([]);
   let customizationGestureStart: AppSettings | null = null;
   let reordering = $state(false);
-  let confirmationMessage = $state<string | null>(null);
-  let resetConfirmationOpen = $state(false);
-  let settingsResetConfirmationOpen = $state(false);
+  let overlay = $state<Overlay | null>(null);
   let resettingCustomization = $state(false);
   let resettingAllSettings = $state(false);
   let resettingProviderId = $state<string | null>(null);
-  let showAbout = $state(false);
+  const showAbout = $derived(overlay?.kind === 'about');
+  const resetConfirmationOpen = $derived(overlay?.kind === 'provider-reset');
+  const settingsResetConfirmationOpen = $derived(overlay?.kind === 'settings-reset');
+  const renameCard = $derived(overlay?.kind === 'rename' ? overlay : null);
   let aboutTrigger: HTMLElement | null = null;
   let aboutCloseButton = $state<HTMLButtonElement>();
   let shareMenuOpen = $state(false);
   let optionsMenuElement = $state<HTMLDetailsElement>();
   let shareMenuElement = $state<HTMLDetailsElement>();
-  let shareTimer: ReturnType<typeof setTimeout> | undefined;
   const providerStates = $derived(Object.values(viewState.providers));
   const anyRefreshing = $derived(providerStates.some((state) => state.refreshing));
   const lastFullRefresh = $derived(viewState.lastFullRefreshAt ?? undefined);
@@ -108,9 +115,9 @@
   let panelHeightMode = $state<PanelHeightMode>('automatic');
   let panelHeightModeRequest = 0;
   let panelHeightModeMutation: Promise<void> = Promise.resolve();
-  let renameCard = $state<{ id: string; initialValue: string } | null>(null);
   let lastResizeGripPointerAt = Number.NEGATIVE_INFINITY;
   let panelResizeOperation: Promise<void> | null = null;
+  const share = createShareController();
   const windowController = createWindowController({
     screen: () => screen,
     refreshing: () => anyRefreshing,
@@ -158,14 +165,11 @@
   }
   function resetTransientUi() {
     closeOptionsMenu();
-    showAbout = false;
-    resetConfirmationOpen = false;
-    settingsResetConfirmationOpen = false;
-    renameCard = null;
+    overlay = null;
     resettingCustomization = false;
     resettingAllSettings = false;
     resettingProviderId = null;
-    confirmationMessage = null;
+    share.dismiss();
     const content = document.querySelector<HTMLElement>('.content');
     if (content && typeof content.scrollTo === 'function') content.scrollTo({ top: 0 });
     else if (content) content.scrollTop = 0;
@@ -174,7 +178,7 @@
     void quitApplication();
   }
   function screenRank(value: Screen) {
-    if (value.startsWith('provider:')) return 2;
+    if (isProviderScreen(value)) return 2;
     return value === 'dashboard' ? 0 : 1;
   }
   function navigate(next: Screen) {
@@ -190,7 +194,7 @@
     document.querySelector<HTMLButtonElement>('.screen-header button[aria-label="Back"]')?.focus();
   }
   function back() {
-    if (screen.startsWith('provider:')) navigate('customize');
+    if (isProviderScreen(screen)) navigate('customize');
     else if (screen !== 'dashboard') navigate('dashboard');
     else closeMainWindow();
   }
@@ -214,11 +218,6 @@
   function cloneSettings(value: AppSettings): AppSettings {
     return JSON.parse(JSON.stringify(value)) as AppSettings;
   }
-  function showConfirmation(message: string) {
-    confirmationMessage = message;
-    if (shareTimer) clearTimeout(shareTimer);
-    shareTimer = setTimeout(() => (confirmationMessage = null), 1800);
-  }
   function saveCustomization(next: AppSettings) {
     const current = settingsState;
     if (!current) return;
@@ -233,14 +232,15 @@
   function openRenameProvider(providerId: string) {
     const current = settingsState;
     if (!current) return;
-    renameCard = {
+    overlay = {
+      kind: 'rename',
       id: providerId,
       initialValue: current.settings.providerNames[providerId] ?? '',
     };
   }
   async function closeRenameProvider() {
     const providerId = renameCard?.id;
-    renameCard = null;
+    overlay = null;
     if (!providerId) return;
     await tick();
     const provider = [...document.querySelectorAll<HTMLElement>('[data-provider-id]')].find(
@@ -345,7 +345,7 @@
     void openProviderLinkCommand(providerId, linkIndex).catch(() => {});
   }
   function requestCustomizationReset() {
-    resetConfirmationOpen = true;
+    overlay = { kind: 'provider-reset' };
   }
   async function confirmCustomizationReset() {
     const current = settingsState;
@@ -361,7 +361,7 @@
       settingsError = 'Customization could not be reset.';
     } finally {
       resettingCustomization = false;
-      resetConfirmationOpen = false;
+      overlay = null;
     }
   }
   async function resetProviderCustomization(providerId: string) {
@@ -400,13 +400,13 @@
       updatePanelHeightMode();
       updatePanelResizeEdge();
       settingsError = null;
-      showConfirmation('All settings restored');
+      share.show('All settings restored');
     } catch {
       settingsError = 'Settings could not be reset.';
       updatePanelHeightMode();
     } finally {
       resettingAllSettings = false;
-      settingsResetConfirmationOpen = false;
+      overlay = null;
     }
   }
   async function copyCanvas(canvas: HTMLCanvasElement, fallback: string) {
@@ -421,7 +421,7 @@
     } else {
       await navigator.clipboard.writeText(fallback);
     }
-    showConfirmation('Copied to clipboard');
+    share.show('Copied to clipboard');
   }
   async function shareProvider(providerId: string) {
     const current = settingsState;
@@ -467,23 +467,24 @@
   async function copyLogPath() {
     const path = await getLogPath();
     await navigator.clipboard.writeText(path);
-    showConfirmation('Log path copied');
+    share.show('Log path copied');
   }
   async function openLogFolder() {
     await openSystemLogFolder();
   }
   function topBarTitle() {
-    if (screen.startsWith('provider:')) return providerDisplayName(screen.slice(9));
+    const providerId = providerIdFromScreen(screen);
+    if (providerId !== null) return providerDisplayName(providerId);
     return screen === 'settings' ? 'Settings' : 'Customize';
   }
   async function openAbout() {
     aboutTrigger = optionsMenuElement?.querySelector<HTMLElement>(':scope > summary') ?? null;
-    showAbout = true;
+    overlay = { kind: 'about' };
     await tick();
     aboutCloseButton?.focus();
   }
   async function closeAbout() {
-    showAbout = false;
+    overlay = null;
     await tick();
     aboutTrigger?.focus();
     aboutTrigger = null;
@@ -648,7 +649,7 @@
         if (!settingsState) return;
         saveSettings({ ...settingsState.settings, lastUpdateCheckAt: checkedAt });
       },
-      showConfirmation,
+      (message: string) => share.show(message),
     );
   }
 
@@ -827,12 +828,12 @@
             data-tooltip="Reset All Customization"
             ><Icon name="reset" size={15} strokeWidth={2} /></button
           >
-        {:else if screen.startsWith('provider:')}
+        {:else if isProviderScreen(screen)}
           <button
             class="text-button"
             type="button"
             disabled={resettingProviderId !== null}
-            onclick={() => resetProviderCustomization(screen.slice(9))}
+            onclick={() => resetProviderCustomization(providerIdFromScreen(screen)!)}
             aria-label={`Reset ${topBarTitle()}`}
             data-tooltip={`Reset ${topBarTitle()}`}
             ><Icon name="reset" size={15} strokeWidth={2} /></button
@@ -902,7 +903,7 @@
                 onCustomize={() => navigate('customize')}
                 onCopyLogPath={copyLogPath}
                 onOpenLogFolder={openLogFolder}
-                onResetAllSettings={() => (settingsResetConfirmationOpen = true)}
+                onResetAllSettings={() => (overlay = { kind: 'settings-reset' })}
               />
             {:else if screen === 'customize'}
               <CustomizeProviderList
@@ -915,10 +916,10 @@
                 onSettings={() => navigate('settings')}
                 {reducedMotion}
               />
-            {:else if screen.startsWith('provider:')}
+            {:else if isProviderScreen(screen)}
               <CustomizeProviderDetail
                 settings={settingsState.settings}
-                providerId={screen.slice(9)}
+                providerId={providerIdFromScreen(screen)!}
                 {catalog}
                 renamableProviderIds={settingsState.renamableProviderIds}
                 onChange={saveCustomization}
@@ -1038,9 +1039,9 @@
       </footer>
     {/if}
 
-    {#if confirmationMessage}
+    {#if share.message}
       <div class="transient-pill" role="status">
-        <Icon name="check" size={15} strokeWidth={2.4} />{confirmationMessage}
+        <Icon name="check" size={15} strokeWidth={2.4} />{share.message}
       </div>
     {/if}
 
@@ -1051,7 +1052,7 @@
         confirmLabel="Reset All"
         pending={resettingCustomization}
         onConfirm={() => void confirmCustomizationReset()}
-        onCancel={() => (resetConfirmationOpen = false)}
+        onCancel={() => (overlay = null)}
       />
     {/if}
 
@@ -1062,7 +1063,7 @@
         confirmLabel="Reset All"
         pending={resettingAllSettings}
         onConfirm={() => void confirmAllSettingsReset()}
-        onCancel={() => (settingsResetConfirmationOpen = false)}
+        onCancel={() => (overlay = null)}
       />
     {/if}
 
@@ -1136,6 +1137,8 @@
       background: var(--tray);
       isolation: isolate;
       user-select: none;
+      min-width: 0;
+      max-width: 320px;
     }
 
     .floating-chrome {
@@ -1268,12 +1271,13 @@
 
     .footer {
       display: flex;
-      min-height: 58px;
+      min-height: 52px;
       align-items: center;
       gap: 12px;
-      padding: 10px 14px;
-      border-top: 1px solid var(--separator);
-      background: color-mix(in srgb, var(--tray) 92%, transparent);
+      padding: 12px 14px;
+      border-top: 0;
+      background: color-mix(in srgb, var(--tray) 94%, transparent);
+      box-shadow: 0 -10px 18px -18px rgba(0, 0, 0, 0.65);
     }
 
     .identity {
@@ -1281,7 +1285,12 @@
       flex-direction: column;
       color: var(--secondary);
       font-size: 10px;
-      line-height: 14px;
+      line-height: 12px;
+      padding: 0;
+      border: 0;
+      background: none;
+      text-align: left;
+      cursor: pointer;
     }
 
     .identity small {
@@ -1291,18 +1300,25 @@
 
     .options-menu {
       position: relative;
+      margin-left: auto;
     }
 
     .options-menu > summary {
-      display: grid;
-      width: 30px;
-      height: 30px;
-      border-radius: 50%;
-      color: var(--secondary);
+      display: flex;
+      width: auto;
+      height: 26px;
+      border-radius: 8px;
+      color: var(--text);
       cursor: pointer;
-      font-size: 13px;
+      font-size: 11px;
       list-style: none;
       place-items: center;
+      align-items: center;
+      gap: 4px;
+      padding: 0 9px 0 10px;
+      border: 1px solid var(--separator);
+      background: color-mix(in srgb, var(--card) 72%, transparent);
+      font-weight: 550;
     }
 
     .options-menu > summary::-webkit-details-marker {
@@ -1318,14 +1334,16 @@
     .options-menu > div {
       position: absolute;
       right: 0;
-      bottom: 36px;
+      bottom: 34px;
       z-index: 10;
-      width: 130px;
-      padding: 4px;
-      border: 1px solid var(--separator);
-      border-radius: 9px;
+      width: 172px;
+      padding: 6px;
+      border: 0;
+      border-radius: 10px;
       background: var(--tray);
-      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+      box-shadow: 0 10px 32px rgba(0, 0, 0, 0.28);
+      transform-origin: bottom right;
+      animation: menu-in 180ms ease-out both;
     }
 
     .options-menu button {
@@ -1345,16 +1363,24 @@
 
     .screen-header {
       display: grid;
-      min-height: 30px;
+      min-height: 44px;
       align-items: center;
-      grid-template-columns: 54px 1fr 54px;
-      margin-bottom: 8px;
+      grid-template-columns: 44px 1fr 44px;
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      margin: 0 -14px 12px;
+      padding: 0 14px;
+      background: color-mix(in srgb, var(--tray) 94%, transparent);
+      box-shadow: 0 10px 18px -20px rgba(0, 0, 0, 0.8);
+      backdrop-filter: blur(18px);
     }
 
     .screen-header h1 {
       margin: 0;
-      font-size: 14px;
+      font-size: 13px;
       text-align: center;
+      font-weight: 600;
     }
 
     .screen-header button {
@@ -1374,8 +1400,11 @@
 
     .screen-header .text-button {
       justify-self: end;
-      color: var(--meter-fill);
-      font-size: 10px;
+      color: var(--secondary);
+      font-size: inherit;
+      width: 28px;
+      height: 28px;
+      overflow: hidden;
     }
 
     .screen-header button:hover {
@@ -1383,18 +1412,13 @@
     }
 
     :root[data-density='compact'] .content {
-      padding: 9px 11px 7px;
+      padding: 10px 14px 8px;
     }
 
     :root[data-density='compact'] .footer {
       min-height: 48px;
       padding-top: 6px;
       padding-bottom: 6px;
-    }
-
-    .content {
-      padding: 14px 14px 12px;
-      scrollbar-width: none;
     }
 
     .content--chrome {
@@ -1417,25 +1441,6 @@
       grid-area: 1 / 1;
       align-self: start;
       transform-origin: 50% 45%;
-    }
-
-    .footer {
-      min-height: 52px;
-      padding: 12px 14px;
-      border-top: 0;
-      background: color-mix(in srgb, var(--tray) 94%, transparent);
-      box-shadow: 0 -10px 18px -18px rgba(0, 0, 0, 0.65);
-    }
-
-    .identity {
-      padding: 0;
-      border: 0;
-      color: var(--secondary);
-      background: none;
-      font-size: 10px;
-      line-height: 12px;
-      text-align: left;
-      cursor: pointer;
     }
 
     .identity:disabled {
@@ -1500,25 +1505,6 @@
       transform: translate(-50%, 0) scale(1);
     }
 
-    .options-menu {
-      margin-left: auto;
-    }
-
-    .options-menu > summary {
-      display: flex;
-      width: auto;
-      height: 26px;
-      align-items: center;
-      gap: 4px;
-      padding: 0 9px 0 10px;
-      border: 1px solid var(--separator);
-      border-radius: 8px;
-      color: var(--text);
-      background: color-mix(in srgb, var(--card) 72%, transparent);
-      font-size: 11px;
-      font-weight: 550;
-    }
-
     .options-menu > summary i {
       margin-top: -2px;
       font-size: 11px;
@@ -1533,34 +1519,6 @@
       transform: rotate(180deg);
     }
 
-    .options-menu > div {
-      bottom: 34px;
-      width: 172px;
-      padding: 6px;
-      border: 0;
-      border-radius: 10px;
-      box-shadow: 0 10px 32px rgba(0, 0, 0, 0.28);
-      transform-origin: bottom right;
-      animation: menu-in 180ms ease-out both;
-    }
-
-    .options-menu button {
-      font-size: 11px;
-    }
-
-    .screen-header {
-      position: sticky;
-      top: 0;
-      z-index: 5;
-      min-height: 44px;
-      grid-template-columns: 44px 1fr 44px;
-      margin: 0 -14px 12px;
-      padding: 0 14px;
-      background: color-mix(in srgb, var(--tray) 94%, transparent);
-      box-shadow: 0 10px 18px -20px rgba(0, 0, 0, 0.8);
-      backdrop-filter: blur(18px);
-    }
-
     .app-top-bar {
       position: relative;
       top: auto;
@@ -1572,11 +1530,6 @@
       padding: 0 14px;
     }
 
-    .screen-header h1 {
-      font-size: 13px;
-      font-weight: 600;
-    }
-
     .screen-header button:first-child {
       display: grid;
       width: 28px;
@@ -1585,14 +1538,6 @@
       border-radius: 50%;
       background: var(--button-hover);
       place-items: center;
-    }
-
-    .screen-header .text-button {
-      width: 28px;
-      height: 28px;
-      overflow: hidden;
-      color: var(--secondary);
-      font-size: inherit;
     }
 
     .screen-header .text-button::after {
@@ -1780,10 +1725,6 @@
       outline-offset: 1px;
     }
 
-    :root[data-density='compact'] .content {
-      padding: 10px 14px 8px;
-    }
-
     :root[data-density='compact'] .content--chrome {
       padding-top: 12px;
     }
@@ -1791,12 +1732,6 @@
     .notice--blocking {
       color: var(--error);
       background: var(--error-bg);
-    }
-
-    .popover {
-      width: 100%;
-      min-width: 0;
-      max-width: 320px;
     }
   }
 </style>
