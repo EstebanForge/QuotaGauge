@@ -18,7 +18,11 @@ QuotaGauge checks for updates automatically. Update payloads are cryptographical
 
 ## Package signing
 
-Native signing is disabled by default today. Windows installers are not Authenticode-signed, so SmartScreen may ask for confirmation on first run. The macOS app uses an ad-hoc signature without Apple notarization, because Apple charges yearly for the certificates that would change this.
+There's no package signing. Windows installers are not Authenticode-signed, so SmartScreen may ask for confirmation on first run. Easy as:
+
+> More info → Run anyway (on Windows SmartScreen alert)
+
+The macOS app uses an ad-hoc signature without Apple notarization, because Apple charges yearly for the certificates that would change this.
 
 macOS checks anything you download through a browser (that's Gatekeeper) and refuses apps without paid signing. Depending on your macOS version you may see a "cannot verify the developer" or a "damaged and can't be opened" warning. The app is fine. After moving QuotaGauge into Applications, run this once:
 
