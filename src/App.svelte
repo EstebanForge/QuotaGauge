@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
+  import { getVersion } from '@tauri-apps/api/app';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import {
     beginPanelResize,
@@ -57,7 +58,7 @@
   import { createWindowController, type AppScreen } from './lib/windowController';
 
   type Screen = AppScreen;
-  const appVersion = import.meta.env.APP_VERSION;
+  let appVersion = $state('');
   const emptyView: UsageViewState = { providers: {} };
 
   let viewState = $state<UsageViewState>(emptyView);
@@ -652,6 +653,9 @@
   }
 
   onMount(() => {
+    getVersion()
+      .then((version) => (appVersion = version))
+      .catch(() => {});
     const motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
     const updateMotionPreference = () => {
       systemReducedMotion = motionQuery.matches;

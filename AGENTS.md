@@ -88,6 +88,21 @@ Data flow: providers -> UsageService refresh (events `usage-state`, `open-screen
   requirement, so this one step is what keeps a new build from re-prompting for keychain access
   (verified 2026-10-26: 0 prompts across builds vs 1 per build ad-hoc). The Apple Development
   cert renews yearly without changing the team ID, so the ACLs survive renewal.
+- macOS releases are built AND signed locally on ATTD-Zenless, not on GitHub runners
+  (macos-app.yml is disabled): fresh `npm run build`, then in `src-tauri` the cross recipe
+  (SDKROOT=~/.local/opt/macos-sdk/MacOSX.sdk, brew clang CC, llvm-ar AR,
+  CFLAGS '-isysroot $SDK -mcpu=apple-a14', RUSTFLAGS linker=/tmp/apple-link.sh — recreate it:
+  brew clang -target arm64-apple-macos11 -isysroot $SDK -fuse-ld=/usr/bin/ld64.lld
+  -Wl,-platform_version,macos,11.0,27.0 — and run cargo via PATH="$HOME/.cargo/bin:$PATH"
+  because brew's rust shadows rustup's and lacks the darwin std),
+  `scripts/macos-cross/bundle-app.sh`, Apple-sign the .app with
+  `rcodesign sign --timestamp-url none --p12-file ~/Dev/Signing-Keys-Certs/apple-dev.p12
+--p12-password-file ~/Dev/Signing-Keys-Certs/apple-dev.p12.pass` (Apple's timestamp server is
+  unreachable from this box; Apple Development signatures need none), re-tar with
+  `QuotaGauge.app/` as the only root, updater-sign with `tauri signer sign`, then upload the
+  tarball + .sig + a fresh latest.json (three platform keys) to the release. Never rebuild
+  dist after the version bump without rebuilding the binary: vite used to bake package.json's
+  version into the UI; the app version now comes from the binary at runtime via getVersion().
 - `generate_context!` embeds `dist/` at compile time: rebuild the frontend (`npm run build`)
   before any cargo build that should carry current assets, or you ship stale UI silently.
 - Rust style: no `unwrap`/`expect` outside `#[cfg(test)]`; typed errors internally, `String` only

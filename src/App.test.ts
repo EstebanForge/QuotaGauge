@@ -24,9 +24,11 @@ const mocks = vi.hoisted(() => ({
   currentMonitor: vi.fn(),
   startDragging: vi.fn(),
   startResizeDragging: vi.fn(),
+  getVersion: vi.fn(),
 }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: mocks.listen }));
+vi.mock('@tauri-apps/api/app', () => ({ getVersion: mocks.getVersion }));
 vi.mock('@tauri-apps/api/window', () => ({
   currentMonitor: mocks.currentMonitor,
   getCurrentWindow: () => ({
@@ -70,6 +72,7 @@ describe('QuotaGauge dashboard', () => {
     mocks.startDragging.mockReset().mockResolvedValue(undefined);
     mocks.startResizeDragging.mockReset().mockResolvedValue(undefined);
     mocks.invoke.mockReset();
+    mocks.getVersion.mockReset().mockResolvedValue('9.9.9');
     mockInvoke((command: string, args?: InvokeArgs) => {
       if (
         command === 'get_usage_state' ||
@@ -130,7 +133,7 @@ describe('QuotaGauge dashboard', () => {
       'data-tooltip',
       '$3.84 · Estimated locally, so it may be off',
     );
-    expect(screen.getByText(`QuotaGauge ${import.meta.env.APP_VERSION}`)).toBeInTheDocument();
+    expect(screen.getByText('QuotaGauge 9.9.9')).toBeInTheDocument();
     expect(container.querySelector('.floating-chrome')).not.toBeInTheDocument();
   });
 
@@ -1765,6 +1768,15 @@ describe('QuotaGauge dashboard', () => {
         ?.metrics.find((metric) => metric.id === 'codex.session');
       expect(session).toMatchObject({ enabled: false, pinned: true });
     });
+  });
+
+  it('shows the runtime app version in the panel footer and About dialog', async () => {
+    render(App);
+    await screen.findByText('Plus');
+    expect(screen.getByText('QuotaGauge 9.9.9')).toBeInTheDocument();
+    await fireEvent.click(screen.getByLabelText('Open options'));
+    await fireEvent.click(screen.getByRole('button', { name: 'About QuotaGauge' }));
+    expect(await screen.findByText('Version 9.9.9')).toBeInTheDocument();
   });
 
   it('lets a dropdown consume Escape without navigating away from Settings', async () => {

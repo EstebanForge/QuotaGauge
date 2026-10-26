@@ -8,9 +8,11 @@ const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
   listen: vi.fn(),
   currentMonitor: vi.fn(),
+  getVersion: vi.fn(),
 }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: mocks.listen }));
+vi.mock('@tauri-apps/api/app', () => ({ getVersion: mocks.getVersion }));
 vi.mock('@tauri-apps/api/window', () => ({
   currentMonitor: mocks.currentMonitor,
   getCurrentWindow: () => ({
@@ -42,6 +44,7 @@ describe('QuotaGauge customization persistence and reorder', () => {
     });
     mocks.listen.mockReset().mockResolvedValue(vi.fn());
     mocks.invoke.mockReset();
+    mocks.getVersion.mockReset().mockResolvedValue('9.9.9');
     mockInvoke((command: string, args?: InvokeArgs) => {
       if (
         command === 'get_usage_state' ||

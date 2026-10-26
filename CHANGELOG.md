@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.7 - 2026-10-26
+
+### Fixed
+
+- The version shown in the panel footer and the About window now comes from the running app itself, so it can no longer lag behind the installed release.
+
 ## 0.5.6 - 2026-10-26
 
 ### Fixed

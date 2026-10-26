@@ -1,17 +1,7 @@
 import { configDefaults, defineConfig } from 'vitest/config';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
-import { readFileSync } from 'node:fs';
-
-const packageVersion = (
-  JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as {
-    version: string;
-  }
-).version;
 
 export default defineConfig({
-  define: {
-    'import.meta.env.APP_VERSION': JSON.stringify(packageVersion),
-  },
   plugins: [svelte()],
   resolve: {
     conditions: ['browser'],
