@@ -82,6 +82,12 @@ Data flow: providers -> UsageService refresh (events `usage-state`, `open-screen
   setup, and `docs/installation.md` (`verify-platform-smoke` asserts five exact phrases verbatim).
 - Any binary meant to run outside `tauri dev` needs `--features tauri/custom-protocol`, or the
   webview serves the vite devUrl and ships a blank window (Linux smoke AND macOS builds).
+- macOS hand-delivery: after copying `QuotaGauge.app` into `/Applications`, re-sign it with
+  `codesign --force --sign "Apple Development" /Applications/QuotaGauge.app`. The keychain ACLs
+  for the single combined API-key item key off the identity's team-anchored designated
+  requirement, so this one step is what keeps a new build from re-prompting for keychain access
+  (verified 2026-10-26: 0 prompts across builds vs 1 per build ad-hoc). The Apple Development
+  cert renews yearly without changing the team ID, so the ACLs survive renewal.
 - `generate_context!` embeds `dist/` at compile time: rebuild the frontend (`npm run build`)
   before any cargo build that should carry current assets, or you ship stale UI silently.
 - Rust style: no `unwrap`/`expect` outside `#[cfg(test)]`; typed errors internally, `String` only
