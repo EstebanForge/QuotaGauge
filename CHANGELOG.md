@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.5.2 - 2026-10-25
+## 0.5.3 - 2026-10-26
 
 The first QuotaGauge release. Everything below happened before at OpenQuota 0.5.0 version and below.
 
