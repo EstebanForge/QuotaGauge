@@ -37,6 +37,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -60,7 +61,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQ1MDJGRUM1QUY2QzgyRDQKUldUVWdteXZ4ZjRDUlFveldMMVAzOHNqcnhJNkdzVVo5YXpnSU5ZWk4zR3VkRUFTQVY3VWV6REgK",
+      "pubkey": "ZFc1MGNuVnpkR1ZrSUdOdmJXMWxiblE2SUcxcGJtbHphV2R1SUhCMVlteHBZeUJyWlhrNklFSkNNRGMwTUVOQ00wSkJOVU5GTVVFS1VsZFJZWHB4VlRkNU1FRklkWHBQYm5ORWNrNHJiR0oyUms1TFl6aHhiRmhWVUc5dmVUVXZWVkJ5U0RSQ1NHNXJabkZvTld0YWVYVUs=",
       "endpoints": [
         "https://github.com/EstebanForge/QuotaGauge/releases/latest/download/latest.json"
       ]

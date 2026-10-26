@@ -35,6 +35,7 @@ jobs:
             openbox \
             librsvg2-dev \
             patchelf \
+            rpm \
             weston \
             xdotool \
             xvfb
@@ -132,16 +133,24 @@ jobs:
       - name: Build Linux packages
         if: runner.os == 'Linux'
         run: npm run build:linux
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
 
       - name: Build macOS DMG
         if: runner.os == 'macOS'
         run: npm run tauri -- build --bundles dmg
         env:
           APPLE_SIGNING_IDENTITY: '-'
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
 
       - name: Build Windows installer
         if: runner.os == 'Windows'
         run: npm run build:installer
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
 
       - name: Smoke test packaged application
         uses: ./.github/actions/platform-smoke
@@ -176,4 +185,12 @@ jobs:
         with:
           name: QuotaGauge-Linux-deb
           path: src-tauri/target/release/bundle/deb/*.deb
+          if-no-files-found: error
+
+      - name: Upload Linux RPM package
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v7
+        with:
+          name: QuotaGauge-Linux-RPM
+          path: src-tauri/target/release/bundle/rpm/*.rpm
           if-no-files-found: error

@@ -54,6 +54,8 @@ jobs:
         run: npm run tauri -- build --target aarch64-apple-darwin --bundles app
         env:
           APPLE_SIGNING_IDENTITY: Apple Development
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
 
       - name: Verify signature
         run: |
@@ -75,5 +77,15 @@ jobs:
         with:
           name: QuotaGauge-macos-arm64-zip
           path: QuotaGauge-*-macos-arm64.zip
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload updater artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: QuotaGauge-macos-updater
+          path: |
+            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz
+            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
           if-no-files-found: error
           retention-days: 14
