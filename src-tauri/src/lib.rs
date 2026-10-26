@@ -104,7 +104,10 @@ fn install_tray(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     });
     #[cfg(not(target_os = "linux"))]
     let tray = tray.on_tray_icon_event(|tray, event| {
+        #[cfg(target_os = "windows")]
         tauri_plugin_positioner::on_tray_event(tray.app_handle(), &event);
+        #[cfg(target_os = "macos")]
+        window::record_tray_anchor(tray.app_handle(), &event);
 
         if matches!(
             event,
@@ -339,12 +342,14 @@ pub fn run() {
         ))
         .manage(PopupDismissGuard::default())
         .manage(updates::UpdateCoordinator::default())
+        .manage(window::TrayAnchor::default())
         .setup(|app| {
             logging::init(logging::default_log_path(), models::LogLevel::Info);
 
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
+            #[cfg(target_os = "windows")]
             app.handle().plugin(tauri_plugin_positioner::init())?;
             let desktop_integration = DesktopIntegration::detect();
             app_info!(

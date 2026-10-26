@@ -9,10 +9,15 @@ use std::{
 };
 
 use serde::Serialize;
+#[cfg(target_os = "macos")]
+use tauri::tray::TrayIconEvent;
+#[cfg(target_os = "macos")]
+use tauri::LogicalPosition;
 use tauri::{
     webview::Color, AppHandle, Emitter, LogicalSize, Manager, Theme, WebviewWindow, Window,
     WindowEvent,
 };
+#[cfg(target_os = "windows")]
 use tauri_plugin_positioner::{Position, WindowExt};
 
 use crate::{
@@ -289,15 +294,223 @@ pub fn activate_existing_instance(app: &AppHandle) {
     let _ = window.set_focus();
 }
 
-fn position_popup(window: &WebviewWindow) {
-    if cfg!(target_os = "linux") {
-        let _ = window.center();
-    } else {
-        let _ = window
-            .as_ref()
-            .window()
-            .move_window_constrained(Position::TrayCenter);
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PointRect {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+impl PointRect {
+    fn contains(&self, x: f64, y: f64) -> bool {
+        x >= self.x && x < self.x + self.width && y >= self.y && y < self.y + self.height
     }
+
+    fn center(&self) -> (f64, f64) {
+        (self.x + self.width / 2.0, self.y + self.height / 2.0)
+    }
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+struct ScreenPoints {
+    bounds: PointRect,
+    work: PointRect,
+    scale: f64,
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+struct PopupFrame {
+    x: f64,
+    y: f64,
+    height: f64,
+    max_height: f64,
+}
+
+#[derive(Default)]
+pub struct TrayAnchor(Mutex<Option<PointRect>>);
+
+impl TrayAnchor {
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    fn store(&self, rect: Option<PointRect>) {
+        if let Ok(mut slot) = self.0.lock() {
+            *slot = rect;
+        }
+    }
+
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    fn load(&self) -> Option<PointRect> {
+        self.0.lock().ok().and_then(|slot| *slot)
+    }
+}
+
+// tray-icon reports the icon rect in its own screen's backing pixels while every placement API
+// downstream consumes logical points; only the cursor reliably identifies which screen to divide by.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn tray_icon_points(
+    icon_px: PointRect,
+    cursor: (f64, f64),
+    screens: &[ScreenPoints],
+) -> Option<PointRect> {
+    let screen = screens
+        .iter()
+        .find(|screen| screen.bounds.contains(cursor.0, cursor.1))?;
+    let scale = screen.scale;
+    let icon = PointRect {
+        x: icon_px.x / scale,
+        y: icon_px.y / scale,
+        width: icon_px.width / scale,
+        height: icon_px.height / scale,
+    };
+    let (center_x, center_y) = icon.center();
+    if screen.bounds.contains(center_x, center_y) {
+        return Some(icon);
+    }
+    Some(PointRect {
+        x: cursor.0,
+        y: screen.bounds.y,
+        width: 0.0,
+        height: screen.work.y - screen.bounds.y,
+    })
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn popup_frame(
+    anchor: PointRect,
+    screens: &[ScreenPoints],
+    width: f64,
+    wanted_height: f64,
+) -> Option<PopupFrame> {
+    let (center_x, center_y) = anchor.center();
+    let work = screens
+        .iter()
+        .find(|screen| screen.bounds.contains(center_x, center_y))?
+        .work;
+    let right_limit = (work.x + work.width - width).max(work.x);
+    let x = (center_x - width / 2.0).clamp(work.x, right_limit);
+    let y = (anchor.y + anchor.height).max(work.y);
+    let room = work.y + work.height - y;
+    let max_height = room
+        .min(work.height * PANEL_SCREEN_FRACTION)
+        .floor()
+        .max(1.0);
+    let height = wanted_height.clamp(f64::from(PANEL_MIN_HEIGHT).min(max_height), max_height);
+    Some(PopupFrame {
+        x,
+        y,
+        height,
+        max_height,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn screen_points(monitor: &tauri::Monitor) -> ScreenPoints {
+    let scale = monitor.scale_factor();
+    let position = monitor.position();
+    let size = monitor.size();
+    let work = monitor.work_area();
+    let divide = |x: i32, y: i32, width: u32, height: u32| PointRect {
+        x: f64::from(x) / scale,
+        y: f64::from(y) / scale,
+        width: f64::from(width) / scale,
+        height: f64::from(height) / scale,
+    };
+    ScreenPoints {
+        bounds: divide(position.x, position.y, size.width, size.height),
+        work: divide(
+            work.position.x,
+            work.position.y,
+            work.size.width,
+            work.size.height,
+        ),
+        scale,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn screens_points(app: &AppHandle) -> Vec<ScreenPoints> {
+    app.available_monitors()
+        .map(|monitors| monitors.iter().map(screen_points).collect())
+        .unwrap_or_default()
+}
+
+#[cfg(target_os = "macos")]
+fn cursor_points(app: &AppHandle) -> Option<(f64, f64)> {
+    // tao reports the cursor in primary-screen-scaled pixels; the primary scale converts it back.
+    let scale = app.primary_monitor().ok()??.scale_factor();
+    let cursor = app.cursor_position().ok()?;
+    Some((cursor.x / scale, cursor.y / scale))
+}
+
+#[cfg(target_os = "macos")]
+pub fn record_tray_anchor(app: &AppHandle, event: &TrayIconEvent) {
+    let rect = match event {
+        TrayIconEvent::Click { rect, .. } | TrayIconEvent::Enter { rect, .. } => rect,
+        _ => return,
+    };
+    let position = rect.position.to_physical(1.0);
+    let size = rect.size.to_physical(1.0);
+    let icon = PointRect {
+        x: position.x,
+        y: position.y,
+        width: size.width,
+        height: size.height,
+    };
+    let anchor =
+        cursor_points(app).and_then(|cursor| tray_icon_points(icon, cursor, &screens_points(app)));
+    if let Some(slot) = app.try_state::<TrayAnchor>() {
+        slot.store(anchor);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn position_popup(window: &WebviewWindow) {
+    let _ = window.center();
+}
+
+#[cfg(target_os = "windows")]
+fn position_popup(window: &WebviewWindow) {
+    let _ = window
+        .as_ref()
+        .window()
+        .move_window_constrained(Position::TrayCenter);
+}
+
+#[cfg(target_os = "macos")]
+fn position_popup(window: &WebviewWindow) {
+    let app = window.app_handle();
+    let screens = screens_points(app);
+    let anchor = app
+        .try_state::<TrayAnchor>()
+        .and_then(|slot| slot.load())
+        .or_else(|| {
+            let cursor = cursor_points(app)?;
+            let work = screens
+                .iter()
+                .find(|screen| screen.bounds.contains(cursor.0, cursor.1))
+                .map(|screen| screen.work)?;
+            Some(PointRect {
+                x: work.x + work.width - PANEL_WIDTH,
+                y: work.y,
+                width: 0.0,
+                height: 0.0,
+            })
+        });
+    let wanted = app
+        .try_state::<Arc<PanelResizeSession>>()
+        .and_then(|session| session.saved_height())
+        .or_else(|| current_logical_height(&window.as_ref().window()))
+        .map_or(f64::from(PANEL_MIN_HEIGHT), f64::from);
+    let Some(frame) = anchor.and_then(|anchor| popup_frame(anchor, &screens, PANEL_WIDTH, wanted))
+    else {
+        return;
+    };
+    let minimum = f64::from(PANEL_MIN_HEIGHT).min(frame.max_height);
+    let _ = window.set_max_size(Some(LogicalSize::new(PANEL_WIDTH, frame.max_height)));
+    let _ = window.set_min_size(Some(LogicalSize::new(PANEL_WIDTH, minimum)));
+    let _ = window.set_size(LogicalSize::new(PANEL_WIDTH, frame.height));
+    let _ = window.set_position(LogicalPosition::new(frame.x, frame.y));
 }
 
 pub fn show_main_window(window: &WebviewWindow) {
@@ -312,7 +525,12 @@ pub fn show_main_window(window: &WebviewWindow) {
         let _ = restore_manual_panel_height(window);
     } else {
         position_popup(window);
-        let _ = restore_manual_panel_height(window);
+        // The macOS placement above lands asynchronously on the main run loop; a restore here
+        // would re-anchor the panel from stale pre-move geometry and pull it to the old screen.
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = restore_manual_panel_height(window);
+        }
     }
     let _ = window.show();
     let _ = window.set_focus();
@@ -360,7 +578,10 @@ pub fn apply_window_mode(
         } else {
             position_popup(window);
         }
-        let _ = restore_manual_panel_height(window);
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = restore_manual_panel_height(window);
+        }
         window
             .show()
             .and_then(|_| window.set_focus())
@@ -831,8 +1052,9 @@ mod tests {
 
     use super::{
         anchored_vertical_frame, panel_resize_edge_for_context, panel_resize_edge_for_frames,
-        panel_surface_color, PanelHeightMode, PanelResizeEdge, PanelResizeSession, VerticalFrame,
-        DARK_PANEL_SURFACE, LIGHT_PANEL_SURFACE,
+        panel_surface_color, popup_frame, tray_icon_points, PanelHeightMode, PanelResizeEdge,
+        PanelResizeSession, PointRect, ScreenPoints, VerticalFrame, DARK_PANEL_SURFACE,
+        LIGHT_PANEL_SURFACE, PANEL_WIDTH,
     };
     use crate::models::ThemePreference;
     use crate::storage::Storage;
@@ -999,5 +1221,195 @@ mod tests {
                 height: 200
             }
         );
+    }
+
+    fn laptop_screen() -> ScreenPoints {
+        ScreenPoints {
+            bounds: PointRect {
+                x: 0.0,
+                y: 0.0,
+                width: 1512.0,
+                height: 982.0,
+            },
+            work: PointRect {
+                x: 0.0,
+                y: 37.0,
+                width: 1512.0,
+                height: 945.0,
+            },
+            scale: 2.0,
+        }
+    }
+
+    fn external_scale_one() -> ScreenPoints {
+        ScreenPoints {
+            bounds: PointRect {
+                x: 1512.0,
+                y: 0.0,
+                width: 2560.0,
+                height: 1440.0,
+            },
+            work: PointRect {
+                x: 1512.0,
+                y: 25.0,
+                width: 2560.0,
+                height: 1415.0,
+            },
+            scale: 1.0,
+        }
+    }
+
+    fn external_at(x: f64, scale: f64) -> ScreenPoints {
+        ScreenPoints {
+            bounds: PointRect {
+                x,
+                y: 0.0,
+                width: 2560.0,
+                height: 1440.0,
+            },
+            work: PointRect {
+                x,
+                y: 25.0,
+                width: 2560.0,
+                height: 1415.0,
+            },
+            scale,
+        }
+    }
+
+    fn px_rect(x: f64, y: f64, width: f64, height: f64) -> PointRect {
+        PointRect {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    #[test]
+    fn icon_on_scale_one_external_anchors_to_that_screen() {
+        let screens = [laptop_screen(), external_scale_one()];
+        let anchor = tray_icon_points(px_rect(3900.0, 0.0, 30.0, 25.0), (3915.0, 12.0), &screens)
+            .expect("cursor is on the external");
+        assert_eq!(anchor, px_rect(3900.0, 0.0, 30.0, 25.0));
+
+        let frame = popup_frame(anchor, &screens, PANEL_WIDTH, 600.0).expect("screen found");
+        assert_eq!(frame.x, 3752.0);
+        assert_eq!(frame.y, 25.0);
+        assert_eq!(frame.height, 600.0);
+        assert_eq!(frame.max_height, 1202.0);
+    }
+
+    #[test]
+    fn icon_backing_pixels_never_leak_into_the_neighbor_screen() {
+        // Icon on the laptop at point x 1400; its backing-pixel x 2800 would sit on the
+        // external if the scale were guessed as 1. The cursor decides the screen instead.
+        let screens = [laptop_screen(), external_scale_one()];
+        let anchor = tray_icon_points(px_rect(2800.0, 0.0, 60.0, 74.0), (1415.0, 18.0), &screens)
+            .expect("cursor is on the laptop");
+        assert_eq!(anchor, px_rect(1400.0, 0.0, 30.0, 37.0));
+
+        let frame = popup_frame(anchor, &screens, PANEL_WIDTH, 600.0).expect("screen found");
+        assert_eq!(frame.x, 1192.0);
+        assert_eq!(frame.y, 37.0);
+    }
+
+    #[test]
+    fn same_scale_screens_anchor_by_cursor_not_by_window_history() {
+        let screens = [external_at(0.0, 2.0), external_at(2560.0, 2.0)];
+        let anchor = tray_icon_points(px_rect(9000.0, 0.0, 60.0, 50.0), (4515.0, 12.0), &screens)
+            .expect("cursor is on the second screen");
+        assert_eq!(anchor, px_rect(4500.0, 0.0, 30.0, 25.0));
+
+        let frame = popup_frame(anchor, &screens, PANEL_WIDTH, 600.0).expect("screen found");
+        assert_eq!(frame.x, 4355.0);
+        assert_eq!(frame.y, 25.0);
+    }
+
+    #[test]
+    fn display_stacked_below_the_primary_drops_inside_it() {
+        let below = ScreenPoints {
+            bounds: PointRect {
+                x: 0.0,
+                y: 1440.0,
+                width: 2560.0,
+                height: 1440.0,
+            },
+            work: PointRect {
+                x: 0.0,
+                y: 1465.0,
+                width: 2560.0,
+                height: 1415.0,
+            },
+            scale: 1.0,
+        };
+        let screens = [below];
+        let anchor = tray_icon_points(
+            px_rect(2400.0, 1440.0, 30.0, 25.0),
+            (2415.0, 1452.0),
+            &screens,
+        )
+        .expect("cursor is on the stacked display");
+        let frame = popup_frame(anchor, &screens, PANEL_WIDTH, 600.0).expect("screen found");
+        assert_eq!(frame.x, 2240.0);
+        assert_eq!(frame.y, 1465.0);
+    }
+
+    #[test]
+    fn negative_coordinate_arrangement_clamps_inside_its_work_area() {
+        let left = ScreenPoints {
+            bounds: PointRect {
+                x: -1920.0,
+                y: -1080.0,
+                width: 1920.0,
+                height: 1080.0,
+            },
+            work: PointRect {
+                x: -1920.0,
+                y: -1055.0,
+                width: 1920.0,
+                height: 1055.0,
+            },
+            scale: 1.0,
+        };
+        let screens = [left];
+        let anchor = tray_icon_points(
+            px_rect(-100.0, -1080.0, 30.0, 25.0),
+            (-85.0, -1068.0),
+            &screens,
+        )
+        .expect("cursor is on the left display");
+        let frame = popup_frame(anchor, &screens, PANEL_WIDTH, 600.0).expect("screen found");
+        assert_eq!(frame.x, -320.0);
+        assert_eq!(frame.y, -1055.0);
+    }
+
+    #[test]
+    fn wanted_height_caps_to_the_screen_fraction_and_work_room() {
+        let screens = [laptop_screen()];
+        let anchor = px_rect(0.0, 0.0, 30.0, 37.0);
+        let frame = popup_frame(anchor, &screens, PANEL_WIDTH, 900.0).expect("screen found");
+        assert_eq!(frame.height, 803.0);
+        assert_eq!(frame.max_height, 803.0);
+    }
+
+    #[test]
+    fn anchor_off_every_screen_yields_no_frame() {
+        let screens = [laptop_screen()];
+        let anchor = px_rect(5000.0, 0.0, 30.0, 25.0);
+        assert!(popup_frame(anchor, &screens, PANEL_WIDTH, 600.0).is_none());
+    }
+
+    #[test]
+    fn rect_off_the_cursor_screen_falls_back_to_the_cursor_position() {
+        let screens = [laptop_screen(), external_scale_one()];
+        let anchor = tray_icon_points(px_rect(1400.0, 0.0, 60.0, 74.0), (3915.0, 12.0), &screens)
+            .expect("cursor is on the external");
+        assert_eq!(anchor.x, 3915.0);
+        assert_eq!(anchor.width, 0.0);
+
+        let frame = popup_frame(anchor, &screens, PANEL_WIDTH, 600.0).expect("screen found");
+        assert_eq!(frame.x, 3752.0);
+        assert_eq!(frame.y, 25.0);
     }
 }
