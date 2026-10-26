@@ -29,6 +29,26 @@ export function createWindowController(options: WindowControllerOptions) {
   let resizeInFlight = false;
   let pendingResizeHeight: number | null = null;
   let dashboardBodyHeight: number | null = null;
+  let lastKeyboardActivity = 0;
+
+  // macOS WebKit seeds keyboard-style focus to the first tabbable element (the first card's drag
+  // grip) when the panel window resizes, painting a stray focus ring for pointer users.
+  function dropSeededHandleFocus() {
+    if (typeof window === 'undefined') return;
+    if (performance.now() - lastKeyboardActivity < 500) return;
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && active.matches('[data-reorder-touch-handle]')) {
+      active.blur();
+    }
+  }
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener('keydown', markKeyboardActivity, { capture: true });
+  }
+
+  function markKeyboardActivity() {
+    lastKeyboardActivity = performance.now();
+  }
 
   function shouldDefer() {
     return options.reordering() || shouldDeferPanelFit(options.screen(), options.refreshing());
@@ -54,6 +74,7 @@ export function createWindowController(options: WindowControllerOptions) {
     contentMorphTimer = window.setTimeout(() => {
       contentMorphActive = false;
       scheduleFit();
+      window.requestAnimationFrame(dropSeededHandleFocus);
     }, duration + 34);
   }
 
@@ -160,6 +181,9 @@ export function createWindowController(options: WindowControllerOptions) {
       options.onError('QuotaGauge window could not adapt to its content.');
     } finally {
       resizeInFlight = false;
+      if (pendingResizeHeight === null) {
+        window.requestAnimationFrame(() => window.requestAnimationFrame(dropSeededHandleFocus));
+      }
     }
   }
 
@@ -171,6 +195,7 @@ export function createWindowController(options: WindowControllerOptions) {
       contentMorphActive = false;
       window.cancelAnimationFrame(measureFrame);
       cancelPendingResize();
+      window.removeEventListener('keydown', markKeyboardActivity, { capture: true });
     },
   };
 }

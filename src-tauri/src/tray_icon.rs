@@ -12,7 +12,9 @@ const ICON_SIZE: u32 = 32;
 const SEGMENT_COUNT: usize = 6;
 const SWEEP_CENTER: f32 = ICON_SIZE as f32 / 2.0;
 const SWEEP_RADIUS: f32 = ICON_SIZE as f32 * 1.5;
-const SWEEP_START_RADIANS: f32 = std::f32::consts::FRAC_PI_4;
+// the bundled gauge arc spans 180deg..360deg (left over the top to right),
+// so the reveal must start at the left end and sweep clockwise
+const SWEEP_START_RADIANS: f32 = std::f32::consts::PI;
 const SWEEP_STEPS: usize = 192;
 
 type Rgba = (u8, u8, u8, u8);
@@ -27,7 +29,7 @@ const HEALTHY_THRESHOLD: f64 = 0.6;
 struct GaugePaths {
     track: Vec<Path>,
     fill: Vec<Path>,
-    q_tail: Path,
+    needle: Path,
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -64,7 +66,7 @@ fn render_rgba(display_fraction: f64, remaining_fraction: f64) -> Vec<u8> {
     }
     draw_paths(
         &mut pixmap,
-        std::slice::from_ref(&paths.q_tail),
+        std::slice::from_ref(&paths.needle),
         quota_color,
         transform,
     );
@@ -97,7 +99,9 @@ fn sweep_mask(fraction: f64) -> Mask {
     if fraction <= 0.0 {
         return mask;
     }
-    let sweep = std::f32::consts::TAU * fraction;
+    // a full-circle sweep would reveal the 180deg arc within its first half;
+    // span the reveal over the arc itself so fraction 1.0 exactly fills it
+    let sweep = std::f32::consts::PI * fraction;
     let steps = ((SWEEP_STEPS as f32 * fraction).ceil() as usize).max(1);
     let mut builder = PathBuilder::new();
     builder.move_to(SWEEP_CENTER, SWEEP_CENTER);
@@ -164,11 +168,11 @@ fn parse_gauge_paths() -> Result<GaugePaths, String> {
             Some("fill"),
         )?);
     }
-    let q_tail = parse_named_path(&document, "q-tail", None)?;
+    let needle = parse_named_path(&document, "needle", None)?;
     Ok(GaugePaths {
         track,
         fill,
-        q_tail,
+        needle,
     })
 }
 
@@ -241,7 +245,7 @@ mod tests {
         let paths = gauge_paths();
         assert_eq!(paths.track.len(), SEGMENT_COUNT);
         assert_eq!(paths.fill.len(), SEGMENT_COUNT);
-        assert!(paths.q_tail.bounds().width() > 0.0);
+        assert!(paths.needle.bounds().width() > 0.0);
     }
 
     #[test]

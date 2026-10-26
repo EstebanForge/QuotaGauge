@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/quotagauge-icon.png" alt="QuotaGauge logo" width="140">
+</p>
+
 <h1 align="center">QuotaGauge</h1>
 
 <p align="center">
@@ -49,7 +53,7 @@ Everything runs locally. No account, no cloud backend, no analytics, no telemetr
 
 ## Development
 
-You need Node.js 22 or later, pnpm 11.11.0, and a stable Rust toolchain. [Development](docs/development.md) has the setup, the quality checks, and the build commands.
+You need Node.js 22 or later and a stable Rust toolchain. [Development](docs/development.md) has the setup, the quality checks, and the build commands.
 
 ## Contributing
 
