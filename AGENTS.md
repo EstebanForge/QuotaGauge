@@ -9,26 +9,26 @@ grok, kimi, minimax, opencode, openrouter, zai). Targets Windows, macOS, Linux.
 
 ## Setup
 
-Prereqs: Node 22+, pnpm 11.11.0 (`packageManager` field pins it), stable Rust, Tauri 2 platform
+Prereqs: Node 22+ (npm included), stable Rust, Tauri 2 platform
 prereqs (https://v2.tauri.app/start/prerequisites/).
 
 ```sh
-corepack pnpm install --frozen-lockfile
-corepack pnpm tauri dev
+npm install
+npm run tauri dev
 ```
 
 ## Commands
 
 ```sh
-corepack pnpm verify            # full gate: versions + contracts + frontend + rust
-corepack pnpm run lint          # eslint + prettier --check
-corepack pnpm run check         # svelte-check
-corepack pnpm run test          # vitest run
-corepack pnpm run test:watch
-corepack pnpm run build         # vite build -> dist/
-corepack pnpm build:linux       # tauri build --bundles deb,appimage
-corepack pnpm build:installer   # tauri build --bundles nsis (Windows)
-corepack pnpm tauri build --bundles dmg   # macOS
+npm run verify            # full gate: versions + contracts + frontend + rust
+npm run lint              # eslint + prettier --check
+npm run check             # svelte-check
+npm run test              # vitest run
+npm run test:watch
+npm run build             # vite build -> dist/
+npm run build:linux       # tauri build --bundles deb,appimage
+npm run build:installer   # tauri build --bundles nsis (Windows)
+npm run tauri -- build --bundles dmg   # macOS
 ```
 
 Rust gates (what `verify:rust` runs, useful singly):
@@ -39,7 +39,7 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 cargo test --manifest-path src-tauri/Cargo.toml --all-targets        # filter: cargo test <name>
 ```
 
-Single frontend test file: `corepack pnpm run test -- src/lib/metrics.test.ts`.
+Single frontend test file: `npm run test -- src/lib/metrics.test.ts`.
 
 Headless e2e smoke (Linux): `scripts/e2e/smoke.sh <binary> <artifact-dir>` — always pass the
 artifact dir; the binary must be built with `--features tauri/custom-protocol` (see gotchas).
@@ -75,15 +75,15 @@ Data flow: providers -> UsageService refresh (events `usage-state`, `open-screen
 
 - Versions must stay identical in `package.json`, `src-tauri/tauri.conf.json`,
   `src-tauri/Cargo.toml` — bump all three together; `verify:versions` enforces it.
-- `scripts/verify/*.js` are NOT in `corepack pnpm verify` except `verify:contracts`' five. Run them
+- `scripts/verify/*.js` are NOT in `npm run verify` except `verify:contracts`' five. Run them
   after touching: Tauri commands (`verify-command-contract`), `models.rs` (`verify-model-contract`),
   provider wiring (`verify-provider-registry-contract` regex-asserts the exact
   `Arc::new(XProvider::new)` shape inside `build_registry` in `providers/mod.rs`), single-instance
   setup, and `docs/installation.md` (`verify-platform-smoke` asserts five exact phrases verbatim).
 - Any binary meant to run outside `tauri dev` needs `--features tauri/custom-protocol`, or the
   webview serves the vite devUrl and ships a blank window (Linux smoke AND macOS builds).
-- `generate_context!` embeds `dist/` at compile time: rebuild the frontend (`corepack pnpm run
-  build`) before any cargo build that should carry current assets, or you ship stale UI silently.
+- `generate_context!` embeds `dist/` at compile time: rebuild the frontend (`npm run build`)
+  before any cargo build that should carry current assets, or you ship stale UI silently.
 - Rust style: no `unwrap`/`expect` outside `#[cfg(test)]`; typed errors internally, `String` only
   at the command boundary; early returns; tests colocated in `mod tests` plus `src-tauri/tests/`.
   Provider tests mock HTTP with `test_http::serve_once` (fixed connection budget per mock).
@@ -107,5 +107,5 @@ Data flow: providers -> UsageService refresh (events `usage-state`, `open-screen
   ui, ci, deps, release; `docs:`, `chore:`, `test:`, `refactor:` unscoped. Imperative subject
   <=72 chars. No AI attribution or sign-offs.
 - PRs (CONTRIBUTING.md): one change per PR, explain problem + solution, add/update tests when
-  behavior changes, screenshots for visible UI changes, run `corepack pnpm verify` first.
+  behavior changes, screenshots for visible UI changes, run `npm run verify` first.
 - Never commit credentials, tokens, or local config. Security issues go through SECURITY.md.

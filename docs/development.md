@@ -3,21 +3,20 @@
 ## Requirements
 
 - Node.js 22 or later
-- pnpm 11.11.0
 - Stable Rust toolchain
 - [Tauri 2 platform prerequisites](https://v2.tauri.app/start/prerequisites/)
 
 ## Run the app
 
 ```sh
-corepack pnpm install --frozen-lockfile
-corepack pnpm tauri dev
+npm install
+npm run tauri dev
 ```
 
 ## Quality checks
 
 ```sh
-corepack pnpm verify
+npm run verify
 ```
 
 This runs the version checks, the frontend contract verification, the frontend lint and tests, and the full Rust suite.
@@ -25,9 +24,9 @@ This runs the version checks, the frontend contract verification, the frontend l
 ## Build an installer
 
 ```sh
-corepack pnpm build:installer             # Windows
-corepack pnpm build:linux                 # Linux
-corepack pnpm tauri build --bundles dmg   # macOS
+npm run build:installer             # Windows
+npm run build:linux                 # Linux
+npm run tauri -- build --bundles dmg   # macOS
 ```
 
 ## Releasing

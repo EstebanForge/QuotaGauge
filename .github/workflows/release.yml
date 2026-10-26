@@ -134,11 +134,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22
-
-      - uses: pnpm/action-setup@v6
-        with:
-          version: 11.11.0
-          run_install: false
+          cache: npm
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -152,19 +148,19 @@ jobs:
         run: node scripts/verify/verify-versions.js "$RELEASE_TAG"
 
       - name: Install frontend dependencies
-        run: pnpm install --frozen-lockfile
+        run: npm ci
 
       - name: Verify frontend-backend contracts
-        run: pnpm verify:contracts
+        run: npm run verify:contracts
 
       - name: Lint
-        run: pnpm lint
+        run: npm run lint
 
       - name: Type check
-        run: pnpm check
+        run: npm run check
 
       - name: Test frontend
-        run: pnpm test
+        run: npm test
 
       - name: Test Rust
         run: cargo test --manifest-path src-tauri/Cargo.toml --all-targets
@@ -280,11 +276,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22
-
-      - uses: pnpm/action-setup@v6
-        with:
-          version: 11.11.0
-          run_install: false
+          cache: npm
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -295,7 +287,7 @@ jobs:
           workspaces: src-tauri -> target
 
       - name: Install frontend dependencies
-        run: pnpm install --frozen-lockfile
+        run: npm ci
 
       - name: Prepare Linux AppImage bundler
         if: runner.os == 'Linux'

@@ -25,18 +25,18 @@ Security vulnerabilities should not be reported in a public issue. Follow
 
 ## Development setup
 
-You need Node.js 22 or later, pnpm 11.11.0, stable Rust, and the
+You need Node.js 22 or later, stable Rust, and the
 [Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/) for your platform.
 
 ```sh
-corepack pnpm install --frozen-lockfile
-corepack pnpm tauri dev
+npm install
+npm run tauri dev
 ```
 
 Run the complete quality checks before submitting a pull request:
 
 ```sh
-corepack pnpm verify
+npm run verify
 ```
 
 ## Pull requests

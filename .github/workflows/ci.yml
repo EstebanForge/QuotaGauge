@@ -42,11 +42,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22
-
-      - uses: pnpm/action-setup@v6
-        with:
-          version: 11.11.0
-          run_install: false
+          cache: npm
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -57,22 +53,22 @@ jobs:
           workspaces: src-tauri -> target
 
       - name: Install frontend dependencies
-        run: pnpm install --frozen-lockfile
+        run: npm ci
 
       - name: Verify application versions
-        run: pnpm verify:versions
+        run: npm run verify:versions
 
       - name: Verify frontend-backend command contract
-        run: pnpm verify:contracts
+        run: npm run verify:contracts
 
       - name: Lint
-        run: pnpm lint
+        run: npm run lint
 
       - name: Type check
-        run: pnpm check
+        run: npm run check
 
       - name: Test frontend
-        run: pnpm test
+        run: npm test
 
       - name: Format Rust
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
@@ -135,17 +131,17 @@ jobs:
 
       - name: Build Linux packages
         if: runner.os == 'Linux'
-        run: pnpm build:linux
+        run: npm run build:linux
 
       - name: Build macOS DMG
         if: runner.os == 'macOS'
-        run: pnpm tauri build --bundles dmg
+        run: npm run tauri -- build --bundles dmg
         env:
           APPLE_SIGNING_IDENTITY: '-'
 
       - name: Build Windows installer
         if: runner.os == 'Windows'
-        run: pnpm build:installer
+        run: npm run build:installer
 
       - name: Smoke test packaged application
         uses: ./.github/actions/platform-smoke
