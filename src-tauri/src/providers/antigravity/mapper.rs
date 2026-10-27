@@ -26,7 +26,7 @@ pub struct ModelConfig {
 const ARGON_GROUP_NAME: &str = "Gemini 4 Argon";
 
 const BUCKETS: [(&str, &str, &str, u64); 4] = [
-    ("gemini-5h", "geminiPro", "Session", 5 * 60 * 60),
+    ("gemini-5h", "geminiPro", "Five Hour", 5 * 60 * 60),
     ("gemini-weekly", "geminiWeekly", "Weekly", 7 * 24 * 60 * 60),
     ("3p-5h", "claude", "Claude", 5 * 60 * 60),
     (
@@ -335,7 +335,7 @@ pub fn build_legacy_quotas(configs: Vec<ModelConfig>) -> Vec<QuotaWindow> {
         }
     }
     [
-        ("geminiPro", "Session", gemini),
+        ("geminiPro", "Five Hour", gemini),
         ("claude", "Claude", claude),
     ]
     .into_iter()
@@ -419,6 +419,18 @@ mod tests {
         assert_eq!(quotas[0].id, "geminiPro");
         assert_eq!(quotas[0].used_percent, 20.0);
         assert_eq!(quotas[1].id, "claudeWeekly");
+    }
+
+    #[test]
+    fn gemini_five_hour_window_is_named_like_the_antigravity_app() {
+        let value = summary_with_argon(argon_group(json!([
+            {"bucketId": "gemini-4-argon-weekly", "window": "weekly", "remainingFraction": 1.0}
+        ])));
+        let quotas = parse_quota_summary(&value).unwrap();
+        let gemini = quotas.iter().find(|quota| quota.id == "geminiPro").unwrap();
+        assert_eq!(gemini.label, "Five Hour");
+        let claude = quotas.iter().find(|quota| quota.id == "claude").unwrap();
+        assert_eq!(claude.label, "Claude");
     }
 
     fn summary_with_argon(argon_group: Value) -> Value {

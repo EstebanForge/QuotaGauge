@@ -3,7 +3,7 @@ mod client;
 mod discovery;
 mod mapper;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use chrono::Utc;
@@ -11,7 +11,8 @@ use serde_json::{json, Value};
 use thiserror::Error;
 
 use crate::models::{
-    MetricDefinition, MetricSection, ProviderDefinition, ProviderSnapshot, UsageHistory,
+    MetricDefinition, MetricSection, ProviderDefinition, ProviderSnapshot, QuotaWindow,
+    UsageHistory,
 };
 
 use self::{
@@ -32,6 +33,8 @@ const RETRIEVE_QUOTA_PATH: &str = "/v1internal:retrieveUserQuota";
 /// A warm `agy` answers in a couple of seconds; a cold one needs its own sign-in, which we never
 /// drive from a refresh.
 const AGY_CLI_TIMEOUT: Duration = Duration::from_secs(15);
+const AGY_CLI_PATH_ENV: &str = "ANTIGRAVITY_CLI_PATH";
+const AGY_PRINT_SUBCOMMANDS: [&str; 2] = ["quota", "usage"];
 
 pub(crate) fn definition() -> ProviderDefinition {
     ProviderDefinition {
@@ -44,13 +47,13 @@ pub(crate) fn definition() -> ProviderDefinition {
         metrics: vec![
             MetricDefinition::quota(
                 "antigravity.geminiPro",
-                "Session",
+                "Five Hour",
                 "geminiPro",
                 true,
                 true,
                 MetricSection::AlwaysVisible,
                 true,
-                "S",
+                "5H",
             ),
             MetricDefinition::quota(
                 "antigravity.geminiWeekly",
@@ -308,19 +311,14 @@ impl AntigravityProvider {
         if quotas.iter().any(|quota| quota.id == "argonWeekly") {
             return;
         }
-        let output = crate::child_process::output_with_timeout(
-            crate::child_process::background_command("agy").args([
-                "-p",
-                "/quota",
-                "--output-format",
-                "json",
-            ]),
-            AGY_CLI_TIMEOUT,
-        )
-        .ok()
-        .filter(|output| output.status.success())
-        .and_then(|output| serde_json::from_slice(&output.stdout).ok());
-        if let Some(argon) = output.as_ref().and_then(parse_agy_cli_quota) {
+        let candidates = agy_cli_candidates(
+            std::env::var(AGY_CLI_PATH_ENV).ok().as_deref(),
+            Some(&home_directory()),
+        );
+        if let Some(argon) = candidates
+            .iter()
+            .find_map(|program| argon_from_cli_report(program))
+        {
             insert_argon(quotas, argon);
         }
     }
@@ -345,6 +343,53 @@ impl AntigravityProvider {
             }
         }
     }
+}
+
+fn home_directory() -> PathBuf {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .unwrap_or_default()
+}
+
+/// CodexBar-contract resolution: `ANTIGRAVITY_CLI_PATH` is authoritative, so an empty or
+/// unusable value skips the CLI source instead of discovering some other `agy`; otherwise a
+/// PATH lookup, then the cask install locations a GUI app's PATH does not carry.
+fn agy_cli_candidates(cli_path_env: Option<&str>, home: Option<&Path>) -> Vec<PathBuf> {
+    if let Some(path) = cli_path_env.map(str::trim).filter(|path| !path.is_empty()) {
+        return vec![PathBuf::from(path)];
+    }
+    if cli_path_env.is_some() {
+        return Vec::new();
+    }
+    let mut candidates = vec![PathBuf::from("agy")];
+    #[cfg(unix)]
+    if let Some(home) = home {
+        candidates.push(home.join(".local/bin/agy"));
+        candidates.push(PathBuf::from("/opt/homebrew/bin/agy"));
+        candidates.push(PathBuf::from("/usr/local/bin/agy"));
+    }
+    candidates
+}
+
+/// `agy` exposes non-interactive print reports since 1.1.11; `/quota` and `/usage` differ
+/// across CLI builds, so both are attempted against a resolvable binary.
+fn argon_from_cli_report(program: &Path) -> Option<QuotaWindow> {
+    for subcommand in AGY_PRINT_SUBCOMMANDS {
+        let mut command = crate::child_process::background_command(program);
+        command.env("AGY_CLI_DISABLE_AUTO_UPDATE", "true");
+        let output = crate::child_process::output_with_timeout(
+            command.args(["-p", subcommand, "--output-format", "json"]),
+            AGY_CLI_TIMEOUT,
+        )
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| serde_json::from_slice(&output.stdout).ok());
+        if let Some(argon) = output.as_ref().and_then(parse_agy_cli_quota) {
+            return Some(argon);
+        }
+    }
+    None
 }
 
 fn access_token_candidates(
@@ -473,13 +518,17 @@ impl crate::providers::UsageProvider for AntigravityProvider {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::Cell;
+    use std::{
+        cell::Cell,
+        path::{Path, PathBuf},
+    };
 
     use chrono::{Duration, TimeZone, Utc};
 
     use super::{
-        access_token_candidates, auth::AntigravityToken, credential_failure, has_refresh_source,
-        remote_plan, should_refresh_access_token, AntigravityError,
+        access_token_candidates, agy_cli_candidates, argon_from_cli_report, auth::AntigravityToken,
+        credential_failure, has_refresh_source, remote_plan, should_refresh_access_token,
+        AntigravityError,
     };
 
     #[test]
@@ -498,6 +547,59 @@ mod tests {
             "currentTier": {"name": "Free"}
         }));
         assert_eq!(no_paid_tier.as_deref(), Some("Free"));
+    }
+
+    #[test]
+    fn cli_path_env_is_the_authoritative_agy_candidate() {
+        assert_eq!(
+            agy_cli_candidates(Some("/custom/agy"), Some(Path::new("/home/u"))),
+            vec![PathBuf::from("/custom/agy")]
+        );
+        assert_eq!(
+            agy_cli_candidates(Some("  "), Some(Path::new("/home/u"))),
+            Vec::<PathBuf>::new()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn agy_candidates_fall_back_to_path_then_known_install_locations() {
+        assert_eq!(
+            agy_cli_candidates(None, Some(Path::new("/home/u"))),
+            vec![
+                PathBuf::from("agy"),
+                PathBuf::from("/home/u/.local/bin/agy"),
+                PathBuf::from("/opt/homebrew/bin/agy"),
+                PathBuf::from("/usr/local/bin/agy"),
+            ]
+        );
+        assert_eq!(
+            agy_cli_candidates(None, None).first(),
+            Some(&PathBuf::from("agy"))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn argon_print_report_is_parsed_from_a_resolved_cli() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("agy");
+        std::fs::write(
+            &script,
+            concat!(
+                "#!/bin/sh\necho '",
+                "{\"command\":{\"data\":{\"groups\":[{\"name\":\"Gemini 4 Argon\",\"buckets\":[",
+                "{\"bucket_id\":\"argon-weekly\",\"window\":\"weekly\",\"remaining_fraction\":0.19}",
+                "]}]}}}'\n"
+            ),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let argon = argon_from_cli_report(&script).expect("argon from the print report");
+        assert_eq!(argon.id, "argonWeekly");
+        assert_eq!(argon.used_percent, 81.0);
     }
 
     #[test]

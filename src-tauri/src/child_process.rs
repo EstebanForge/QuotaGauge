@@ -11,7 +11,7 @@ use std::{
 /// console-subsystem executable from it without `CREATE_NO_WINDOW` briefly
 /// creates a visible console window, so every background child process must go
 /// through this helper.
-pub fn background_command(program: &str) -> Command {
+pub fn background_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     let mut command = Command::new(program);
     hide_console_window(&mut command);
     command

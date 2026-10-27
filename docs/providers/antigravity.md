@@ -6,8 +6,9 @@ QuotaGauge tracks the shared Gemini and Claude quota pools reported by Antigravi
 
 | Metric        | Meaning                                             |
 | ------------- | --------------------------------------------------- |
-| Session       | Shared Gemini pool in the rolling 5-hour window     |
+| Five Hour     | Shared Gemini pool in the rolling 5-hour window     |
 | Weekly        | Shared Gemini pool in the weekly window             |
+| Argon Weekly  | Separate Gemini 4 Argon weekly quota, when reported |
 | Claude        | Shared non-Gemini pool in the rolling 5-hour window |
 | Claude Weekly | Shared non-Gemini pool in the weekly window         |
 
