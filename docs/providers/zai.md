@@ -7,7 +7,6 @@ QuotaGauge tracks quota information for the Z.ai GLM Coding Plan.
 | Metric       | Meaning                                      |
 | ------------ | -------------------------------------------- |
 | Session      | Usage remaining in the rolling 5-hour window |
-| Weekly       | Usage remaining in the rolling 7-day window  |
 | Web Searches | Monthly web-search allowance remaining       |
 
 ## Setup

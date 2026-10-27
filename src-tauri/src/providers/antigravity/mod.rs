@@ -311,10 +311,12 @@ impl AntigravityProvider {
         if quotas.iter().any(|quota| quota.id == "argonWeekly") {
             return;
         }
-        let candidates = agy_cli_candidates(
-            std::env::var(AGY_CLI_PATH_ENV).ok().as_deref(),
-            Some(&home_directory()),
-        );
+        let cli_path_env =
+            std::env::var_os(AGY_CLI_PATH_ENV).map(|path| path.to_string_lossy().into_owned());
+        let home = home_directory();
+        let home = (!home.as_os_str().is_empty()).then_some(&home);
+        let candidates =
+            agy_cli_candidates(cli_path_env.as_deref(), home.map(|path| path.as_path()));
         if let Some(argon) = candidates
             .iter()
             .find_map(|program| argon_from_cli_report(program))
@@ -378,14 +380,21 @@ fn argon_from_cli_report(program: &Path) -> Option<QuotaWindow> {
     for subcommand in AGY_PRINT_SUBCOMMANDS {
         let mut command = crate::child_process::background_command(program);
         command.env("AGY_CLI_DISABLE_AUTO_UPDATE", "true");
-        let output = crate::child_process::output_with_timeout(
+        let output = match crate::child_process::output_with_timeout(
             command.args(["-p", subcommand, "--output-format", "json"]),
             AGY_CLI_TIMEOUT,
-        )
-        .ok()
-        .filter(|output| output.status.success())
-        .and_then(|output| serde_json::from_slice(&output.stdout).ok());
-        if let Some(argon) = output.as_ref().and_then(parse_agy_cli_quota) {
+        ) {
+            Ok(output) => output,
+            // A hang or a missing binary will not improve on the next subcommand or candidate.
+            Err(_) => return None,
+        };
+        if !output.status.success() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_slice::<Value>(&output.stdout) else {
+            continue;
+        };
+        if let Some(argon) = parse_agy_cli_quota(&value) {
             return Some(argon);
         }
     }
@@ -600,6 +609,43 @@ mod tests {
         let argon = argon_from_cli_report(&script).expect("argon from the print report");
         assert_eq!(argon.id, "argonWeekly");
         assert_eq!(argon.used_percent, 81.0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn usage_backfills_when_quota_is_unknown_and_the_auto_update_guard_is_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("agy");
+        std::fs::write(
+            &script,
+            concat!(
+                "#!/bin/sh\n",
+                "if [ \"$2\" = \"/quota\" ]; then exit 1; fi\n",
+                "if [ -n \"$AGY_CLI_DISABLE_AUTO_UPDATE\" ]; then fraction=0.81; else fraction=0.99; fi\n",
+                "echo '{\"command\":{\"data\":{\"groups\":[{\"name\":\"Gemini 4 Argon\",\"buckets\":[",
+                "{\"bucket_id\":\"argon-weekly\",\"window\":\"weekly\",\"remaining_fraction\":'\"$fraction\"'}]}]}}}'\n"
+            ),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let argon = argon_from_cli_report(&script).expect("argon via the usage subcommand");
+        assert_eq!(argon.used_percent, 19.0);
+    }
+
+    #[test]
+    fn five_hour_metric_is_named_and_short_labelled_for_the_tray() {
+        let session = super::definition()
+            .metrics
+            .into_iter()
+            .find(|metric| metric.id == "antigravity.geminiPro")
+            .unwrap();
+        assert_eq!(session.label, "Five Hour");
+        assert_eq!(
+            session.tray.map(|tray| tray.short_label),
+            Some("5H".to_string())
+        );
     }
 
     #[test]
