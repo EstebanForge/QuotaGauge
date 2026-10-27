@@ -79,6 +79,14 @@ async fn save_app_settings_inner(
     let next_shortcut = settings.global_shortcut.clone();
     let autostart_changed = previous.launch_at_login != settings.launch_at_login;
     let window_mode_changed = previous.window_mode != settings.window_mode;
+    // The command guard keeps revisions stable against other commands, so checking the
+    // settings revision here lets the routine conflict path fail before any OS side
+    // effect; update_internal's guard and the account-name resync still run at persist
+    // time, and background account swaps remain non-fatal by design.
+    if settings_service.settings_revision() != expected_settings_revision {
+        return Err(crate::settings::STALE_SETTINGS_SAVE_MESSAGE.to_owned());
+    }
+    let mut revert_failures = Vec::new();
     apply_shortcut_change(
         &app,
         previous.global_shortcut.as_deref(),
@@ -86,36 +94,42 @@ async fn save_app_settings_inner(
     )?;
     if autostart_changed {
         if let Err(error) = set_autostart(&app, settings.launch_at_login) {
-            let _ = apply_shortcut_change(
+            revert_shortcut(
                 &app,
                 settings.global_shortcut.as_deref(),
                 previous.global_shortcut.as_deref(),
+                &mut revert_failures,
             );
-            return Err(error);
+            return Err(with_revert_failures(error, &revert_failures));
         }
     }
     if window_mode_changed {
         let Some(window) = app.get_webview_window(crate::window::MAIN_WINDOW) else {
             if autostart_changed {
-                let _ = set_autostart(&app, previous.launch_at_login);
+                revert_autostart(&app, &previous, &mut revert_failures);
             }
-            let _ = apply_shortcut_change(
+            revert_shortcut(
                 &app,
                 settings.global_shortcut.as_deref(),
                 previous.global_shortcut.as_deref(),
+                &mut revert_failures,
             );
-            return Err("QuotaGauge window is unavailable.".to_owned());
+            return Err(with_revert_failures(
+                "QuotaGauge window is unavailable.".to_owned(),
+                &revert_failures,
+            ));
         };
         if let Err(error) = crate::window::apply_window_mode(&window, settings.window_mode, true) {
             if autostart_changed {
-                let _ = set_autostart(&app, previous.launch_at_login);
+                revert_autostart(&app, &previous, &mut revert_failures);
             }
-            let _ = apply_shortcut_change(
+            revert_shortcut(
                 &app,
                 settings.global_shortcut.as_deref(),
                 previous.global_shortcut.as_deref(),
+                &mut revert_failures,
             );
-            return Err(error);
+            return Err(with_revert_failures(error, &revert_failures));
         }
     }
     let persisted = match mode {
@@ -135,19 +149,37 @@ async fn save_app_settings_inner(
         Err(error) => {
             crate::app_error!("config", "settings could not be persisted");
             if autostart_changed {
-                let _ = set_autostart(&app, previous.launch_at_login);
+                revert_autostart(&app, &previous, &mut revert_failures);
             }
-            let _ = apply_shortcut_change(
+            revert_shortcut(
                 &app,
                 next_shortcut.as_deref(),
                 previous.global_shortcut.as_deref(),
+                &mut revert_failures,
             );
             if window_mode_changed {
-                if let Some(window) = app.get_webview_window(crate::window::MAIN_WINDOW) {
-                    let _ = crate::window::apply_window_mode(&window, previous.window_mode, false);
+                match app.get_webview_window(crate::window::MAIN_WINDOW) {
+                    Some(window) => {
+                        if crate::window::apply_window_mode(&window, previous.window_mode, false)
+                            .is_err()
+                        {
+                            crate::app_warn!(
+                                "config",
+                                "window mode could not be reverted after a failed settings save"
+                            );
+                            revert_failures.push("the window mode");
+                        }
+                    }
+                    None => {
+                        crate::app_warn!(
+                            "config",
+                            "window mode could not be reverted after a failed settings save"
+                        );
+                        revert_failures.push("the window mode");
+                    }
                 }
             }
-            return Err(error);
+            return Err(with_revert_failures(error, &revert_failures));
         }
     };
     if previous.log_level != updated.log_level {
@@ -195,6 +227,44 @@ async fn save_app_settings_inner(
         newly_enabled,
         credential_detection_plan,
     ))
+}
+
+fn revert_shortcut(
+    app: &AppHandle,
+    changed: Option<&str>,
+    previous: Option<&str>,
+    failures: &mut Vec<&'static str>,
+) {
+    if apply_shortcut_change(app, changed, previous).is_err() {
+        crate::app_warn!(
+            "config",
+            "keyboard shortcut could not be reverted after a failed settings save"
+        );
+        failures.push("the keyboard shortcut");
+    }
+}
+
+fn revert_autostart(app: &AppHandle, previous: &AppSettings, failures: &mut Vec<&'static str>) {
+    if set_autostart(app, previous.launch_at_login).is_err() {
+        crate::app_warn!(
+            "config",
+            "launch at login could not be reverted after a failed settings save"
+        );
+        failures.push("launch at login");
+    }
+}
+
+fn with_revert_failures(error: String, failures: &[&'static str]) -> String {
+    if failures.is_empty() {
+        return error;
+    }
+    let list = match failures {
+        [] => String::new(),
+        [only] => (*only).to_owned(),
+        [first, second] => format!("{first} and {second}"),
+        [rest @ .., last] => format!("{}, and {}", rest.join(", "), last),
+    };
+    format!("{error} Additionally, {list} could not be reverted.")
 }
 
 #[tauri::command]

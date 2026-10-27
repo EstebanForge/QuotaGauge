@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap},
-    sync::{Arc, Mutex, RwLock},
+    sync::{Arc, Mutex, PoisonError, RwLock},
     time::{Duration, Instant},
 };
 
@@ -112,8 +112,8 @@ impl ProviderService {
         let mut providers = self
             .states
             .read()
-            .map(|value| value.clone())
-            .unwrap_or_default();
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
         for state in providers.values_mut() {
             update_staleness_from_snapshot_age(state);
         }
@@ -428,8 +428,9 @@ impl ProviderService {
         let mut state = self
             .states
             .read()
-            .ok()
-            .and_then(|states| states.get(provider_id).cloned())
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(provider_id)
+            .cloned()
             .unwrap_or_default();
         update_staleness_from_snapshot_age(&mut state);
         state
@@ -507,9 +508,10 @@ impl ProviderService {
     }
 
     fn update_state(&self, provider_id: &str, update: impl FnOnce(&mut ProviderViewState)) {
-        if let Ok(mut states) = self.states.write() {
-            update(states.entry(provider_id.to_owned()).or_default());
-        }
+        // A refresh completion is edge-triggered, so a poisoned-lock drop here would
+        // desync the panel until the next completion; recover the guard instead.
+        let mut states = self.states.write().unwrap_or_else(PoisonError::into_inner);
+        update(states.entry(provider_id.to_owned()).or_default());
     }
 }
 

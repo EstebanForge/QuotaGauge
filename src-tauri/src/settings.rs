@@ -20,6 +20,9 @@ use crate::{
 
 pub const MAX_PINS_PER_PROVIDER: usize = 2;
 
+pub(crate) const STALE_SETTINGS_SAVE_MESSAGE: &str =
+    "Settings changed before they could be saved. Please try again.";
+
 #[derive(Debug, Clone)]
 pub struct CredentialDetectionPlan {
     provider_ids: Vec<String>,
@@ -363,9 +366,7 @@ impl SettingsService {
             .map_err(|_| "QuotaGauge settings are temporarily unavailable.".to_owned())?;
         if let Some(expected) = &expected {
             if expected.settings != self.settings_revision.load(Ordering::SeqCst) {
-                return Err(
-                    "Settings changed before they could be saved. Please try again.".to_owned(),
-                );
+                return Err(STALE_SETTINGS_SAVE_MESSAGE.to_owned());
             }
         }
         let enabled_before = enabled_provider_set(&current);
