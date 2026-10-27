@@ -61,7 +61,6 @@ pub fn map_quota(body: &Value) -> Result<Vec<QuotaWindow>, ZaiError> {
         .collect::<Result<Vec<_>, _>>()?;
 
     let mut session = None;
-    let mut weekly = None;
     for entry in limits.iter().copied().filter(|entry| {
         matches_limit(entry, "CREDIT_LIMIT") || matches_limit(entry, "TOKENS_LIMIT")
     }) {
@@ -69,11 +68,7 @@ pub fn map_quota(body: &Value) -> Result<Vec<QuotaWindow>, ZaiError> {
             continue;
         };
         let quota = percent_quota(entry, window)?;
-        let target = match window.kind {
-            TokenWindowKind::Session => &mut session,
-            TokenWindowKind::Weekly => &mut weekly,
-        };
-        if target.replace(quota).is_some() {
+        if session.replace(quota).is_some() {
             return Err(ZaiError::InvalidResponse);
         }
     }
@@ -85,22 +80,11 @@ pub fn map_quota(body: &Value) -> Result<Vec<QuotaWindow>, ZaiError> {
         .map(web_search_quota)
         .transpose()?;
 
-    Ok(session
-        .into_iter()
-        .chain(weekly)
-        .chain(web_searches)
-        .collect())
-}
-
-#[derive(Debug, Clone, Copy)]
-enum TokenWindowKind {
-    Session,
-    Weekly,
+    Ok(session.into_iter().chain(web_searches).collect())
 }
 
 #[derive(Debug, Clone, Copy)]
 struct TokenWindow {
-    kind: TokenWindowKind,
     period_seconds: u64,
 }
 
@@ -123,14 +107,12 @@ fn classify_token_window(
         return Err(ZaiError::InvalidResponse);
     }
     let period_seconds = duration.trunc() as u64;
-    Ok(Some(TokenWindow {
-        kind: if period_seconds < 24 * 60 * 60 {
-            TokenWindowKind::Session
-        } else {
-            TokenWindowKind::Weekly
-        },
-        period_seconds,
-    }))
+    // Z.ai dropped weekly (and longer) token windows; they only ever read 0,
+    // so anything at or past a day is skipped like an unknown unit.
+    if period_seconds >= 24 * 60 * 60 {
+        return Ok(None);
+    }
+    Ok(Some(TokenWindow { period_seconds }))
 }
 
 fn percent_quota(
@@ -140,13 +122,9 @@ fn percent_quota(
     let used_percent = number(entry.get("percentage"))
         .ok_or(ZaiError::InvalidResponse)?
         .clamp(0.0, 100.0);
-    let (id, label) = match window.kind {
-        TokenWindowKind::Session => ("session", "Session"),
-        TokenWindowKind::Weekly => ("weekly", "Weekly"),
-    };
     Ok(QuotaWindow {
-        id: id.into(),
-        label: label.into(),
+        id: "session".into(),
+        label: "Session".into(),
         used_percent,
         resets_at: reset_time(entry.get("nextResetTime")),
         period_seconds: window.period_seconds,
@@ -225,7 +203,7 @@ mod tests {
     }
 
     #[test]
-    fn captured_payload_maps_session_weekly_web_searches_and_plan() {
+    fn captured_payload_maps_session_web_searches_and_plan() {
         let mapped = map_usage(&captured_quota(), Some(&captured_subscription())).unwrap();
 
         assert_eq!(mapped.plan.as_deref(), Some("GLM Coding Pro"));
@@ -235,7 +213,7 @@ mod tests {
                 .iter()
                 .map(|quota| quota.id.as_str())
                 .collect::<Vec<_>>(),
-            ["session", "weekly", "webSearches"]
+            ["session", "webSearches"]
         );
         let session = &mapped.quotas[0];
         assert_eq!(session.used_percent, 17.0);
@@ -244,10 +222,8 @@ mod tests {
             session.resets_at,
             Utc.timestamp_millis_opt(1_782_724_971_179).single()
         );
-        let weekly = &mapped.quotas[1];
-        assert_eq!(weekly.period_seconds, 7 * 24 * 60 * 60);
 
-        let web = &mapped.quotas[2];
+        let web = &mapped.quotas[1];
         assert_eq!(web.format, QuotaFormat::Count);
         assert_eq!(web.used_value, Some(0.0));
         assert_eq!(web.limit_value, Some(1_000.0));
@@ -259,32 +235,53 @@ mod tests {
 
     #[test]
     fn credit_limit_is_the_current_name_for_token_windows() {
-        let mapped = map_quota(&json!({"data":{"limits":[
-            {"type":"CREDIT_LIMIT","unit":3,"number":5,"percentage":30},
-            {"name":"CREDIT_LIMIT","unit":4,"number":2,"percentage":80}
+        let by_type = map_quota(&json!({"data":{"limits":[
+            {"type":"CREDIT_LIMIT","unit":3,"number":5,"percentage":30}
+        ]}}))
+        .unwrap();
+        let by_name = map_quota(&json!({"data":{"limits":[
+            {"name":"CREDIT_LIMIT","unit":3,"number":5,"percentage":30}
         ]}}))
         .unwrap();
 
+        assert_eq!(by_type[0].id, "session");
+        assert_eq!(by_type[0].period_seconds, 5 * 60 * 60);
+        assert_eq!(by_name[0].id, "session");
+        assert_eq!(by_name[0].period_seconds, 5 * 60 * 60);
+    }
+
+    #[test]
+    fn weekly_and_longer_windows_are_dropped_zai_no_longer_offers_them() {
+        let mapped = map_quota(&json!({"data":{"limits":[
+            {"type":"TOKENS_LIMIT","unit":6,"number":1,"percentage":3},
+            {"type":"TOKENS_LIMIT","unit":4,"number":1,"percentage":5},
+            {"type":"TOKENS_LIMIT","unit":5,"number":1,"percentage":7},
+            {"type":"TOKENS_LIMIT","unit":3,"number":5,"percentage":25}
+        ]}}))
+        .unwrap();
+
+        assert_eq!(mapped.len(), 1);
         assert_eq!(mapped[0].id, "session");
-        assert_eq!(mapped[0].period_seconds, 5 * 60 * 60);
-        assert_eq!(mapped[1].id, "weekly");
-        assert_eq!(mapped[1].period_seconds, 2 * 24 * 60 * 60);
+        assert_eq!(mapped[0].used_percent, 25.0);
     }
 
     #[test]
     fn payload_windows_drive_classification_and_percentages_are_clamped() {
-        let mapped = map_quota(&json!({"data":{"limits":[
-            {"type":"TOKENS_LIMIT","unit":3,"number":3,"percentage":-10},
-            {"type":"TOKENS_LIMIT","unit":4,"number":3,"percentage":"150"}
+        let clamped_low = map_quota(&json!({"data":{"limits":[
+            {"type":"TOKENS_LIMIT","unit":3,"number":3,"percentage":-10}
+        ]}}))
+        .unwrap();
+        let clamped_high = map_quota(&json!({"data":{"limits":[
+            {"type":"TOKENS_LIMIT","unit":3,"number":5,"percentage":"150"}
         ]}}))
         .unwrap();
 
-        assert_eq!(mapped[0].id, "session");
-        assert_eq!(mapped[0].period_seconds, 3 * 60 * 60);
-        assert_eq!(mapped[0].used_percent, 0.0);
-        assert_eq!(mapped[1].id, "weekly");
-        assert_eq!(mapped[1].period_seconds, 3 * 24 * 60 * 60);
-        assert_eq!(mapped[1].used_percent, 100.0);
+        assert_eq!(clamped_low[0].id, "session");
+        assert_eq!(clamped_low[0].period_seconds, 3 * 60 * 60);
+        assert_eq!(clamped_low[0].used_percent, 0.0);
+        assert_eq!(clamped_high[0].id, "session");
+        assert_eq!(clamped_high[0].period_seconds, 5 * 60 * 60);
+        assert_eq!(clamped_high[0].used_percent, 100.0);
     }
 
     #[test]

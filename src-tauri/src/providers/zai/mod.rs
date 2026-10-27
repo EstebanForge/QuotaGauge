@@ -47,16 +47,6 @@ pub(crate) fn definition() -> ProviderDefinition {
                 "S",
             ),
             MetricDefinition::quota(
-                "zai.weekly",
-                "Weekly",
-                "weekly",
-                false,
-                true,
-                MetricSection::AlwaysVisible,
-                true,
-                "W",
-            ),
-            MetricDefinition::quota(
                 "zai.webSearches",
                 "Web Searches",
                 "webSearches",
@@ -314,10 +304,10 @@ mod tests {
                 .iter()
                 .map(|quota| quota.id.as_str())
                 .collect::<Vec<_>>(),
-            ["session", "weekly", "webSearches"]
+            ["session", "webSearches"]
         );
-        assert_eq!(snapshot.quotas[2].format, QuotaFormat::Count);
-        assert_eq!(snapshot.quotas[2].unit.as_deref(), Some("searches"));
+        assert_eq!(snapshot.quotas[1].format, QuotaFormat::Count);
+        assert_eq!(snapshot.quotas[1].unit.as_deref(), Some("searches"));
         assert!(snapshot.status_metrics.is_empty());
         assert!(snapshot.warnings.is_empty());
     }
@@ -335,7 +325,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(snapshot.plan, None);
-        assert_eq!(snapshot.quotas.len(), 3);
+        assert_eq!(snapshot.quotas.len(), 2);
     }
 
     #[test]
@@ -475,11 +465,6 @@ mod tests {
         );
         assert!(metric("zai.session").default_pinned);
         assert!(!metric("zai.session").source.session_window());
-        assert_eq!(
-            metric("zai.weekly").default_section,
-            MetricSection::AlwaysVisible
-        );
-        assert!(metric("zai.weekly").default_pinned);
         assert_eq!(
             metric("zai.webSearches").default_section,
             MetricSection::OnDemand
