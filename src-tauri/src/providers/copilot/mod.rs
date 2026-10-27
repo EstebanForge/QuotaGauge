@@ -14,7 +14,7 @@ use thiserror::Error;
 
 use crate::models::{
     MetricDefinition, MetricSection, ProviderDefinition, ProviderErrorKind, ProviderLink,
-    ProviderSnapshot, UsageHistory, ValueMetric,
+    ProviderSnapshot, ValueMetric,
 };
 
 use self::{
@@ -35,7 +35,6 @@ pub(crate) fn definition() -> ProviderDefinition {
         display_name: "Copilot".into(),
         short_name: "Co".into(),
         fallback_enabled: false,
-        local_usage_source_note: None,
         links: vec![
             ProviderLink::new("Status", "https://www.githubstatus.com/"),
             ProviderLink::new("Dashboard", "https://github.com/settings/billing"),
@@ -194,7 +193,6 @@ impl CopilotProvider {
                     value_metrics: mapped.value_metrics,
                     status_metrics: Vec::new(),
                     notices: Vec::new(),
-                    usage: UsageHistory::default(),
                     warnings: Vec::new(),
                     refreshed_at: Utc::now(),
                 }))

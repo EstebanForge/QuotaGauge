@@ -8,7 +8,7 @@
   Track usage and limits across your AI coding tools.
 </p>
 
-Every AI coding tool tracks your usage somewhere else. Claude Code in the terminal, Codex in the browser, Copilot in a settings page, and the rest wherever they felt like putting it. QuotaGauge puts all of it in one compact panel that lives in your tray or menu bar: session and weekly limits, reset times, token usage, and estimated spend.
+Every AI coding tool tracks your usage somewhere else. Claude Code in the terminal, Codex in the browser, Copilot in a settings page, and the rest wherever they felt like putting it. QuotaGauge puts all of it in one compact panel that lives in your tray or menu bar: session and weekly limits, reset times, and what you have left.
 
 I picked this project up from [OpenUsage](https://github.com/robinebers/openusage) after it went quiet, and I keep it alive as a maintained continuation for Windows, Linux, and macOS. Thanks, robinebers, for the original work.
 
@@ -51,7 +51,6 @@ Each provider has its own guide with everything it reads and where it reads it f
 
 - Tray or floating dashboard, with pinned metrics in the tray or macOS menu bar
 - Show quota used or quota remaining
-- 30 days of usage history with estimated spend
 - Pacing alerts: will your quota last until the next reset?
 - Custom layouts: reorder providers, hide rows, choose what stays visible
 - Launch at login, global shortcut, system theme

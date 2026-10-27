@@ -358,7 +358,6 @@ mod tests {
             display_name: "Provider".into(),
             short_name: "P".into(),
             fallback_enabled: true,
-            local_usage_source_note: None,
             links: vec![ProviderLink::new("Status", "https://status.example.com/")],
             metrics: vec![MetricDefinition::new(
                 "provider.session",

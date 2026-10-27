@@ -159,13 +159,10 @@ describe('QuotaGauge customization persistence and reorder', () => {
     await screen.findByText('Plus');
     const session = screen.getByRole('group', { name: 'Session options' });
     const weekly = screen.getByRole('group', { name: 'Weekly options' });
-    const trend = screen.getByRole('group', { name: 'Usage Trend options' });
     session.getBoundingClientRect = () =>
       ({ top: 0, right: 280, bottom: 40, left: 0, width: 280, height: 40 }) as DOMRect;
     weekly.getBoundingClientRect = () =>
       ({ top: 40, right: 280, bottom: 80, left: 0, width: 280, height: 40 }) as DOMRect;
-    trend.getBoundingClientRect = () =>
-      ({ top: 80, right: 280, bottom: 120, left: 0, width: 280, height: 40 }) as DOMRect;
     const savesBeforeDrag = mocks.invoke.mock.calls.filter(
       ([command]) => command === 'save_app_settings',
     ).length;
@@ -210,15 +207,11 @@ describe('QuotaGauge customization persistence and reorder', () => {
         ?.metrics.map((metric) => metric.id),
     ).toEqual([
       'codex.weekly',
+      'codex.session',
       'codex.spark',
       'codex.sparkWeekly',
-      'codex.trend',
-      'codex.session',
       'codex.credits',
       'codex.rateLimitResets',
-      'codex.today',
-      'codex.yesterday',
-      'codex.last30',
     ]);
 
     const savesBeforeUndo = mocks.invoke.mock.calls.filter(
@@ -244,12 +237,8 @@ describe('QuotaGauge customization persistence and reorder', () => {
       'codex.weekly',
       'codex.spark',
       'codex.sparkWeekly',
-      'codex.trend',
       'codex.credits',
       'codex.rateLimitResets',
-      'codex.today',
-      'codex.yesterday',
-      'codex.last30',
     ]);
   });
 
@@ -318,7 +307,7 @@ describe('QuotaGauge customization persistence and reorder', () => {
         .filter((element) => element.dataset.reorderGroup === 'dashboard-metrics:codex')
         .map((element) => element.dataset.reorderId)
         .filter((id) => id !== 'section:onDemand');
-      expect(metricIds.slice(0, 3)).toEqual(['codex.session', 'codex.weekly', 'codex.trend']);
+      expect(metricIds.slice(0, 2)).toEqual(['codex.session', 'codex.weekly']);
     });
     expect(
       mocks.invoke.mock.calls.filter(([command]) => command === 'save_app_settings'),

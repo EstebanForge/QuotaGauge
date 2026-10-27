@@ -29,7 +29,6 @@ pub(super) struct ClaudeAccount {
     pub label: Option<String>,
     pub identity: String,
     pub credential_scope: ClaudeCredentialScope,
-    pub log_roots: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -43,7 +42,6 @@ struct DiscoveredClaudeAccount {
     label: Option<String>,
     identity: String,
     credential_scope: ClaudeCredentialScope,
-    log_roots: Vec<PathBuf>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -190,7 +188,6 @@ fn reconcile_account(
         label,
         identity: account.identity,
         credential_scope: account.credential_scope,
-        log_roots: account.log_roots,
     };
     let payload = serde_json::to_string(&StoredClaudeAccountPayload {
         label: reconciled.label.clone(),
@@ -272,12 +269,10 @@ fn discover_in(
             .push(finding);
     }
 
-    let mut default_extra_log_roots = Vec::new();
     let mut accounts = Vec::new();
     for (identity, mut findings) in grouped {
         findings.sort_by(|left, right| left.root.cmp(&right.root));
         if default_identity.as_deref() == Some(identity.as_str()) {
-            default_extra_log_roots.extend(findings.into_iter().map(|finding| finding.root));
             continue;
         }
         let Some(primary) = findings.first() else {
@@ -290,18 +285,13 @@ fn discover_in(
                 path: primary.root.clone(),
                 keychain_literal: primary.keychain_literal.clone(),
             },
-            log_roots: findings.into_iter().map(|finding| finding.root).collect(),
         });
     }
-    default_extra_log_roots.sort();
-    default_extra_log_roots.dedup();
-
-    if !accounts.is_empty() || !default_extra_log_roots.is_empty() {
+    if !accounts.is_empty() {
         crate::app_info!(
             "config",
-            "claude account discovery completed ({} extra account(s), {} folded log root(s))",
-            accounts.len(),
-            default_extra_log_roots.len()
+            "claude account discovery completed ({} extra account(s))",
+            accounts.len()
         );
     }
     let default_account = match default {
@@ -309,7 +299,6 @@ fn discover_in(
             label,
             identity: identity_stamp(&identity),
             credential_scope: ClaudeCredentialScope::Standard,
-            log_roots: default_extra_log_roots,
         }),
         DefaultAccount::Unresolved | DefaultAccount::Absent => None,
     };
@@ -600,7 +589,7 @@ mod tests {
         let discovery = discover_in(home, None, None, Duration::from_secs(5));
 
         let default = discovery.default_account.as_ref().unwrap();
-        assert_eq!(default.log_roots, [canonical(&home.join(".claude-copy"))]);
+        assert_eq!(default.identity, identity_stamp("account-a|org-a"));
         assert_eq!(discovery.accounts.len(), 1);
         assert_eq!(
             discovery.accounts[0].identity,
@@ -611,8 +600,13 @@ mod tests {
             Some("b@example.com (Org org-b)")
         );
         assert_eq!(
-            discovery.accounts[0].log_roots,
-            [canonical(&home.join(".claude-work"))]
+            discovery.accounts[0].credential_scope,
+            ClaudeCredentialScope::ConfigDir {
+                path: canonical(&home.join(".claude-work")),
+                keychain_literal: canonical(&home.join(".claude-work"))
+                    .to_string_lossy()
+                    .into_owned(),
+            }
         );
     }
 
@@ -704,7 +698,6 @@ mod tests {
                 path: root.clone(),
                 keychain_literal: root.to_string_lossy().into_owned(),
             },
-            log_roots: vec![root.clone()],
         };
         let discovery = |account| DiscoveredClaudeAccounts {
             default_account: None,
@@ -741,7 +734,6 @@ mod tests {
             label,
             identity: "1234567890abcdef".into(),
             credential_scope: ClaudeCredentialScope::Standard,
-            log_roots: Vec::new(),
         };
 
         reconcile_accounts(
@@ -777,7 +769,7 @@ mod tests {
                 "claude",
                 &identity,
                 "claude@1234abcd",
-                r#"{"id":"claude@1234abcd","display_name":"Claude — Saved","label":"Saved","log_roots":["/private/path"]}"#,
+                r#"{"id":"claude@1234abcd","display_name":"Claude — Saved","label":"Saved"}"#,
             )
             .unwrap();
 
@@ -789,7 +781,6 @@ mod tests {
                     label: None,
                     identity,
                     credential_scope: ClaudeCredentialScope::Standard,
-                    log_roots: Vec::new(),
                 }],
             },
         )
@@ -809,14 +800,12 @@ mod tests {
             label: Some(label.into()),
             identity: identity_stamp(identity),
             credential_scope: ClaudeCredentialScope::Standard,
-            log_roots: Vec::new(),
         };
         let scoped = |identity: &str, label: &str| DiscoveredClaudeAccount {
             credential_scope: ClaudeCredentialScope::ConfigDir {
                 path: root.clone(),
                 keychain_literal: root.to_string_lossy().into_owned(),
             },
-            log_roots: vec![root.clone()],
             ..standard(identity, label)
         };
 
@@ -871,7 +860,6 @@ mod tests {
                         path: root.clone(),
                         keychain_literal: root.to_string_lossy().into_owned(),
                     },
-                    log_roots: vec![root],
                 }],
             },
         )

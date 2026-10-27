@@ -128,68 +128,6 @@ pub enum QuotaFormat {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct UsagePeriod {
-    pub tokens: u64,
-    pub estimated_cost_usd: Option<f64>,
-    #[serde(default = "default_true")]
-    pub cost_estimated: bool,
-    pub estimate_complete: bool,
-    #[serde(default)]
-    pub model_breakdown: Option<ModelUsageBreakdown>,
-    #[serde(default)]
-    pub unknown_models: Vec<String>,
-}
-
-fn default_true() -> bool {
-    true
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct ModelUsageEntry {
-    pub model: String,
-    pub total_tokens: u64,
-    pub cost_usd: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub variants: Option<Vec<ModelUsageVariant>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct ModelUsageVariant {
-    pub model: String,
-    pub total_tokens: u64,
-    pub cost_usd: Option<f64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct ModelUsageBreakdown {
-    pub models: Vec<ModelUsageEntry>,
-    pub source_note: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct DailyUsage {
-    pub date: String,
-    pub tokens: u64,
-    pub estimated_cost_usd: Option<f64>,
-    pub estimate_complete: bool,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct UsageHistory {
-    pub today: Option<UsagePeriod>,
-    pub yesterday: Option<UsagePeriod>,
-    pub last_30_days: Option<UsagePeriod>,
-    pub daily: Vec<DailyUsage>,
-    pub unknown_models: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
 pub struct ProviderSnapshot {
     pub provider_id: String,
     pub plan: Option<String>,
@@ -200,7 +138,6 @@ pub struct ProviderSnapshot {
     pub status_metrics: Vec<StatusMetric>,
     #[serde(default)]
     pub notices: Vec<ProviderNotice>,
-    pub usage: UsageHistory,
     pub warnings: Vec<String>,
     pub refreshed_at: DateTime<Utc>,
 }
@@ -222,7 +159,6 @@ pub enum ProviderErrorKind {
     Network,
     InvalidResponse,
     CredentialStorage,
-    LocalData,
     Storage,
     Internal,
 }
@@ -293,20 +229,15 @@ pub enum MetricSource {
         #[serde(rename = "sourceId")]
         source_id: String,
     },
-    Usage {
-        period: UsagePeriodSelection,
-    },
-    Trend,
 }
 
 impl MetricSource {
-    pub fn source_id(&self) -> Option<&str> {
+    pub fn source_id(&self) -> &str {
         match self {
             Self::Quota { source_id, .. }
             | Self::QuotaOrValue { source_id, .. }
             | Self::Value { source_id }
-            | Self::Status { source_id } => Some(source_id),
-            Self::Usage { .. } | Self::Trend => None,
+            | Self::Status { source_id } => source_id,
         }
     }
 
@@ -476,40 +407,6 @@ impl MetricDefinition {
             None,
         )
     }
-
-    pub fn usage(
-        id: &str,
-        label: &str,
-        period: UsagePeriodSelection,
-        default_section: MetricSection,
-        tray_short_label: &str,
-    ) -> Self {
-        Self::new(
-            id,
-            label,
-            MetricSource::Usage { period },
-            true,
-            true,
-            default_section,
-            false,
-            Some(tray_short_label),
-            None,
-        )
-    }
-
-    pub fn trend(id: &str) -> Self {
-        Self::new(
-            id,
-            "Usage Trend",
-            MetricSource::Trend,
-            false,
-            true,
-            MetricSection::AlwaysVisible,
-            false,
-            None,
-            None,
-        )
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -547,7 +444,6 @@ pub struct ProviderDefinition {
     pub display_name: String,
     pub short_name: String,
     pub fallback_enabled: bool,
-    pub local_usage_source_note: Option<String>,
     #[serde(default)]
     pub links: Vec<ProviderLink>,
     pub metrics: Vec<MetricDefinition>,
@@ -657,22 +553,6 @@ impl LogLevel {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum TotalSpendMetric {
-    Cost,
-    CostPerMillion,
-    Tokens,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum UsagePeriodSelection {
-    Today,
-    Yesterday,
-    Last30Days,
-}
-
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum WindowMode {
@@ -697,7 +577,6 @@ pub struct AppSettings {
     pub providers: Vec<ProviderLayout>,
     pub known_provider_ids: Vec<String>,
     pub provider_names: BTreeMap<String, String>,
-    pub show_total_spend: bool,
     pub theme: ThemePreference,
     pub density: DensityPreference,
     pub reduce_animations: bool,
@@ -714,8 +593,6 @@ pub struct AppSettings {
     pub global_shortcut: Option<String>,
     pub log_level: LogLevel,
     pub notifications: NotificationPreferences,
-    pub total_spend_metric: TotalSpendMetric,
-    pub total_spend_period: UsagePeriodSelection,
     pub detection_notice_dismissed: bool,
 }
 
@@ -726,7 +603,6 @@ impl Default for AppSettings {
             providers: Vec::new(),
             known_provider_ids: Vec::new(),
             provider_names: BTreeMap::new(),
-            show_total_spend: true,
             theme: ThemePreference::System,
             density: DensityPreference::Default,
             reduce_animations: false,
@@ -743,8 +619,6 @@ impl Default for AppSettings {
             global_shortcut: None,
             log_level: LogLevel::Info,
             notifications: NotificationPreferences::default(),
-            total_spend_metric: TotalSpendMetric::Cost,
-            total_spend_period: UsagePeriodSelection::Today,
             detection_notice_dismissed: false,
         }
     }
@@ -776,8 +650,7 @@ pub struct SettingsViewState {
 mod tests {
     use super::{
         ApiKeyMutationOutcome, ApiKeyStatus, AppSettings, LogLevel, ProviderApiKeyState,
-        ProviderErrorKind, ProviderLink, ProviderSnapshot, ProviderViewState, UsagePeriod,
-        WindowMode,
+        ProviderErrorKind, ProviderLink, ProviderSnapshot, ProviderViewState, WindowMode,
     };
 
     #[test]
@@ -863,15 +736,6 @@ mod tests {
                 "warning": "Provider status could not be refreshed."
             })
         );
-    }
-
-    #[test]
-    fn cached_usage_periods_default_to_local_cost_estimates() {
-        let period: UsagePeriod = serde_json::from_str(
-            r#"{"tokens":42,"estimatedCostUsd":0.12,"estimateComplete":true,"unknownModels":[]}"#,
-        )
-        .unwrap();
-        assert!(period.cost_estimated);
     }
 
     #[test]

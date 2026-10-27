@@ -1,29 +1,18 @@
 mod client;
-mod database;
 mod mapper;
 mod paths;
-mod record;
-mod scanner;
 
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use thiserror::Error;
 
-use crate::{
-    models::{
-        MetricDefinition, MetricSection, ProviderDefinition, ProviderErrorKind, ProviderLink,
-        ProviderSnapshot, UsageHistory, UsagePeriodSelection,
-    },
-    pricing::PricingStore,
+use crate::models::{
+    MetricDefinition, MetricSection, ProviderDefinition, ProviderErrorKind, ProviderLink,
+    ProviderSnapshot,
 };
 
-use self::{
-    client::OpenCodeClient,
-    mapper::map_go_usage,
-    paths::OpenCodePaths,
-    scanner::{OpenCodeUsageScanner, USAGE_SOURCE_NOTE},
-};
+use self::{client::OpenCodeClient, mapper::map_go_usage, paths::OpenCodePaths};
 
 use super::{ProviderError, UsageProvider};
 
@@ -33,7 +22,6 @@ pub(crate) fn definition() -> ProviderDefinition {
         display_name: "OpenCode".into(),
         short_name: "OC".into(),
         fallback_enabled: false,
-        local_usage_source_note: Some(USAGE_SOURCE_NOTE.into()),
         links: vec![ProviderLink::new("Dashboard", "https://opencode.ai/auth")],
         metrics: vec![
             MetricDefinition::quota(
@@ -66,28 +54,6 @@ pub(crate) fn definition() -> ProviderDefinition {
                 false,
                 "M",
             ),
-            MetricDefinition::trend("opencode.trend"),
-            MetricDefinition::usage(
-                "opencode.today",
-                "Today",
-                UsagePeriodSelection::Today,
-                MetricSection::OnDemand,
-                "T",
-            ),
-            MetricDefinition::usage(
-                "opencode.yesterday",
-                "Yesterday",
-                UsagePeriodSelection::Yesterday,
-                MetricSection::OnDemand,
-                "Y",
-            ),
-            MetricDefinition::usage(
-                "opencode.last30",
-                "Last 30 Days",
-                UsagePeriodSelection::Last30Days,
-                MetricSection::OnDemand,
-                "30",
-            ),
         ],
     }
 }
@@ -98,10 +64,6 @@ pub(crate) enum OpenCodeError {
     NotDetected,
     #[error("OpenCode login data could not be read. Sign in to OpenCode Go again.")]
     CredentialsUnreadable,
-    #[error("The OpenCode data directory could not be read.")]
-    DataDirectoryUnreadable,
-    #[error("OpenCode local usage data is temporarily unavailable.")]
-    DatabaseUnreadable,
     #[error("OpenCode Go login data is invalid or expired. Sign in to OpenCode Go again.")]
     InvalidAuth,
     #[error("OpenCode Go subscription required.")]
@@ -122,9 +84,6 @@ impl From<OpenCodeError> for ProviderError {
             }
             OpenCodeError::GoSubscriptionRequired => ProviderErrorKind::Permission,
             OpenCodeError::CredentialsUnreadable => ProviderErrorKind::CredentialStorage,
-            OpenCodeError::DataDirectoryUnreadable | OpenCodeError::DatabaseUnreadable => {
-                ProviderErrorKind::LocalData
-            }
             OpenCodeError::ConnectionFailed => ProviderErrorKind::Network,
             OpenCodeError::RequestFailed(429) => ProviderErrorKind::RateLimited,
             OpenCodeError::RequestFailed(500..=599) => ProviderErrorKind::Network,
@@ -138,36 +97,25 @@ impl From<OpenCodeError> for ProviderError {
 
 pub struct OpenCodeProvider {
     paths: OpenCodePaths,
-    scanner: OpenCodeUsageScanner,
     client: Result<OpenCodeClient, OpenCodeError>,
-    pricing: Arc<PricingStore>,
     now: Arc<dyn Fn() -> DateTime<Utc> + Send + Sync>,
 }
 
 impl OpenCodeProvider {
-    pub fn new(pricing: Arc<PricingStore>) -> Self {
+    pub fn new() -> Self {
         let paths = OpenCodePaths::new();
         Self {
-            scanner: OpenCodeUsageScanner::new(paths.clone()),
             paths,
             client: OpenCodeClient::new(),
-            pricing,
             now: Arc::new(Utc::now),
         }
     }
 
     #[cfg(test)]
-    fn with_dependencies(
-        paths: OpenCodePaths,
-        client: OpenCodeClient,
-        pricing: Arc<PricingStore>,
-        now: DateTime<Utc>,
-    ) -> Self {
+    fn with_dependencies(paths: OpenCodePaths, client: OpenCodeClient, now: DateTime<Utc>) -> Self {
         Self {
-            scanner: OpenCodeUsageScanner::new(paths.clone()),
             paths,
             client: Ok(client),
-            pricing,
             now: Arc::new(move || now),
         }
     }
@@ -188,58 +136,12 @@ impl OpenCodeProvider {
                     .and_then(map_go_usage)
             })
             .transpose();
-        let pricing = self.pricing.current();
-        let scan = self.scanner.scan(now, &pricing);
-
-        let scan = match scan {
-            Ok(scan) => scan,
-            Err(error) => match go_usage {
-                Ok(Some(quotas)) => {
-                    return Ok(snapshot(
-                        Some("Go".into()),
-                        quotas,
-                        UsageHistory::default(),
-                        vec!["OpenCode local usage data is temporarily unavailable.".into()],
-                        now,
-                    ));
-                }
-                _ => return Err(error),
-            },
-        };
-
-        let Some(scan) = scan else {
-            return match go_usage {
-                Ok(Some(quotas)) => Ok(snapshot(
-                    Some("Go".into()),
-                    quotas,
-                    UsageHistory::default(),
-                    Vec::new(),
-                    now,
-                )),
-                Ok(None) => Err(go_key_error.unwrap_or(OpenCodeError::NotDetected)),
-                Err(error) => Err(error),
-            };
-        };
-        let mut warnings = scan.warnings;
-        if go_key_error.is_some() {
-            warnings.push(
-                "OpenCode Go login data could not be read; local database usage is still shown."
-                    .into(),
-            );
-        }
-        let (plan, quotas) = match go_usage {
-            Ok(Some(quotas)) => (Some("Go".into()), quotas),
-            Ok(None) => (None, Vec::new()),
-            Err(OpenCodeError::GoSubscriptionRequired) if scan.usage.last_30_days.is_some() => {
-                warnings.push(
-                    "OpenCode Go subscription required. Local usage is still shown while OpenCode Go quota data is unavailable."
-                        .to_string(),
-                );
-                (None, Vec::new())
-            }
+        let quotas = match go_usage {
+            Ok(Some(quotas)) => quotas,
+            Ok(None) => return Err(go_key_error.unwrap_or(OpenCodeError::NotDetected)),
             Err(error) => return Err(error),
         };
-        Ok(snapshot(plan, quotas, scan.usage, warnings, now))
+        Ok(snapshot(Some("Go".into()), quotas, Vec::new(), now))
     }
 }
 
@@ -249,10 +151,10 @@ impl UsageProvider for OpenCodeProvider {
     }
 
     fn has_local_credentials(&self) -> bool {
-        match self.paths.go_api_key() {
-            Ok(Some(_)) | Err(OpenCodeError::CredentialsUnreadable) => true,
-            Ok(None) | Err(_) => self.scanner.has_hosted_usage(),
-        }
+        matches!(
+            self.paths.go_api_key(),
+            Ok(Some(_)) | Err(OpenCodeError::CredentialsUnreadable)
+        )
     }
 
     fn refresh(&self) -> Result<ProviderSnapshot, ProviderError> {
@@ -263,7 +165,6 @@ impl UsageProvider for OpenCodeProvider {
 fn snapshot(
     plan: Option<String>,
     quotas: Vec<crate::models::QuotaWindow>,
-    usage: UsageHistory,
     warnings: Vec<String>,
     refreshed_at: DateTime<Utc>,
 ) -> ProviderSnapshot {
@@ -274,7 +175,6 @@ fn snapshot(
         value_metrics: Vec::new(),
         status_metrics: Vec::new(),
         notices: Vec::new(),
-        usage,
         warnings,
         refreshed_at,
     }

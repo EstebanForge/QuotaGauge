@@ -2,7 +2,6 @@ use std::{
     fs,
     io::{Read, Write},
     net::TcpListener,
-    path::PathBuf,
     sync::{Arc, Mutex, MutexGuard},
     thread,
     time::{Duration, Instant},
@@ -11,15 +10,10 @@ use std::{
 use chrono::{TimeZone, Utc};
 use tempfile::TempDir;
 
-use super::{
-    auth::GrokAuthStore, client::GrokClient, definition, local_usage::GrokLogUsageScanner,
-    GrokProvider,
-};
+use super::{auth::GrokAuthStore, client::GrokClient, definition, GrokProvider};
 use crate::{
-    models::{ProviderErrorKind, ProviderSnapshot, StatusTone, UsageHistory, UsagePeriod},
-    pricing::PricingStore,
+    models::{ProviderErrorKind, StatusTone},
     providers::UsageProvider,
-    storage::Storage,
 };
 
 const CREDITS: &str = include_str!("fixtures/credits.json");
@@ -41,29 +35,10 @@ fn valid_auth() -> &'static str {
     }"#
 }
 
-fn build_provider(
-    directory: &TempDir,
-    client: GrokClient,
-    auth_json: &str,
-    log_path: PathBuf,
-) -> (GrokProvider, Arc<Storage>) {
+fn build_provider(directory: &TempDir, client: GrokClient, auth_json: &str) -> GrokProvider {
     let auth_path = directory.path().join("auth.json");
     fs::write(&auth_path, auth_json).unwrap();
-    let storage = Arc::new(Storage::open(&directory.path().join("quotagauge.db")).unwrap());
-    let pricing = Arc::new(
-        PricingStore::new_without_refresh_for_test(directory.path().join("pricing")).unwrap(),
-    );
-    (
-        GrokProvider::with_dependencies(
-            storage.clone(),
-            pricing,
-            GrokAuthStore::for_path(auth_path),
-            client,
-            GrokLogUsageScanner::for_path(log_path),
-            now(),
-        ),
-        storage,
-    )
+    GrokProvider::with_dependencies(GrokAuthStore::for_path(auth_path), client, now())
 }
 
 #[test]
@@ -71,23 +46,12 @@ fn definition_matches_the_complete_default_layout() {
     let definition = definition();
     assert_eq!(definition.id, "grok");
     assert_eq!(
-        definition.local_usage_source_note.as_deref(),
-        Some("From your Grok logs (estimated)")
-    );
-    assert_eq!(
         definition
             .metrics
             .iter()
             .map(|metric| metric.id.as_str())
             .collect::<Vec<_>>(),
-        [
-            "grok.weekly",
-            "grok.payAsYouGo",
-            "grok.trend",
-            "grok.today",
-            "grok.yesterday",
-            "grok.last30",
-        ]
+        ["grok.weekly", "grok.payAsYouGo"]
     );
     let weekly = &definition.metrics[0];
     assert_eq!(
@@ -104,7 +68,7 @@ fn definition_matches_the_complete_default_layout() {
 }
 
 #[test]
-fn weekly_status_plan_and_local_history_form_one_snapshot() {
+fn weekly_status_and_plan_form_one_snapshot() {
     let server = TestServer::new(2, |request| {
         if request.starts_with("GET /credits ") {
             (200, CREDITS.into())
@@ -118,9 +82,7 @@ fn weekly_status_plan_and_local_history_form_one_snapshot() {
         }
     });
     let directory = tempfile::tempdir().unwrap();
-    let log_path = directory.path().join("unified.jsonl");
-    fs::write(&log_path, include_str!("fixtures/usage.jsonl")).unwrap();
-    let (provider, _) = build_provider(&directory, server.client(), valid_auth(), log_path);
+    let provider = build_provider(&directory, server.client(), valid_auth());
 
     let snapshot = provider.refresh_inner().unwrap();
 
@@ -129,7 +91,6 @@ fn weekly_status_plan_and_local_history_form_one_snapshot() {
     assert_eq!(snapshot.quotas[0].used_percent, 99.0);
     assert_eq!(snapshot.status_metrics[0].text, "Disabled");
     assert_eq!(snapshot.status_metrics[0].tone, StatusTone::Neutral);
-    assert_eq!(snapshot.usage.today.unwrap().tokens, 2_000_000);
     assert!(snapshot.warnings.is_empty());
     server.finish();
 }
@@ -164,12 +125,7 @@ fn billing_auth_failure_refreshes_once_persists_and_retries() {
     });
     let directory = tempfile::tempdir().unwrap();
     let auth_path = directory.path().join("auth.json");
-    let (provider, _) = build_provider(
-        &directory,
-        server.client(),
-        valid_auth(),
-        directory.path().join("missing-log.jsonl"),
-    );
+    let provider = build_provider(&directory, server.client(), valid_auth());
 
     let snapshot = provider.refresh_inner().unwrap();
 
@@ -222,12 +178,7 @@ fn expired_first_account_does_not_hide_a_usable_second_account() {
       }
     }"#;
     let directory = tempfile::tempdir().unwrap();
-    let (provider, _) = build_provider(
-        &directory,
-        server.client(),
-        auth,
-        directory.path().join("missing-log.jsonl"),
-    );
+    let provider = build_provider(&directory, server.client(), auth);
 
     let snapshot = provider.refresh_inner().unwrap();
 
@@ -257,12 +208,7 @@ fn monthly_accounts_keep_extra_usage_without_a_fake_weekly_meter() {
         }
     });
     let directory = tempfile::tempdir().unwrap();
-    let (provider, _) = build_provider(
-        &directory,
-        server.client(),
-        valid_auth(),
-        directory.path().join("missing-log.jsonl"),
-    );
+    let provider = build_provider(&directory, server.client(), valid_auth());
 
     let snapshot = provider.refresh_inner().unwrap();
 
@@ -281,12 +227,7 @@ fn settings_is_optional_but_billing_failure_or_schema_drift_is_not() {
         }
     });
     let directory = tempfile::tempdir().unwrap();
-    let (provider, _) = build_provider(
-        &directory,
-        optional.client(),
-        valid_auth(),
-        directory.path().join("missing-log.jsonl"),
-    );
+    let provider = build_provider(&directory, optional.client(), valid_auth());
     assert_eq!(provider.refresh_inner().unwrap().plan, None);
     optional.finish();
 
@@ -297,12 +238,7 @@ fn settings_is_optional_but_billing_failure_or_schema_drift_is_not() {
     ] {
         let server = TestServer::new(1, move |_| (status, body.into()));
         let directory = tempfile::tempdir().unwrap();
-        let (provider, _) = build_provider(
-            &directory,
-            server.client(),
-            valid_auth(),
-            directory.path().join("missing-log.jsonl"),
-        );
+        let provider = build_provider(&directory, server.client(), valid_auth());
         let error = UsageProvider::refresh(&provider).unwrap_err();
         assert_eq!(error.kind(), expected_kind);
         server.finish();
@@ -310,73 +246,19 @@ fn settings_is_optional_but_billing_failure_or_schema_drift_is_not() {
 }
 
 #[test]
-fn local_scan_failure_keeps_cached_history_and_live_limits() {
-    let server = TestServer::new(2, |request| {
-        if request.starts_with("GET /credits ") {
-            (200, CREDITS.into())
-        } else {
-            (200, "{}".into())
-        }
-    });
-    let directory = tempfile::tempdir().unwrap();
-    let bad_log_path = directory.path().join("unified.jsonl");
-    fs::create_dir(&bad_log_path).unwrap();
-    let (provider, storage) =
-        build_provider(&directory, server.client(), valid_auth(), bad_log_path);
-    let cached_usage = UsageHistory {
-        today: Some(UsagePeriod {
-            tokens: 42,
-            estimated_cost_usd: Some(0.5),
-            cost_estimated: true,
-            estimate_complete: true,
-            model_breakdown: None,
-            unknown_models: Vec::new(),
-        }),
-        ..UsageHistory::default()
-    };
-    storage
-        .save_snapshot(&ProviderSnapshot {
-            provider_id: "grok".into(),
-            plan: None,
-            quotas: Vec::new(),
-            value_metrics: Vec::new(),
-            status_metrics: Vec::new(),
-            notices: Vec::new(),
-            usage: cached_usage.clone(),
-            warnings: Vec::new(),
-            refreshed_at: now(),
-        })
-        .unwrap();
-
-    let snapshot = provider.refresh_inner().unwrap();
-
-    assert_eq!(snapshot.usage, cached_usage);
-    assert_eq!(snapshot.quotas[0].used_percent, 99.0);
-    assert_eq!(snapshot.warnings.len(), 1);
-    assert!(snapshot.warnings[0].contains("Grok"));
-    server.finish();
-}
-
-#[test]
 fn credential_probe_and_missing_login_are_typed() {
     let server = TestServer::new(0, |_| (500, "{}".into()));
     let directory = tempfile::tempdir().unwrap();
-    let (provider, _) = build_provider(
-        &directory,
-        server.client(),
-        valid_auth(),
-        directory.path().join("missing-log.jsonl"),
-    );
+    let provider = build_provider(&directory, server.client(), valid_auth());
     assert!(provider.has_local_credentials());
     server.finish();
 
     let server = TestServer::new(0, |_| (500, "{}".into()));
     let directory = tempfile::tempdir().unwrap();
-    let (provider, _) = build_provider(
+    let provider = build_provider(
         &directory,
         server.client(),
         r#"{"account":{"refresh_token":"refresh-only"}}"#,
-        directory.path().join("missing-log.jsonl"),
     );
     assert!(!provider.has_local_credentials());
     let error = UsageProvider::refresh(&provider).unwrap_err();

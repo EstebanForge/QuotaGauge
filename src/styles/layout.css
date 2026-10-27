@@ -15,8 +15,7 @@
   }
 
   .metric__heading,
-  .metric__reading,
-  .usage-row {
+  .metric__reading {
     display: flex;
     align-items: baseline;
     justify-content: space-between;

@@ -119,7 +119,6 @@ mod tests {
                 display_name: id.into(),
                 short_name: id.into(),
                 fallback_enabled: true,
-                local_usage_source_note: None,
                 links: vec![],
                 metrics: vec![MetricDefinition::new(
                     format!("{id}.session"),

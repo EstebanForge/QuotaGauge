@@ -372,7 +372,6 @@ mod tests {
     use crate::models::{
         AppSettings, MetricDefinition, MetricLayout, MetricSection, MetricSource,
         NotificationPreferences, ProviderDefinition, ProviderLayout, ProviderSnapshot, QuotaWindow,
-        UsageHistory,
     };
     use crate::providers::ProviderRegistry;
 
@@ -654,7 +653,6 @@ mod tests {
             display_name: "Custom Provider".into(),
             short_name: "C".into(),
             fallback_enabled: true,
-            local_usage_source_note: None,
             links: vec![],
             metrics: vec![MetricDefinition::new(
                 "custom.rolling",
@@ -706,7 +704,6 @@ mod tests {
             value_metrics: Vec::new(),
             status_metrics: Vec::new(),
             notices: Vec::new(),
-            usage: UsageHistory::default(),
             warnings: Vec::new(),
             refreshed_at: Utc::now(),
         };
@@ -743,7 +740,6 @@ mod tests {
             display_name: "Switching".into(),
             short_name: "Sw".into(),
             fallback_enabled: true,
-            local_usage_source_note: None,
             links: vec![],
             metrics: vec![
                 quota_metric("switching.session", "session", "S"),
@@ -799,7 +795,6 @@ mod tests {
             value_metrics: Vec::new(),
             status_metrics: Vec::new(),
             notices: Vec::new(),
-            usage: UsageHistory::default(),
             warnings: Vec::new(),
             refreshed_at: now,
         };

@@ -37,7 +37,6 @@ tempfile = "3"
 thiserror = "2"
 tiny-skia = { version = "0.12", default-features = false, features = ["simd", "std"] }
 tokio = { version = "1", features = ["sync", "time"] }
-walkdir = "2"
 zeroize = "1.8"
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]

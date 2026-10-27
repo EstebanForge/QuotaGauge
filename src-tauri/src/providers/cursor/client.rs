@@ -14,7 +14,6 @@ const REFRESH_URL: &str = "https://api2.cursor.sh/oauth/token";
 const REST_USAGE_URL: &str = "https://cursor.com/api/usage";
 const USAGE_SUMMARY_URL: &str = "https://cursor.com/api/usage-summary";
 const STRIPE_URL: &str = "https://cursor.com/api/auth/stripe";
-const EVENTS_URL: &str = "https://cursor.com/api/dashboard/get-filtered-usage-events";
 const CLIENT_ID: &str = "KbZUR41cY7W6zRSdpSUJ7I7mLYBKOCmB";
 
 #[derive(Debug)]
@@ -45,7 +44,6 @@ pub(super) struct Endpoints {
     pub rest_usage: String,
     pub usage_summary: String,
     pub stripe: String,
-    pub events: String,
 }
 
 impl Default for Endpoints {
@@ -59,7 +57,6 @@ impl Default for Endpoints {
             rest_usage: REST_USAGE_URL.into(),
             usage_summary: USAGE_SUMMARY_URL.into(),
             stripe: STRIPE_URL.into(),
-            events: EVENTS_URL.into(),
         }
     }
 }
@@ -178,38 +175,6 @@ impl CursorClient {
         .map(Some)
     }
 
-    pub fn fetch_usage_events(
-        &self,
-        access_token: &str,
-        start_millis: i64,
-        end_millis: i64,
-        page: i64,
-        page_size: i64,
-    ) -> Result<Option<CursorResponse>, CursorError> {
-        let Some(session) = session(access_token) else {
-            return Ok(None);
-        };
-        self.send(
-            "usage-events",
-            self.client
-                .post(&self.endpoints.events)
-                .header(
-                    "Cookie",
-                    format!("WorkosCursorSessionToken={}", session.session_token),
-                )
-                .header("Content-Type", "application/json")
-                .header("Origin", "https://cursor.com")
-                .json(&serde_json::json!({
-                    "startDate": start_millis.to_string(),
-                    "endDate": end_millis.to_string(),
-                    "page": page,
-                    "pageSize": page_size,
-                }))
-                .timeout(Duration::from_secs(30)),
-        )
-        .map(Some)
-    }
-
     fn connect_post(
         &self,
         label: &str,
@@ -289,7 +254,6 @@ mod tests {
             rest_usage: format!("{base}/rest"),
             usage_summary: format!("{base}/summary"),
             stripe: format!("{base}/stripe"),
-            events: format!("{base}/events"),
         })
         .unwrap()
     }
@@ -308,13 +272,5 @@ mod tests {
         let response = client(&base).fetch_usage("secret-access").unwrap();
         assert_eq!(response.status, StatusCode::OK);
         assert_eq!(response.json().unwrap()["enabled"], true);
-    }
-
-    #[test]
-    fn events_without_jwt_session_skip_network() {
-        assert!(client("http://127.0.0.1:1")
-            .fetch_usage_events("not-a-jwt", 1_000_000, 2_000_000, 0, 1000)
-            .unwrap()
-            .is_none());
     }
 }

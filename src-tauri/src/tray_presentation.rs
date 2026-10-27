@@ -5,7 +5,7 @@ use crate::tray_icon;
 use crate::{
     models::{
         AppSettings, MetricDefinition, MetricSource, MetricValue, MetricValueKind,
-        ProviderSnapshot, QuotaFormat, UsageDisplay, UsagePeriod, UsagePeriodSelection,
+        ProviderSnapshot, QuotaFormat, UsageDisplay,
     },
     providers::ProviderRegistry,
     service::UsageViewState,
@@ -311,18 +311,6 @@ fn tray_metric(
             value_metric(snapshot, source_id, tray.suffix.as_deref())
         }
         MetricSource::Status { source_id } => status_metric(snapshot, source_id),
-        MetricSource::Usage { period } => {
-            usage_metric(&definition.label, usage_period(snapshot, *period))
-        }
-        MetricSource::Trend => None,
-    }
-}
-
-fn usage_period(snapshot: &ProviderSnapshot, period: UsagePeriodSelection) -> Option<&UsagePeriod> {
-    match period {
-        UsagePeriodSelection::Today => snapshot.usage.today.as_ref(),
-        UsagePeriodSelection::Yesterday => snapshot.usage.yesterday.as_ref(),
-        UsagePeriodSelection::Last30Days => snapshot.usage.last_30_days.as_ref(),
     }
 }
 
@@ -393,20 +381,6 @@ fn format_detail_value(value: &MetricValue) -> String {
         .unwrap_or(number)
 }
 
-fn usage_metric(label: &str, period: Option<&UsagePeriod>) -> Option<TrayMetric> {
-    let period = period?;
-    let value = period
-        .estimated_cost_usd
-        .map(|value| format!("${value:.2}"))
-        .unwrap_or_else(|| format_tokens(period.tokens));
-    let detail = format!("{label} {value}");
-    Some(TrayMetric {
-        value,
-        detail,
-        gauge: None,
-    })
-}
-
 fn format_tokens(tokens: u64) -> String {
     if tokens >= 1_000_000 {
         format!("{:.1}M", tokens as f64 / 1_000_000.0)
@@ -431,8 +405,7 @@ mod tests {
     use crate::{
         models::{
             MetricDefinition, MetricSection, MetricValue, MetricValueKind, ProviderSnapshot,
-            ProviderViewState, QuotaWindow, SnapshotSource, StatusMetric, StatusTone, UsageHistory,
-            ValueMetric,
+            ProviderViewState, QuotaWindow, SnapshotSource, StatusMetric, StatusTone, ValueMetric,
         },
         providers::{codex, cursor, ProviderRegistry},
         settings::default_settings,
@@ -612,7 +585,6 @@ mod tests {
             value_metrics: Vec::new(),
             status_metrics: Vec::new(),
             notices: Vec::new(),
-            usage: UsageHistory::default(),
             warnings: Vec::new(),
             refreshed_at: Utc::now(),
         };
@@ -692,7 +664,6 @@ mod tests {
             value_metrics: Vec::new(),
             status_metrics: Vec::new(),
             notices: Vec::new(),
-            usage: UsageHistory::default(),
             warnings: Vec::new(),
             refreshed_at: Utc::now(),
         };
@@ -802,7 +773,6 @@ mod tests {
             }],
             status_metrics: Vec::new(),
             notices: Vec::new(),
-            usage: UsageHistory::default(),
             warnings: Vec::new(),
             refreshed_at: Utc::now(),
         };
@@ -833,7 +803,6 @@ mod tests {
                 subtitle: None,
             }],
             notices: Vec::new(),
-            usage: UsageHistory::default(),
             warnings: Vec::new(),
             refreshed_at: Utc::now(),
         };

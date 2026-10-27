@@ -3275,7 +3275,6 @@ dependencies = [
  "thiserror 2.0.20",
  "tiny-skia",
  "tokio",
- "walkdir",
  "webview2-com",
  "windows 0.62.2",
  "windows-sys 0.61.2",

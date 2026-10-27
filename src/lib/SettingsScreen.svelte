@@ -139,13 +139,6 @@
   <div class="settings-section">
     <h2>General</h2>
     <label class="setting-row"
-      ><span><b>Show Total Spend</b></span><input
-        type="checkbox"
-        checked={settings.showTotalSpend}
-        onchange={(event) => patch({ showTotalSpend: event.currentTarget.checked })}
-      /></label
-    >
-    <label class="setting-row"
       ><span><b>Launch at Login</b></span><input
         type="checkbox"
         checked={settings.launchAtLogin}

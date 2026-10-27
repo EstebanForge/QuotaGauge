@@ -1,9 +1,7 @@
 <script lang="ts">
-  import { usageSourceNote, type ProviderCatalogIndex } from './metrics';
+  import type { ProviderCatalogIndex } from './metrics';
   import QuotaMetric from './QuotaMetric.svelte';
   import StatusMetric from './StatusMetric.svelte';
-  import UsageMetric from './UsageMetric.svelte';
-  import UsageTrend from './UsageTrend.svelte';
   import ValueMetric from './ValueMetric.svelte';
   import type { AppSettings, MetricLayout, ProviderSnapshot } from './types';
 
@@ -26,12 +24,6 @@
     (definition?.source.kind === 'quota' || definition?.source.kind === 'quotaOrValue') &&
       definition.source.sessionWindow,
   );
-  const period = $derived.by(() => {
-    if (definition?.source.kind !== 'usage') return null;
-    if (definition.source.period === 'today') return snapshot.usage.today;
-    if (definition.source.period === 'yesterday') return snapshot.usage.yesterday;
-    return snapshot.usage.last30Days;
-  });
   const valueMetric = $derived.by(() => {
     const source = definition?.source;
     if (source?.kind !== 'value' && source?.kind !== 'quotaOrValue') return null;
@@ -42,7 +34,6 @@
     if (source?.kind !== 'status') return null;
     return snapshot.statusMetrics.find((item) => item.id === source.sourceId) ?? null;
   });
-  const resolvedUsageSourceNote = $derived(usageSourceNote(catalog, snapshot));
 </script>
 
 {#if (definition?.source.kind === 'quota' || definition?.source.kind === 'quotaOrValue') && quota}
@@ -88,12 +79,8 @@
     </div>
     <div class="metric__reading"><span>No data</span><span>Reset unavailable</span></div>
   </section>
-{:else if definition?.source.kind === 'trend'}
-  <UsageTrend daily={snapshot.usage.daily} sourceNote={resolvedUsageSourceNote} />
 {:else if definition?.source.kind === 'status'}
   <StatusMetric label={definition.label} metric={statusMetric} />
-{:else if definition?.source.kind === 'usage'}
-  <UsageMetric label={definition.label} {period} />
 {:else if definition?.source.kind === 'value'}
   <ValueMetric
     label={definition.label}

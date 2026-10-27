@@ -1,27 +1,8 @@
 import type { ProviderCatalogIndex } from './metrics';
-import {
-  formatMetricNumber,
-  formatMetricValue,
-  formatSpendValue,
-  totalSpendRingCenter,
-} from './metricFormat';
+import { formatMetricValue } from './metricFormat';
 import { formatLimit, formatReset, projectPace } from './pacing';
-import {
-  providerFamily,
-  providerIconColor,
-  providerIconPath,
-  providerIconViewBox,
-} from './providerIconPaths';
-import { fillRingSector, spendRingArcs } from './spendRing';
-import type { SpendProjection } from './totalSpend';
-import type {
-  AppSettings,
-  DailyUsage,
-  ProviderLayout,
-  ProviderSnapshot,
-  QuotaWindow,
-  UsagePeriod,
-} from './types';
+import { providerIconColor, providerIconPath, providerIconViewBox } from './providerIconPaths';
+import type { AppSettings, ProviderLayout, ProviderSnapshot, QuotaWindow } from './types';
 
 export const SHARE_CARD_WIDTH = 360;
 export const SHARE_CARD_SCALE = 4;
@@ -33,27 +14,6 @@ const CARD_RADIUS = 12;
 const ROW_HORIZONTAL_PADDING = 14;
 const HEADER_HEIGHT = 22;
 
-export const TOTAL_SPEND_PERIOD_LABELS = ['Today', 'Yesterday', '30 Days'] as const;
-export const TOTAL_SPEND_GEOMETRY = {
-  width: 320,
-  outerPadding: 10,
-  cardPaddingX: 14,
-  cardPaddingY: 12,
-  switcherHeight: 27,
-  bodyGap: 12,
-  ringDiameter: 104,
-  innerRadiusRatio: 0.618,
-  gapWidth: 1.6,
-  cornerRadius: 3,
-  legendGap: 18,
-  legendRowHeight: 22,
-  periodFontSize: 11,
-  legendFontSize: 12,
-  centerFontSize: 13,
-  centerUnitFontSize: 9,
-} as const;
-export const TOTAL_SPEND_OUTER_PADDING = TOTAL_SPEND_GEOMETRY.outerPadding;
-
 export type ShareRow =
   | {
       kind: 'quota';
@@ -64,8 +24,7 @@ export type ShareRow =
       severity: 'normal' | 'warning' | 'critical';
       paceLabel: string | null;
     }
-  | { kind: 'text'; label: string; value: string; condensed: boolean }
-  | { kind: 'trend'; label: string; daily: DailyUsage[] };
+  | { kind: 'text'; label: string; value: string; condensed: boolean };
 
 interface SharePalette {
   tray: string;
@@ -76,7 +35,6 @@ interface SharePalette {
   fill: string;
   warning: string;
   critical: string;
-  provider: (id: string) => string;
 }
 
 interface ProviderShareCardOptions {
@@ -84,13 +42,6 @@ interface ProviderShareCardOptions {
   providerNames?: Record<string, string>;
   plan: string | null;
   rows: ShareRow[];
-}
-
-interface TotalSpendShareCardOptions {
-  projection: SpendProjection;
-  providerNames?: Record<string, string>;
-  metric: AppSettings['totalSpendMetric'];
-  period: AppSettings['totalSpendPeriod'];
 }
 
 export function buildProviderShareRows(
@@ -154,12 +105,6 @@ export function buildProviderShareRows(
       previousTextSection = null;
       continue;
     }
-    if (source.kind === 'trend') {
-      rows.push({ kind: 'trend', label: definition.label, daily: snapshot.usage.daily });
-      previousTextSection = null;
-      continue;
-    }
-
     if (source.kind === 'status') {
       const statusMetric = snapshot.statusMetrics.find((item) => item.id === source.sourceId);
       rows.push({
@@ -187,18 +132,7 @@ export function buildProviderShareRows(
         condensed: previousTextSection === metric.section,
       });
       previousTextSection = metric.section;
-      continue;
     }
-
-    if (source.kind !== 'usage') continue;
-    const period = usagePeriod(snapshot, source.period);
-    rows.push({
-      kind: 'text',
-      label: definition.label,
-      value: usageReading(period),
-      condensed: previousTextSection === metric.section,
-    });
-    previousTextSection = metric.section;
   }
   return rows;
 }
@@ -209,16 +143,6 @@ export function providerShareCardHeight(rows: ShareRow[]) {
     : 45;
   const cardHeight = CARD_GUTTER * 2 + rowContentHeight;
   return OUTER_PADDING + HEADER_HEIGHT + CONTENT_GAP + cardHeight + OUTER_PADDING;
-}
-
-export function totalSpendShareCardHeight() {
-  const cardHeight =
-    TOTAL_SPEND_GEOMETRY.cardPaddingY +
-    TOTAL_SPEND_GEOMETRY.switcherHeight +
-    TOTAL_SPEND_GEOMETRY.bodyGap +
-    TOTAL_SPEND_GEOMETRY.ringDiameter +
-    TOTAL_SPEND_GEOMETRY.cardPaddingY;
-  return TOTAL_SPEND_OUTER_PADDING + cardHeight + TOTAL_SPEND_OUTER_PADDING;
 }
 
 export function renderProviderShareCard(
@@ -265,48 +189,6 @@ export function renderProviderShareCard(
       rowTop += shareRowHeight(row);
     }
   }
-  return canvas;
-}
-
-export function renderTotalSpendShareCard(
-  catalog: ProviderCatalogIndex,
-  options: TotalSpendShareCardOptions,
-) {
-  const height = totalSpendShareCardHeight();
-  const width = TOTAL_SPEND_GEOMETRY.width;
-  const { canvas, context } = createCanvas(width, height);
-  const palette = canvasPalette();
-  fillBackground(context, palette, width, height);
-
-  const cardTop = TOTAL_SPEND_OUTER_PADDING;
-  const cardHeight = height - TOTAL_SPEND_OUTER_PADDING * 2;
-  drawRoundedRect(
-    context,
-    TOTAL_SPEND_OUTER_PADDING,
-    cardTop,
-    width - TOTAL_SPEND_OUTER_PADDING * 2,
-    cardHeight,
-    CARD_RADIUS,
-    palette.surface,
-  );
-  const switcherTop = cardTop + TOTAL_SPEND_GEOMETRY.cardPaddingY;
-  drawPeriodSwitcher(
-    context,
-    palette,
-    options.period,
-    switcherTop,
-    TOTAL_SPEND_OUTER_PADDING,
-    width,
-  );
-  drawSpendBody(
-    context,
-    palette,
-    catalog,
-    options,
-    switcherTop + TOTAL_SPEND_GEOMETRY.switcherHeight + TOTAL_SPEND_GEOMETRY.bodyGap,
-    TOTAL_SPEND_OUTER_PADDING,
-    width,
-  );
   return canvas;
 }
 
@@ -368,22 +250,8 @@ function quotaShareRow(quota: QuotaWindow, settings: AppSettings, now: number): 
   };
 }
 
-function usagePeriod(snapshot: ProviderSnapshot, sourceId: string) {
-  if (sourceId === 'today') return snapshot.usage.today;
-  if (sourceId === 'yesterday') return snapshot.usage.yesterday;
-  return snapshot.usage.last30Days;
-}
-
-function usageReading(period: UsagePeriod | null) {
-  if (!period) return 'No data';
-  const tokens = formatMetricValue(period.tokens, 'count', 'row', 'tokens');
-  if (period.estimatedCostUsd === null) return tokens;
-  return `${formatMetricNumber(period.estimatedCostUsd, 'dollars', 'row')} · ${tokens}`;
-}
-
 function shareRowHeight(row: ShareRow) {
   if (row.kind === 'quota') return 64;
-  if (row.kind === 'trend') return 37;
   return row.condensed ? 23 : 27;
 }
 
@@ -410,7 +278,6 @@ function canvasPalette(): SharePalette {
     fill: value('--meter-fill'),
     warning: value('--meter-warning'),
     critical: value('--meter-critical'),
-    provider: (id: string) => value(`--provider-${providerFamily(id)}`) || value('--provider'),
   };
 }
 
@@ -494,13 +361,6 @@ function drawShareRow(
     context.textAlign = 'left';
     return;
   }
-  if (row.kind === 'trend') {
-    context.fillStyle = palette.text;
-    context.font = '600 12px system-ui';
-    context.fillText(row.label, left, top + 23);
-    drawTrend(context, palette, row.daily, right - 150, top + 9, 150, 18);
-    return;
-  }
   const baseline = top + (row.condensed ? 15 : 17);
   context.fillStyle = palette.text;
   context.font = '600 12px system-ui';
@@ -510,153 +370,6 @@ function drawShareRow(
   context.textAlign = 'right';
   fitTextRight(context, row.value, right, baseline, 178);
   context.textAlign = 'left';
-}
-
-function drawTrend(
-  context: CanvasRenderingContext2D,
-  palette: SharePalette,
-  daily: DailyUsage[],
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-) {
-  const points = daily.slice(-30);
-  const values = points.length ? points.map((point) => point.tokens) : [0];
-  const max = Math.max(1, ...values);
-  const gap = 1.5;
-  const barWidth = Math.max(1, (width - gap * (values.length - 1)) / values.length);
-  values.forEach((value, index) => {
-    const barHeight = Math.max(value > 0 ? 3 : 2, (value / max) * height);
-    drawRoundedRect(
-      context,
-      x + index * (barWidth + gap),
-      y + height - barHeight,
-      barWidth,
-      barHeight,
-      Math.min(1, barWidth / 2),
-      palette.fill,
-    );
-  });
-}
-
-function drawPeriodSwitcher(
-  context: CanvasRenderingContext2D,
-  palette: SharePalette,
-  period: AppSettings['totalSpendPeriod'],
-  top: number,
-  outerPadding: number,
-  canvasWidth: number,
-) {
-  const left = outerPadding + TOTAL_SPEND_GEOMETRY.cardPaddingX;
-  const width = canvasWidth - (outerPadding + TOTAL_SPEND_GEOMETRY.cardPaddingX) * 2;
-  const innerLeft = left + 3;
-  const segmentWidth = (width - 6) / 3;
-  const selectedIndex = period === 'today' ? 0 : period === 'yesterday' ? 1 : 2;
-
-  drawRoundedRect(
-    context,
-    left,
-    top,
-    width,
-    TOTAL_SPEND_GEOMETRY.switcherHeight,
-    TOTAL_SPEND_GEOMETRY.switcherHeight / 2,
-    palette.track,
-  );
-  drawRoundedRect(
-    context,
-    innerLeft + selectedIndex * segmentWidth,
-    top + 3,
-    segmentWidth,
-    TOTAL_SPEND_GEOMETRY.switcherHeight - 6,
-    (TOTAL_SPEND_GEOMETRY.switcherHeight - 6) / 2,
-    palette.tray,
-  );
-
-  context.font = `${TOTAL_SPEND_GEOMETRY.periodFontSize}px system-ui`;
-  context.textAlign = 'center';
-  TOTAL_SPEND_PERIOD_LABELS.forEach((label, index) => {
-    context.fillStyle = index === selectedIndex ? palette.text : palette.secondary;
-    context.font = `${index === selectedIndex ? '600' : '500'} ${TOTAL_SPEND_GEOMETRY.periodFontSize}px system-ui`;
-    context.fillText(label, innerLeft + segmentWidth * (index + 0.5), top + 18);
-  });
-  context.textAlign = 'left';
-}
-
-function drawSpendBody(
-  context: CanvasRenderingContext2D,
-  palette: SharePalette,
-  catalog: ProviderCatalogIndex,
-  options: TotalSpendShareCardOptions,
-  top: number,
-  outerPadding: number,
-  canvasWidth: number,
-) {
-  const { projection, metric } = options;
-  if (projection.centerValue === null) {
-    context.fillStyle = palette.secondary;
-    context.font = '12px system-ui';
-    context.textAlign = 'center';
-    const empty =
-      metric === 'tokens'
-        ? 'No token data for this period'
-        : metric === 'costPerMillion'
-          ? 'No cost-per-token data for this period'
-          : 'No cost data for this period';
-    context.fillText(empty, canvasWidth / 2, top + TOTAL_SPEND_GEOMETRY.ringDiameter / 2 + 4);
-    context.textAlign = 'left';
-    return;
-  }
-
-  const ringOuterRadius = TOTAL_SPEND_GEOMETRY.ringDiameter / 2;
-  const ringLeft = outerPadding + TOTAL_SPEND_GEOMETRY.cardPaddingX;
-  const centerX = ringLeft + ringOuterRadius;
-  const centerY = top + ringOuterRadius;
-  spendRingArcs(projection.slices).forEach((arc) => {
-    context.fillStyle = palette.provider(arc.id);
-    fillRingSector(context, arc, TOTAL_SPEND_GEOMETRY, ringLeft, top);
-  });
-
-  const center = totalSpendRingCenter(projection.centerValue, metric);
-  context.fillStyle = palette.text;
-  context.font = `600 ${TOTAL_SPEND_GEOMETRY.centerFontSize}px system-ui`;
-  context.textAlign = 'center';
-  context.fillText(center.primary, centerX, centerY - 1);
-  context.fillStyle = palette.secondary;
-  context.font = `600 ${TOTAL_SPEND_GEOMETRY.centerUnitFontSize}px system-ui`;
-  context.fillText(center.unit, centerX, centerY + 13);
-  context.textAlign = 'left';
-
-  const legendLeft =
-    outerPadding +
-    TOTAL_SPEND_GEOMETRY.cardPaddingX +
-    TOTAL_SPEND_GEOMETRY.ringDiameter +
-    TOTAL_SPEND_GEOMETRY.legendGap;
-  const legendRight = canvasWidth - outerPadding - TOTAL_SPEND_GEOMETRY.cardPaddingX;
-  const rowHeight = TOTAL_SPEND_GEOMETRY.legendRowHeight;
-  const legendTop =
-    top + (TOTAL_SPEND_GEOMETRY.ringDiameter - projection.slices.length * rowHeight) / 2;
-  projection.slices.forEach((slice, index) => {
-    const baseline = legendTop + index * rowHeight + 15;
-    context.fillStyle = palette.provider(slice.id);
-    context.beginPath();
-    context.arc(legendLeft + 4, baseline - 4, 4, 0, Math.PI * 2);
-    context.fill();
-    context.fillStyle = palette.text;
-    context.font = `${TOTAL_SPEND_GEOMETRY.legendFontSize}px system-ui`;
-    fitText(
-      context,
-      catalog.displayName(slice.id, options.providerNames),
-      legendLeft + 15,
-      baseline,
-      62,
-    );
-    context.fillStyle = palette.secondary;
-    context.font = `600 ${TOTAL_SPEND_GEOMETRY.legendFontSize}px system-ui`;
-    context.textAlign = 'right';
-    fitTextRight(context, formatSpendValue(slice.value, metric), legendRight, baseline, 72);
-    context.textAlign = 'left';
-  });
 }
 
 function drawProviderMark(

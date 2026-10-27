@@ -1,5 +1,3 @@
-import type { AppSettings } from './types';
-
 export type MetricNumberKind = 'percent' | 'dollars' | 'count';
 export type MetricNumberStyle = 'tray' | 'row' | 'full';
 
@@ -53,34 +51,4 @@ export function formatMetricValue(
 ) {
   const formatted = formatMetricNumber(value, kind, style);
   return label ? `${formatted} ${label}` : formatted;
-}
-
-export function formatSpendValue(
-  value: number,
-  metric: AppSettings['totalSpendMetric'],
-  style: MetricNumberStyle = 'row',
-) {
-  if (metric === 'tokens') return formatMetricNumber(value, 'count', style);
-  const dollars = formatMetricNumber(value, 'dollars', style);
-  return metric === 'costPerMillion' ? `${dollars}/MTok` : dollars;
-}
-
-export function totalSpendRingCenter(value: number, metric: AppSettings['totalSpendMetric']) {
-  if (metric === 'cost') {
-    return { primary: formatMetricNumber(value, 'dollars', 'tray'), unit: 'dollars' };
-  }
-  if (metric === 'costPerMillion') {
-    return { primary: formatMetricNumber(value, 'dollars', 'row'), unit: 'MTok' };
-  }
-  const magnitude = Math.abs(value);
-  if (magnitude >= 1_000_000_000) {
-    return { primary: rowNumberFormatter.format(value / 1_000_000_000), unit: 'billion' };
-  }
-  if (magnitude >= 1_000_000) {
-    return { primary: rowNumberFormatter.format(value / 1_000_000), unit: 'million' };
-  }
-  if (magnitude >= 1_000) {
-    return { primary: rowNumberFormatter.format(value / 1_000), unit: 'thousand' };
-  }
-  return { primary: rowNumberFormatter.format(value), unit: 'tokens' };
 }

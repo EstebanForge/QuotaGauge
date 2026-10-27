@@ -43,48 +43,6 @@ export interface ProviderNotice {
   tone: 'info' | 'warning';
 }
 
-export interface UsagePeriod {
-  tokens: number;
-  estimatedCostUsd: number | null;
-  costEstimated: boolean;
-  estimateComplete: boolean;
-  modelBreakdown?: ModelUsageBreakdown | null;
-  unknownModels?: string[];
-}
-
-export interface ModelUsageEntry {
-  model: string;
-  totalTokens: number;
-  costUsd: number | null;
-  variants?: ModelUsageVariant[] | null;
-}
-
-export interface ModelUsageVariant {
-  model: string;
-  totalTokens: number;
-  costUsd: number | null;
-}
-
-export interface ModelUsageBreakdown {
-  models: ModelUsageEntry[];
-  sourceNote: string;
-}
-
-export interface DailyUsage {
-  date: string;
-  tokens: number;
-  estimatedCostUsd: number | null;
-  estimateComplete: boolean;
-}
-
-export interface UsageHistory {
-  today: UsagePeriod | null;
-  yesterday: UsagePeriod | null;
-  last30Days: UsagePeriod | null;
-  daily: DailyUsage[];
-  unknownModels: string[];
-}
-
 export interface ProviderSnapshot {
   providerId: string;
   plan: string | null;
@@ -92,7 +50,6 @@ export interface ProviderSnapshot {
   valueMetrics: ValueMetric[];
   statusMetrics: StatusMetric[];
   notices: ProviderNotice[];
-  usage: UsageHistory;
   warnings: string[];
   refreshedAt: string;
 }
@@ -104,7 +61,6 @@ export type ProviderErrorKind =
   | 'network'
   | 'invalidResponse'
   | 'credentialStorage'
-  | 'localData'
   | 'storage'
   | 'internal';
 
@@ -129,9 +85,7 @@ export type MetricSource =
   | { kind: 'quota'; sourceId: string; sessionWindow: boolean }
   | { kind: 'quotaOrValue'; sourceId: string; sessionWindow: boolean }
   | { kind: 'value'; sourceId: string }
-  | { kind: 'status'; sourceId: string }
-  | { kind: 'usage'; period: 'today' | 'yesterday' | 'last30Days' }
-  | { kind: 'trend' };
+  | { kind: 'status'; sourceId: string };
 
 export interface TrayMetricDefinition {
   shortLabel: string;
@@ -170,7 +124,6 @@ export interface ProviderDefinition {
   displayName: string;
   shortName: string;
   fallbackEnabled: boolean;
-  localUsageSourceNote: string | null;
   links: ProviderLink[];
   metrics: MetricDefinition[];
 }
@@ -206,7 +159,6 @@ export interface AppSettings {
   providers: ProviderLayout[];
   knownProviderIds: string[];
   providerNames: Record<string, string>;
-  showTotalSpend: boolean;
   theme: 'system' | 'light' | 'dark';
   density: 'default' | 'compact';
   reduceAnimations: boolean;
@@ -223,8 +175,6 @@ export interface AppSettings {
   globalShortcut: string | null;
   logLevel: 'error' | 'warn' | 'info' | 'debug';
   notifications: NotificationPreferences;
-  totalSpendMetric: 'cost' | 'costPerMillion' | 'tokens';
-  totalSpendPeriod: 'today' | 'yesterday' | 'last30Days';
   detectionNoticeDismissed: boolean;
 }
 

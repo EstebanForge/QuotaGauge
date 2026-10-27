@@ -10,7 +10,7 @@ use thiserror::Error;
 use crate::{
     models::{
         ApiKeyStatus, MetricDefinition, MetricSection, ProviderDefinition, ProviderErrorKind,
-        ProviderLink, ProviderSnapshot, UsageHistory,
+        ProviderLink, ProviderSnapshot,
     },
     providers::api_key::ApiKeyStore,
 };
@@ -31,7 +31,6 @@ pub(crate) fn definition() -> ProviderDefinition {
         display_name: "OpenRouter".into(),
         short_name: "OR".into(),
         fallback_enabled: false,
-        local_usage_source_note: None,
         links: vec![
             ProviderLink::new("Activity", "https://openrouter.ai/activity"),
             ProviderLink::new("Credits", "https://openrouter.ai/settings/credits"),
@@ -201,7 +200,6 @@ impl OpenRouterProvider {
                 value_metrics: values,
                 status_metrics: Vec::new(),
                 notices: Vec::new(),
-                usage: UsageHistory::default(),
                 warnings: Vec::new(),
                 refreshed_at: Utc::now(),
             });

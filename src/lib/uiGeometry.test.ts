@@ -51,9 +51,6 @@ describe('popover geometry contract', () => {
     expect(css).toMatch(
       /\.provider-warning::after,[\s\S]*right: 0;[\s\S]*left: auto;[\s\S]*transform-origin: top right;/,
     );
-    expect(css).toMatch(
-      /\.total-card__info::after,[\s\S]*right: auto;[\s\S]*left: 0;[\s\S]*transform-origin: top left;/,
-    );
     expect(css).toContain('max-width: min(190px, calc(100vw - 24px))');
     expect(css).toMatch(/\.metric\s*{[^}]*padding: 10px 14px;/s);
     expect(css).toMatch(/\.meter\s*{[^}]*height: 5px;/s);
@@ -85,16 +82,11 @@ describe('popover geometry contract', () => {
   });
 
   it('keeps compact rows aligned and compact controls genuinely dense', () => {
-    expect(css).toMatch(/:root\[data-density='compact'\] \.usage-row\s*{[^}]*padding: 3px 14px;/s);
-    expect(css).toMatch(/:root\[data-density='compact'\] \.trend-row\s*{[^}]*padding: 6px 14px;/s);
     expect(css).toMatch(
       /:root\[data-density='compact'\] \.select-menu__trigger\s*{[^}]*min-height: 26px;/s,
     );
     expect(css).toMatch(
       /:root\[data-density='compact'\] \.screen-cross-link\s*{[^}]*min-height: 42px;/s,
-    );
-    expect(css).toMatch(
-      /:root\[data-density='compact'\] \.spend-ring\s*{[^}]*width: 88px;[^}]*height: 88px;/s,
     );
   });
 

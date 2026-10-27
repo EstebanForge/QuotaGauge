@@ -695,7 +695,7 @@ mod tests {
         models::{
             MetricDefinition, MetricSection, MetricSource, ProviderDefinition, ProviderErrorKind,
             ProviderSnapshot, ProviderViewState, QuotaFormat, QuotaWindow, SnapshotSource,
-            StatusMetric, StatusTone, UsageHistory,
+            StatusMetric, StatusTone,
         },
         policy::{FAILURE_RETRY_BACKOFF, STALE_AFTER},
         providers::{
@@ -871,7 +871,6 @@ mod tests {
             display_name: id.into(),
             short_name: "T".into(),
             fallback_enabled: true,
-            local_usage_source_note: None,
             links: vec![],
             metrics: vec![MetricDefinition::new(
                 format!("{id}.session"),
@@ -898,7 +897,6 @@ mod tests {
             value_metrics: Vec::new(),
             status_metrics: Vec::new(),
             notices: Vec::new(),
-            usage: UsageHistory::default(),
             warnings: Vec::new(),
             refreshed_at: Utc::now(),
         }
@@ -941,7 +939,6 @@ mod tests {
             value_metrics: Vec::new(),
             status_metrics: Vec::new(),
             notices: Vec::new(),
-            usage: UsageHistory::default(),
             warnings: Vec::new(),
             refreshed_at: Utc::now(),
         };
@@ -1076,7 +1073,6 @@ mod tests {
             display_name: "Dynamic".into(),
             short_name: "D".into(),
             fallback_enabled: true,
-            local_usage_source_note: None,
             links: Vec::new(),
             metrics: vec![
                 MetricDefinition::quota(

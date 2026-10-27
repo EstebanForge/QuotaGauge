@@ -1,5 +1,4 @@
 use std::{
-    collections::BTreeSet,
     fs,
     io::Read,
     path::{Path, PathBuf},
@@ -27,10 +26,6 @@ impl OpenCodePaths {
     #[cfg(test)]
     pub(crate) fn for_data_directory(data_directory: PathBuf) -> Self {
         Self { data_directory }
-    }
-
-    pub(crate) fn database_files(&self) -> Result<Vec<PathBuf>, OpenCodeError> {
-        database_files(&self.data_directory)
     }
 
     pub(crate) fn go_api_key(&self) -> Result<Option<Zeroizing<String>>, OpenCodeError> {
@@ -87,34 +82,6 @@ fn data_directory(environment: impl Fn(&str) -> Option<String>, home_directory: 
     home_directory.join(".local").join("share").join("opencode")
 }
 
-fn database_files(data_directory: &Path) -> Result<Vec<PathBuf>, OpenCodeError> {
-    let entries = match fs::read_dir(data_directory) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(_) => return Err(OpenCodeError::DataDirectoryUnreadable),
-    };
-
-    let mut paths = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(|_| OpenCodeError::DataDirectoryUnreadable)?;
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else {
-            continue;
-        };
-        if name.starts_with("opencode") && name.ends_with(".db") {
-            paths.push(entry.path());
-        }
-    }
-    paths.sort();
-
-    let mut identities = BTreeSet::new();
-    paths.retain(|path| {
-        let identity = fs::canonicalize(path).unwrap_or_else(|_| path.clone());
-        identities.insert(identity)
-    });
-    Ok(paths)
-}
-
 fn home_directory() -> PathBuf {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
@@ -146,7 +113,7 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use super::{data_directory, database_files, OpenCodePaths, MAX_AUTH_FILE_BYTES};
+    use super::{data_directory, OpenCodePaths, MAX_AUTH_FILE_BYTES};
     use crate::providers::opencode::OpenCodeError;
 
     #[test]
@@ -169,43 +136,6 @@ mod tests {
         assert_eq!(
             data_directory(|_| None, home),
             home.join(".local/share/opencode")
-        );
-    }
-
-    #[test]
-    fn database_discovery_is_sorted_deduplicated_and_channel_aware() {
-        let directory = tempdir().unwrap();
-        for name in [
-            "opencode-next.db",
-            "opencode.db",
-            "opencode.db-wal",
-            "other.db",
-        ] {
-            fs::write(directory.path().join(name), "").unwrap();
-        }
-
-        let paths = database_files(directory.path()).unwrap();
-        assert_eq!(
-            paths,
-            [
-                directory.path().join("opencode-next.db"),
-                directory.path().join("opencode.db"),
-            ]
-        );
-    }
-
-    #[test]
-    fn missing_directory_is_absence_but_unreadable_path_is_typed() {
-        let directory = tempdir().unwrap();
-        assert!(database_files(&directory.path().join("missing"))
-            .unwrap()
-            .is_empty());
-
-        let file = directory.path().join("not-a-directory");
-        fs::write(&file, "").unwrap();
-        assert_eq!(
-            database_files(&file).unwrap_err(),
-            OpenCodeError::DataDirectoryUnreadable
         );
     }
 

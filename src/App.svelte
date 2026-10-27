@@ -37,14 +37,9 @@
   import RenameProviderSheet from './lib/RenameProviderSheet.svelte';
   import { createShareController } from './lib/shareController.svelte';
   import { isProviderScreen, providerIdFromScreen, type AppScreen } from './lib/screens';
-  import {
-    buildProviderShareRows,
-    renderProviderShareCard,
-    renderTotalSpendShareCard,
-  } from './lib/shareCard';
+  import { buildProviderShareRows, renderProviderShareCard } from './lib/shareCard';
   import SettingsScreen from './lib/SettingsScreen.svelte';
   import { SettingsController } from './lib/settingsController.svelte';
-  import type { SpendProjection } from './lib/totalSpend';
   import type { AppSettings, UsageViewState } from './lib/types';
   import { nextUpdateLabel, UpdateController } from './lib/updateController.svelte';
   import { automaticUpdateDelay, UPDATE_CHECK_INTERVAL_MS } from './lib/updateSchedule';
@@ -430,25 +425,6 @@
       settingsError = 'Provider screenshot could not be copied.';
     }
   }
-  async function shareTotalSpend(projection: SpendProjection) {
-    const current = settingsState;
-    if (!current) return false;
-    const card = document.querySelector<HTMLElement>('[data-total-spend]');
-    if (!card) return false;
-    try {
-      const canvas = renderTotalSpendShareCard(catalog, {
-        projection,
-        providerNames: current.settings.providerNames,
-        metric: current.settings.totalSpendMetric,
-        period: current.settings.totalSpendPeriod,
-      });
-      await copyCanvas(canvas, card.innerText.trim());
-      return true;
-    } catch {
-      settingsError = 'Total Spend screenshot could not be copied.';
-      return false;
-    }
-  }
   async function copyLogPath() {
     const path = await getLogPath();
     await navigator.clipboard.writeText(path);
@@ -778,7 +754,6 @@
                 onOpenProviderCustomize={(id) => void openProviderCustomization(id, true)}
                 onRenameProvider={openRenameProvider}
                 onShare={shareProvider}
-                onShareTotal={shareTotalSpend}
                 onRefresh={refreshProvider}
                 onOpenProviderLink={openProviderLink}
                 onContentMorph={beginContentMorph}

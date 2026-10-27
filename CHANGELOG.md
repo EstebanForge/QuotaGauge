@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Removed
+
+- Estimated spend and token totals are gone, including the Total Spend card, the show-total-spend setting, and the per-provider local usage history that only worked for a couple of tools. Quota meters and pacing alerts are unaffected. API-reported balances (OpenRouter, Copilot org spend) stay.
+
+### Changed
+
+- Claude, Codex, Cursor, Grok and OpenCode guides and meters now cover quota limits only. OpenCode detection now requires an OpenCode Go sign-in; local history from CLI-only use is no longer read.
+
 ## 0.5.7 - 2026-10-26
 
 ### Fixed

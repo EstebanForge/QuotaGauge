@@ -3,7 +3,7 @@ use std::{
     sync::Arc,
 };
 
-use crate::models::{MetricSection, MetricSource, ProviderCatalog, ProviderDefinition};
+use crate::models::{MetricSection, ProviderCatalog, ProviderDefinition};
 
 use super::{CacheIdentity, UsageProvider};
 
@@ -213,19 +213,9 @@ fn validate_definition(
         if metric.label.trim().is_empty() {
             return Err(invalid(format!("metric `{}` has no label", metric.id)));
         }
-        if metric
-            .source
-            .source_id()
-            .is_some_and(|source| source.trim().is_empty())
-        {
+        if metric.source.source_id().trim().is_empty() {
             return Err(invalid(format!(
                 "metric `{}` has an empty source id",
-                metric.id
-            )));
-        }
-        if matches!(metric.source, MetricSource::Trend) && metric.pinnable {
-            return Err(invalid(format!(
-                "trend metric `{}` cannot be pinnable",
                 metric.id
             )));
         }
@@ -330,7 +320,6 @@ mod tests {
             display_name: "Provider".into(),
             short_name: "P".into(),
             fallback_enabled: true,
-            local_usage_source_note: None,
             links: vec![],
             metrics: vec![MetricDefinition::new(
                 format!("{id}.session"),
@@ -460,13 +449,6 @@ mod tests {
             Err(ProviderRegistryError::Invalid(message)) if message.contains("provider prefix")
         ));
 
-        let mut trend = definition("trend");
-        trend.metrics[0].source = MetricSource::Trend;
-        assert!(matches!(
-            ProviderRegistry::new(vec![runtime(trend)]),
-            Err(ProviderRegistryError::Invalid(message)) if message.contains("cannot be pinnable")
-        ));
-
         let mut empty_tray = definition("tray");
         empty_tray.metrics[0].tray.as_mut().unwrap().short_label = " ".into();
         assert!(matches!(
@@ -556,12 +538,8 @@ mod tests {
                 "codex.weekly",
                 "codex.spark",
                 "codex.sparkWeekly",
-                "codex.trend",
                 "codex.credits",
                 "codex.rateLimitResets",
-                "codex.today",
-                "codex.yesterday",
-                "codex.last30",
             ]
         );
         assert!(registry.definition("codex").unwrap().fallback_enabled);
@@ -587,12 +565,8 @@ mod tests {
         let serialized = serde_json::to_value(catalog).unwrap();
         assert_eq!(serialized["providers"][1]["displayName"], "Codex");
         assert_eq!(
-            serialized["providers"][1]["metrics"][6]["source"],
+            serialized["providers"][1]["metrics"][5]["source"],
             serde_json::json!({"kind":"value","sourceId":"rateLimitResets"})
-        );
-        assert_eq!(
-            serialized["providers"][1]["metrics"][9]["source"],
-            serde_json::json!({"kind":"usage","period":"last30Days"})
         );
     }
 }

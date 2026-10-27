@@ -2055,6 +2055,56 @@ mod tests {
     }
 
     #[test]
+    fn settings_saved_by_older_versions_load_without_the_removed_spend_fields() {
+        let directory = tempdir().unwrap();
+        let database_path = directory.path().join("quotagauge.db");
+        let connection = rusqlite::Connection::open(&database_path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE app_settings (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    payload TEXT NOT NULL
+                );",
+            )
+            .unwrap();
+        let legacy = r#"{"schemaVersion":7,"providers":[{"id":"codex","enabled":true,"detected":true,
+                "expanded":false,"metrics":[
+                    {"id":"codex.session","enabled":true,"section":"alwaysVisible","pinned":true},
+                    {"id":"codex.trend","enabled":true,"section":"alwaysVisible","pinned":false}]}],
+                "knownProviderIds":["codex"],"providerNames":{},"showTotalSpend":true,
+                "theme":"system","density":"default","reduceAnimations":false,
+                "windowMode":"popup","menuBarStyle":"bars","usageDisplay":"left",
+                "resetDisplay":"countdown","timeFormat":"system","alwaysShowPacing":false,
+                "launchAtLogin":false,"autoCheckUpdates":true,"dismissedUpdateVersion":null,
+                "lastUpdateCheckAt":null,"globalShortcut":null,"logLevel":"info",
+                "notifications":{"almostOut":false,"cuttingItClose":false,"willRunOut":false},
+                "totalSpendMetric":"cost","totalSpendPeriod":"today",
+                "detectionNoticeDismissed":true}"#;
+        connection
+            .execute(
+                "INSERT INTO app_settings(id, payload) VALUES (1, ?1)",
+                [legacy],
+            )
+            .unwrap();
+        drop(connection);
+        let storage = Arc::new(Storage::open(&database_path).unwrap());
+        let (service, _) = SettingsService::new_deferred(storage, catalog()).unwrap();
+        let settings = service.get();
+        let codex = settings
+            .providers
+            .iter()
+            .find(|provider| provider.id == "codex")
+            .unwrap();
+        let ids = codex
+            .metrics
+            .iter()
+            .map(|metric| metric.id.as_str())
+            .collect::<Vec<_>>();
+        assert!(ids.contains(&"codex.session"));
+        assert!(!ids.contains(&"codex.trend"));
+    }
+
+    #[test]
     fn invalid_saved_settings_are_not_overwritten_with_defaults() {
         let directory = tempdir().unwrap();
         let database_path = directory.path().join("quotagauge.db");
@@ -2157,7 +2207,6 @@ mod tests {
             value_metrics: Vec::new(),
             status_metrics: Vec::new(),
             notices: Vec::new(),
-            usage: Default::default(),
             warnings: Vec::new(),
             refreshed_at: chrono::Utc::now(),
         };

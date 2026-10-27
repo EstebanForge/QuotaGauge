@@ -1,5 +1,4 @@
 use std::{
-    collections::HashSet,
     fmt,
     fs::{self, File, OpenOptions},
     io::{self, Write},
@@ -19,7 +18,6 @@ pub const DEFAULT_MAX_BYTES: u64 = 10_000_000;
 
 static CURRENT_LEVEL: AtomicU8 = AtomicU8::new(LogLevel::Info as u8);
 static LOGGER: OnceLock<AppLogger> = OnceLock::new();
-static LOCAL_USAGE_FAILURES: OnceLock<Mutex<HashSet<(String, PathBuf)>>> = OnceLock::new();
 
 pub fn init(path: PathBuf, level: LogLevel) {
     CURRENT_LEVEL.store(level as u8, Ordering::Relaxed);
@@ -126,34 +124,6 @@ fn home_directory() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
-}
-
-pub fn local_usage_file_failed(provider_id: &str, path: &Path) {
-    if update_local_usage_failure(provider_id, path, true) {
-        let tag = format!("plugin:{provider_id}");
-        crate::app_warn!(
-            &tag,
-            "Could not read a local usage log; skipped it for this refresh"
-        );
-    }
-}
-
-pub fn local_usage_file_recovered(provider_id: &str, path: &Path) {
-    update_local_usage_failure(provider_id, path, false);
-}
-
-fn update_local_usage_failure(provider_id: &str, path: &Path, failed: bool) -> bool {
-    let failures = LOCAL_USAGE_FAILURES.get_or_init(|| Mutex::new(HashSet::new()));
-    let Ok(mut failures) = failures.lock() else {
-        return false;
-    };
-    let key = (provider_id.to_owned(), path.to_path_buf());
-    if failed {
-        failures.insert(key)
-    } else {
-        failures.remove(&key);
-        false
-    }
 }
 
 struct AppLogger {
@@ -560,7 +530,7 @@ mod tests {
 
     use super::{
         body_preview, default_log_path, format_line, redact_body, redact_log_message, redact_url,
-        redact_value, update_local_usage_failure, LogFile,
+        redact_value, LogFile,
     };
 
     #[test]
@@ -703,15 +673,5 @@ mod tests {
         }
         crate::app_debug!("cache", "{}", expensive(&built));
         assert!(!built.load(Ordering::SeqCst));
-    }
-
-    #[test]
-    fn local_usage_read_failure_warns_once_until_recovery() {
-        let directory = tempdir().unwrap();
-        let path = directory.path().join("unique-session.jsonl");
-        assert!(update_local_usage_failure("dedupe-test", &path, true));
-        assert!(!update_local_usage_failure("dedupe-test", &path, true));
-        assert!(!update_local_usage_failure("dedupe-test", &path, false));
-        assert!(update_local_usage_failure("dedupe-test", &path, true));
     }
 }

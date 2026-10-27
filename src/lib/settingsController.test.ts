@@ -27,7 +27,6 @@ function settingsView(
       providerNames: {},
       providers: [],
       knownProviderIds: [],
-      showTotalSpend: true,
       theme,
       density: 'default',
       reduceAnimations: false,
@@ -44,8 +43,6 @@ function settingsView(
       globalShortcut: null,
       logLevel: 'info',
       notifications: { almostOut: false, cuttingItClose: false, willRunOut: false },
-      totalSpendMetric: 'cost',
-      totalSpendPeriod: 'today',
       detectionNoticeDismissed: false,
     },
   };

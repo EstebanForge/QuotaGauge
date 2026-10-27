@@ -1,9 +1,4 @@
-import type {
-  MetricDefinition,
-  ProviderCatalog,
-  ProviderDefinition,
-  ProviderSnapshot,
-} from './types';
+import type { MetricDefinition, ProviderCatalog, ProviderDefinition } from './types';
 
 export class ProviderCatalogIndex {
   readonly providers: ProviderDefinition[];
@@ -45,29 +40,9 @@ export class ProviderCatalogIndex {
     return this.provider(id)?.displayName ?? id;
   }
 
-  supportsSpend(id: string) {
-    return this.provider(id)?.metrics.some((metric) => metric.source.kind === 'usage') ?? false;
-  }
-
   supportsApiKeyConfiguration(id: string) {
     return this.#apiKeyProviderIds.has(id);
   }
-
-  localUsageSourceNote(id: string) {
-    const provider = this.provider(id);
-    return (
-      provider?.localUsageSourceNote ?? `From your ${provider?.displayName ?? id} usage history`
-    );
-  }
-}
-
-export function usageSourceNote(catalog: ProviderCatalogIndex, snapshot: ProviderSnapshot) {
-  return (
-    snapshot.usage.last30Days?.modelBreakdown?.sourceNote ??
-    snapshot.usage.today?.modelBreakdown?.sourceNote ??
-    snapshot.usage.yesterday?.modelBreakdown?.sourceNote ??
-    catalog.localUsageSourceNote(snapshot.providerId)
-  );
 }
 
 export const emptyProviderCatalog = new ProviderCatalogIndex({ providers: [] });

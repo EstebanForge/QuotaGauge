@@ -25,36 +25,6 @@ function quota(
   };
 }
 
-function usage(
-  id: string,
-  label: string,
-  period: 'today' | 'yesterday' | 'last30Days',
-): MetricDefinition {
-  return {
-    id,
-    label,
-    source: { kind: 'usage', period },
-    pinnable: true,
-    defaultEnabled: true,
-    defaultSection: 'onDemand',
-    defaultPinned: false,
-    tray: { shortLabel: label.slice(0, 1), suffix: null },
-  };
-}
-
-function trend(id: string): MetricDefinition {
-  return {
-    id,
-    label: 'Usage Trend',
-    source: { kind: 'trend' },
-    pinnable: false,
-    defaultEnabled: true,
-    defaultSection: 'alwaysVisible',
-    defaultPinned: false,
-    tray: null,
-  };
-}
-
 function value(id: string, label: string, sourceId: string): MetricDefinition {
   return {
     id,
@@ -76,7 +46,6 @@ export const providerCatalog: ProviderCatalog = {
       displayName: 'Claude',
       shortName: 'Cl',
       fallbackEnabled: false,
-      localUsageSourceNote: 'From your Claude usage history (estimated)',
       links: [
         { label: 'Status', url: 'https://status.anthropic.com/' },
         { label: 'Dashboard', url: 'https://claude.ai/settings/usage' },
@@ -90,10 +59,6 @@ export const providerCatalog: ProviderCatalog = {
           ...quota('claude.extra', 'Extra Usage', 'extra'),
           source: { kind: 'quotaOrValue', sourceId: 'extra', sessionWindow: false },
         },
-        trend('claude.trend'),
-        usage('claude.today', 'Today', 'today'),
-        usage('claude.yesterday', 'Yesterday', 'yesterday'),
-        usage('claude.last30', 'Last 30 Days', 'last30Days'),
       ],
     },
     {
@@ -101,7 +66,6 @@ export const providerCatalog: ProviderCatalog = {
       displayName: 'Codex',
       shortName: 'Cx',
       fallbackEnabled: true,
-      localUsageSourceNote: 'From your Codex logs (estimated)',
       links: [
         { label: 'Status', url: 'https://status.openai.com/' },
         { label: 'Dashboard', url: 'https://chatgpt.com/codex/settings/usage' },
@@ -111,7 +75,6 @@ export const providerCatalog: ProviderCatalog = {
         quota('codex.weekly', 'Weekly', 'weekly'),
         quota('codex.spark', 'Spark', 'spark'),
         quota('codex.sparkWeekly', 'Spark Weekly', 'sparkWeekly'),
-        trend('codex.trend'),
         {
           ...quota('codex.credits', 'Extra Usage', 'credits'),
           source: { kind: 'value', sourceId: 'credits' },
@@ -121,9 +84,6 @@ export const providerCatalog: ProviderCatalog = {
           source: { kind: 'value', sourceId: 'rateLimitResets' },
           tray: { shortLabel: 'R', suffix: 'resets' },
         },
-        usage('codex.today', 'Today', 'today'),
-        usage('codex.yesterday', 'Yesterday', 'yesterday'),
-        usage('codex.last30', 'Last 30 Days', 'last30Days'),
       ],
     },
     {
@@ -131,7 +91,6 @@ export const providerCatalog: ProviderCatalog = {
       displayName: 'Antigravity',
       shortName: 'A',
       fallbackEnabled: false,
-      localUsageSourceNote: null,
       links: [],
       metrics: [
         quota('antigravity.geminiPro', 'Session', 'geminiPro', true),
@@ -145,7 +104,6 @@ export const providerCatalog: ProviderCatalog = {
       displayName: 'OpenRouter',
       shortName: 'OR',
       fallbackEnabled: false,
-      localUsageSourceNote: null,
       links: [
         { label: 'Activity', url: 'https://openrouter.ai/activity' },
         { label: 'Credits', url: 'https://openrouter.ai/settings/credits' },
@@ -219,30 +177,6 @@ export const codexState: ProviderViewState = {
     ],
     statusMetrics: [],
     notices: [],
-    usage: {
-      today: {
-        tokens: 2100000,
-        estimatedCostUsd: 3.84,
-        costEstimated: true,
-        estimateComplete: true,
-      },
-      yesterday: {
-        tokens: 684000,
-        estimatedCostUsd: 1.27,
-        costEstimated: true,
-        estimateComplete: true,
-      },
-      last30Days: {
-        tokens: 3000000,
-        estimatedCostUsd: 5.11,
-        costEstimated: true,
-        estimateComplete: true,
-      },
-      daily: [
-        { date: '2026-07-10', tokens: 2100000, estimatedCostUsd: 3.84, estimateComplete: true },
-      ],
-      unknownModels: [],
-    },
   },
 };
 
@@ -287,7 +221,6 @@ export const claudeState: ProviderViewState = {
     valueMetrics: [],
     statusMetrics: [],
     notices: [],
-    usage: { today: null, yesterday: null, last30Days: null, daily: [], unknownModels: [] },
   },
 };
 
@@ -330,7 +263,6 @@ export const antigravityState: ProviderViewState = {
     valueMetrics: [],
     statusMetrics: [],
     notices: [],
-    usage: { today: null, yesterday: null, last30Days: null, daily: [], unknownModels: [] },
   },
 };
 
@@ -346,7 +278,6 @@ export const settingsState: SettingsViewState = {
     schemaVersion: 7,
     providerNames: {},
     knownProviderIds: ['claude', 'codex', 'antigravity'],
-    showTotalSpend: true,
     theme: 'system',
     density: 'default',
     reduceAnimations: false,
@@ -363,8 +294,6 @@ export const settingsState: SettingsViewState = {
     globalShortcut: null,
     logLevel: 'info',
     notifications: { almostOut: false, cuttingItClose: false, willRunOut: false },
-    totalSpendMetric: 'cost',
-    totalSpendPeriod: 'today',
     detectionNoticeDismissed: true,
     providers: [
       {
@@ -377,12 +306,8 @@ export const settingsState: SettingsViewState = {
           { id: 'codex.weekly', enabled: true, section: 'alwaysVisible', pinned: true },
           { id: 'codex.spark', enabled: true, section: 'onDemand', pinned: false },
           { id: 'codex.sparkWeekly', enabled: true, section: 'onDemand', pinned: false },
-          { id: 'codex.trend', enabled: true, section: 'alwaysVisible', pinned: false },
           { id: 'codex.credits', enabled: true, section: 'onDemand', pinned: false },
           { id: 'codex.rateLimitResets', enabled: true, section: 'onDemand', pinned: false },
-          { id: 'codex.today', enabled: true, section: 'onDemand', pinned: false },
-          { id: 'codex.yesterday', enabled: true, section: 'onDemand', pinned: false },
-          { id: 'codex.last30', enabled: true, section: 'onDemand', pinned: false },
         ],
       },
     ],

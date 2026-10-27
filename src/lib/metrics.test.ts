@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { codexState, providerCatalog } from '../test/appFixtures';
-import { ProviderCatalogIndex, usageSourceNote } from './metrics';
+import { providerCatalog } from '../test/appFixtures';
+import { ProviderCatalogIndex } from './metrics';
 
 describe('provider catalog index', () => {
   it('indexes provider identity and metric metadata from bootstrap data', () => {
@@ -12,15 +12,12 @@ describe('provider catalog index', () => {
       label: 'Session',
       source: { kind: 'quota', sourceId: 'session', sessionWindow: true },
     });
-    expect(catalog.supportsSpend('claude')).toBe(true);
-    expect(catalog.supportsSpend('antigravity')).toBe(false);
     expect(catalog.supportsApiKeyConfiguration('openrouter')).toBe(true);
     expect(catalog.supportsApiKeyConfiguration('codex')).toBe(false);
     expect(catalog.metric('openrouter.balance')).toMatchObject({
       label: 'Balance',
       source: { kind: 'value', sourceId: 'balance' },
     });
-    expect(catalog.localUsageSourceNote('codex')).toBe('From your Codex logs (estimated)');
     expect(catalog.provider('codex')?.links).toEqual([
       { label: 'Status', url: 'https://status.openai.com/' },
       { label: 'Dashboard', url: 'https://chatgpt.com/codex/settings/usage' },
@@ -32,24 +29,6 @@ describe('provider catalog index', () => {
 
     expect(catalog.displayName('future-provider')).toBe('future-provider');
     expect(catalog.metric('future-provider.session')).toBeUndefined();
-    expect(catalog.localUsageSourceNote('future-provider')).toBe(
-      'From your future-provider usage history',
-    );
-  });
-
-  it('prefers the snapshot usage source when an additional local source contributed', () => {
-    const catalog = new ProviderCatalogIndex(providerCatalog);
-    const snapshot = structuredClone(codexState.snapshot!);
-    snapshot.usage.last30Days!.modelBreakdown = {
-      models: [],
-      sourceNote: 'From your Codex logs and pi (estimated)',
-    };
-
-    expect(usageSourceNote(catalog, snapshot)).toBe('From your Codex logs and pi (estimated)');
-    snapshot.usage.last30Days!.modelBreakdown = null;
-    snapshot.usage.today!.modelBreakdown = null;
-    snapshot.usage.yesterday!.modelBreakdown = null;
-    expect(usageSourceNote(catalog, snapshot)).toBe('From your Codex logs (estimated)');
   });
 
   it('rejects duplicate provider and metric ids at the frontend boundary', () => {

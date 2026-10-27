@@ -391,7 +391,7 @@ mod tests {
     use crate::{
         models::{
             AppSettings, MetricLayout, MetricSection, MetricValueKind, NotificationPreferences,
-            ProviderLayout, ProviderSnapshot, UsageHistory, ValueMetric,
+            ProviderLayout, ProviderSnapshot, ValueMetric,
         },
         pacing::{Milestone, NotificationEvaluator},
         providers::{codex::client::UsageResponse, ProviderRegistry},
@@ -514,7 +514,6 @@ mod tests {
                 value_metrics: mapped.value_metrics,
                 status_metrics: Vec::new(),
                 notices: Vec::new(),
-                usage: UsageHistory::default(),
                 warnings: Vec::new(),
                 refreshed_at: now,
             }

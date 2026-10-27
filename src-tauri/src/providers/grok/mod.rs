@@ -1,6 +1,5 @@
 mod auth;
 mod client;
-mod local_usage;
 mod mapper;
 
 use std::sync::Arc;
@@ -9,20 +8,14 @@ use chrono::{DateTime, Utc};
 use reqwest::StatusCode;
 use thiserror::Error;
 
-use crate::{
-    models::{
-        MetricDefinition, MetricSection, ProviderDefinition, ProviderErrorKind, ProviderLink,
-        ProviderSnapshot, UsagePeriodSelection,
-    },
-    pricing::PricingStore,
-    providers::log_usage::scan_or_cached_usage,
-    storage::Storage,
+use crate::models::{
+    MetricDefinition, MetricSection, ProviderDefinition, ProviderErrorKind, ProviderLink,
+    ProviderSnapshot,
 };
 
 use self::{
     auth::{GrokAuthState, GrokAuthStore},
     client::GrokClient,
-    local_usage::GrokLogUsageScanner,
     mapper::{map_credits, plan_name},
 };
 
@@ -34,7 +27,6 @@ pub(crate) fn definition() -> ProviderDefinition {
         display_name: "Grok".into(),
         short_name: "G".into(),
         fallback_enabled: false,
-        local_usage_source_note: Some("From your Grok logs (estimated)".into()),
         links: vec![ProviderLink::new("Usage", "https://grok.com/?_s=usage")],
         metrics: vec![
             MetricDefinition::quota(
@@ -56,28 +48,6 @@ pub(crate) fn definition() -> ProviderDefinition {
                 false,
                 "E",
             ),
-            MetricDefinition::trend("grok.trend"),
-            MetricDefinition::usage(
-                "grok.today",
-                "Today",
-                UsagePeriodSelection::Today,
-                MetricSection::OnDemand,
-                "T",
-            ),
-            MetricDefinition::usage(
-                "grok.yesterday",
-                "Yesterday",
-                UsagePeriodSelection::Yesterday,
-                MetricSection::OnDemand,
-                "Y",
-            ),
-            MetricDefinition::usage(
-                "grok.last30",
-                "Last 30 Days",
-                UsagePeriodSelection::Last30Days,
-                MetricSection::OnDemand,
-                "M",
-            ),
         ],
     }
 }
@@ -98,54 +68,28 @@ pub(crate) enum GrokError {
     InvalidResponse,
     #[error("Grok billing request failed (HTTP {0}).")]
     RequestFailed(u16),
-    #[error("Local Grok usage logs could not be processed.")]
-    LocalUsage,
-    #[error("QuotaGauge cache is unavailable.")]
-    Storage,
-}
-
-impl From<crate::storage::StorageError> for GrokError {
-    fn from(_: crate::storage::StorageError) -> Self {
-        Self::Storage
-    }
 }
 
 pub struct GrokProvider {
-    storage: Arc<Storage>,
-    pricing: Arc<PricingStore>,
     auth: GrokAuthStore,
     client: GrokClient,
-    log_usage: GrokLogUsageScanner,
     now: Arc<dyn Fn() -> DateTime<Utc> + Send + Sync>,
 }
 
 impl GrokProvider {
-    pub fn new(storage: Arc<Storage>, pricing: Arc<PricingStore>) -> Result<Self, GrokError> {
+    pub fn new() -> Result<Self, GrokError> {
         Ok(Self {
-            storage,
-            pricing,
             auth: GrokAuthStore::new(),
             client: GrokClient::new()?,
-            log_usage: GrokLogUsageScanner::new(),
             now: Arc::new(Utc::now),
         })
     }
 
     #[cfg(test)]
-    fn with_dependencies(
-        storage: Arc<Storage>,
-        pricing: Arc<PricingStore>,
-        auth: GrokAuthStore,
-        client: GrokClient,
-        log_usage: GrokLogUsageScanner,
-        now: DateTime<Utc>,
-    ) -> Self {
+    fn with_dependencies(auth: GrokAuthStore, client: GrokClient, now: DateTime<Utc>) -> Self {
         Self {
-            storage,
-            pricing,
             auth,
             client,
-            log_usage,
             now: Arc::new(move || now),
         }
     }
@@ -204,15 +148,6 @@ impl GrokProvider {
             .ok()
             .as_ref()
             .and_then(plan_name);
-        let pricing = self.pricing.current();
-        let usage = scan_or_cached_usage(
-            &self.storage,
-            "grok",
-            crate::providers::CacheIdentity::Unscoped,
-            "Grok",
-            || self.log_usage.scan(&self.storage, now, &pricing),
-            &mut warnings,
-        );
         Ok(ProviderSnapshot {
             provider_id: "grok".into(),
             plan,
@@ -220,7 +155,6 @@ impl GrokProvider {
             value_metrics: Vec::new(),
             status_metrics: mapped.status_metrics,
             notices: Vec::new(),
-            usage,
             warnings,
             refreshed_at: now,
         })
@@ -282,8 +216,6 @@ impl UsageProvider for GrokProvider {
                     ProviderErrorKind::Network
                 }
                 GrokError::InvalidResponse => ProviderErrorKind::InvalidResponse,
-                GrokError::LocalUsage => ProviderErrorKind::LocalData,
-                GrokError::Storage => ProviderErrorKind::Storage,
             };
             ProviderError::from_display(kind, error)
         })

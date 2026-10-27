@@ -1,6 +1,5 @@
 pub mod auth;
 pub mod client;
-pub mod local_usage;
 pub mod mapper;
 pub mod reset_claim;
 
@@ -12,18 +11,11 @@ use thiserror::Error;
 
 use crate::{
     hashing::sha256_hex,
-    models::{
-        MetricDefinition, MetricSection, ProviderDefinition, ProviderLink, ProviderSnapshot,
-        UsagePeriodSelection,
-    },
-    pricing::PricingStore,
+    models::{MetricDefinition, MetricSection, ProviderDefinition, ProviderLink, ProviderSnapshot},
     storage::Storage,
 };
 
-use self::{
-    auth::CodexAuthState, client::CodexClient, local_usage::scan_local_usage, mapper::map_usage,
-};
-use crate::providers::log_usage::scan_or_cached_usage;
+use self::{auth::CodexAuthState, client::CodexClient, mapper::map_usage};
 
 pub(crate) fn definition() -> ProviderDefinition {
     ProviderDefinition {
@@ -31,7 +23,6 @@ pub(crate) fn definition() -> ProviderDefinition {
         display_name: "Codex".into(),
         short_name: "Cx".into(),
         fallback_enabled: true,
-        local_usage_source_note: Some("From your Codex logs (estimated)".into()),
         links: vec![
             ProviderLink::new("Status", "https://status.openai.com/"),
             ProviderLink::new("Dashboard", "https://chatgpt.com/codex/settings/usage"),
@@ -77,7 +68,6 @@ pub(crate) fn definition() -> ProviderDefinition {
                 false,
                 "SW",
             ),
-            MetricDefinition::trend("codex.trend"),
             MetricDefinition::value(
                 "codex.credits",
                 "Extra Usage",
@@ -97,27 +87,6 @@ pub(crate) fn definition() -> ProviderDefinition {
                 false,
                 "R",
                 Some("resets"),
-            ),
-            MetricDefinition::usage(
-                "codex.today",
-                "Today",
-                UsagePeriodSelection::Today,
-                MetricSection::OnDemand,
-                "T",
-            ),
-            MetricDefinition::usage(
-                "codex.yesterday",
-                "Yesterday",
-                UsagePeriodSelection::Yesterday,
-                MetricSection::OnDemand,
-                "Y",
-            ),
-            MetricDefinition::usage(
-                "codex.last30",
-                "Last 30 Days",
-                UsagePeriodSelection::Last30Days,
-                MetricSection::OnDemand,
-                "M",
             ),
         ],
     }
@@ -151,8 +120,6 @@ pub enum CodexError {
     InvalidResponse,
     #[error("Could not connect to Codex. Check your internet connection.")]
     ConnectionFailed,
-    #[error("Local Codex usage logs could not be processed.")]
-    LocalUsage,
     #[error("QuotaGauge cache is unavailable.")]
     Storage,
 }
@@ -165,13 +132,11 @@ impl From<crate::storage::StorageError> for CodexError {
 
 pub struct CodexProvider {
     account_identity: Option<String>,
-    storage: Arc<Storage>,
-    pricing: Arc<PricingStore>,
     client: CodexClient,
 }
 
 impl CodexProvider {
-    pub fn new(storage: Arc<Storage>, pricing: Arc<PricingStore>) -> Result<Self, CodexError> {
+    pub fn new(storage: Arc<Storage>) -> Result<Self, CodexError> {
         let account_identity = CodexAuthState::observed_account_identity()
             .map(|identity| account_identity_key(&identity));
         if let Some(identity) = account_identity.as_deref() {
@@ -179,8 +144,6 @@ impl CodexProvider {
         }
         Ok(Self {
             account_identity,
-            storage,
-            pricing,
             client: CodexClient::new()?,
         })
     }
@@ -276,17 +239,6 @@ impl CodexProvider {
             None
         };
         let mapped = map_usage(&response, reset_credits.as_ref(), now)?;
-        let pricing = self.pricing.current();
-        let usage = scan_or_cached_usage(
-            &self.storage,
-            "codex",
-            account_identity
-                .map(crate::providers::CacheIdentity::Resolved)
-                .unwrap_or(crate::providers::CacheIdentity::Unresolved),
-            "Codex",
-            || scan_local_usage(&self.storage, now, &pricing),
-            &mut warnings,
-        );
         Self::ensure_candidate_source_current(auth, account_identity)?;
         Ok(ProviderSnapshot {
             provider_id: "codex".into(),
@@ -295,7 +247,6 @@ impl CodexProvider {
             value_metrics: mapped.value_metrics,
             status_metrics: Vec::new(),
             notices: Vec::new(),
-            usage,
             warnings,
             refreshed_at: now,
         })
@@ -364,7 +315,6 @@ fn provider_error(error: CodexError) -> crate::providers::ProviderError {
         CodexError::RequestFailed(429) => Kind::RateLimited,
         CodexError::RequestFailed(_) | CodexError::ConnectionFailed => Kind::Network,
         CodexError::InvalidResponse => Kind::InvalidResponse,
-        CodexError::LocalUsage => Kind::LocalData,
         CodexError::Storage => Kind::Storage,
     };
     crate::providers::ProviderError::from_display(kind, error)
@@ -416,16 +366,9 @@ impl crate::providers::UsageProvider for CodexProvider {
 
 #[cfg(test)]
 mod account_tests {
-    use std::sync::Arc;
-
-    use tempfile::tempdir;
 
     use super::{validate_account_identity, CodexClient, CodexError, CodexProvider};
-    use crate::{
-        pricing::PricingStore,
-        providers::{CacheIdentity, UsageProvider},
-        storage::Storage,
-    };
+    use crate::providers::{CacheIdentity, UsageProvider};
 
     #[test]
     fn pinned_account_rejects_a_different_or_unreadable_login() {
@@ -447,19 +390,12 @@ mod account_tests {
 
     #[test]
     fn cache_identity_tracks_the_launch_resolved_account() {
-        let directory = tempdir().unwrap();
-        let storage = Arc::new(Storage::open(&directory.path().join("quotagauge.db")).unwrap());
-        let pricing = Arc::new(PricingStore::new(directory.path().join("pricing")).unwrap());
         let provider = CodexProvider {
             account_identity: Some("account-a".into()),
-            storage: storage.clone(),
-            pricing: pricing.clone(),
             client: CodexClient::new().unwrap(),
         };
         let unresolved = CodexProvider {
             account_identity: None,
-            storage,
-            pricing,
             client: CodexClient::new().unwrap(),
         };
 

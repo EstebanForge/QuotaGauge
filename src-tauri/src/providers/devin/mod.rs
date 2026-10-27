@@ -8,7 +8,7 @@ use thiserror::Error;
 
 use crate::models::{
     MetricDefinition, MetricSection, ProviderDefinition, ProviderErrorKind, ProviderLink,
-    ProviderSnapshot, UsageHistory,
+    ProviderSnapshot,
 };
 
 use self::{
@@ -25,7 +25,6 @@ pub(crate) fn definition() -> ProviderDefinition {
         display_name: "Devin".into(),
         short_name: "D".into(),
         fallback_enabled: false,
-        local_usage_source_note: None,
         links: vec![ProviderLink::new(
             "Dashboard",
             "https://app.devin.ai/settings/plans",
@@ -173,7 +172,6 @@ impl DevinProvider {
             value_metrics: mapped.value_metrics,
             status_metrics: Vec::new(),
             notices: Vec::new(),
-            usage: UsageHistory::default(),
             warnings: Vec::new(),
             refreshed_at: (self.now)(),
         })

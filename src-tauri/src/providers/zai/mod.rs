@@ -10,7 +10,7 @@ use thiserror::Error;
 
 use crate::models::{
     ApiKeyStatus, MetricDefinition, MetricSection, ProviderDefinition, ProviderErrorKind,
-    ProviderLink, ProviderSnapshot, UsageHistory,
+    ProviderLink, ProviderSnapshot,
 };
 
 use self::{
@@ -27,7 +27,6 @@ pub(crate) fn definition() -> ProviderDefinition {
         display_name: "Z.ai".into(),
         short_name: "Z".into(),
         fallback_enabled: false,
-        local_usage_source_note: None,
         links: vec![
             ProviderLink::new(
                 "Dashboard",
@@ -148,7 +147,6 @@ impl ZaiProvider {
             value_metrics: Vec::new(),
             status_metrics: Vec::new(),
             notices: Vec::new(),
-            usage: UsageHistory::default(),
             warnings: Vec::new(),
             refreshed_at: Utc::now(),
         })

@@ -36,7 +36,7 @@
   const remaining = $derived(Math.max(0, 100 - used));
   const countUnit = $derived(quota.unit?.trim() || 'requests');
   const estimateNote = $derived(
-    quota.sourceNote?.trim() || 'Estimated from local usage data and may differ from billed usage.',
+    quota.sourceNote?.trim() || 'Estimated; it may differ from billed usage.',
   );
   const reading = $derived.by(() => {
     if (quota.format === 'count' && quota.usedValue !== null && quota.limitValue !== null) {

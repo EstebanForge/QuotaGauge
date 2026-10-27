@@ -11,7 +11,6 @@ mod notifications;
 mod pacing;
 mod policy;
 mod popup;
-mod pricing;
 mod provider_environment;
 mod providers;
 mod refresh_loop;
@@ -46,7 +45,6 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 use crate::{
     desktop_integration::DesktopIntegration,
     pacing::NotificationEvaluator,
-    pricing::PricingStore,
     providers::{
         codex::reset_claim::CodexResetClaimService, detect_local_credentials, ProviderRegistry,
     },
@@ -367,8 +365,7 @@ pub fn run() {
             provider_environment::refresh_for_next_launch(storage.clone());
             app.manage(Arc::new(PanelResizeSession::new(storage.clone())));
             app_debug!("cache", "application database opened");
-            let pricing = Arc::new(PricingStore::new(app_data_dir.join("pricing"))?);
-            let registry = providers::build_registry(&storage, &pricing, &app_data_dir)?;
+            let registry = providers::build_registry(&storage, &app_data_dir)?;
             let (settings_service, credential_detection_plan) =
                 SettingsService::new_deferred(storage.clone(), registry.clone())?;
             let settings = Arc::new(settings_service);

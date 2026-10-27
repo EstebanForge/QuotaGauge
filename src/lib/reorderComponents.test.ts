@@ -11,7 +11,6 @@ const settings: AppSettings = {
   schemaVersion: 7,
   providerNames: {},
   knownProviderIds: ['codex', 'claude', 'antigravity'],
-  showTotalSpend: false,
   theme: 'system',
   density: 'default',
   reduceAnimations: false,
@@ -28,8 +27,6 @@ const settings: AppSettings = {
   globalShortcut: null,
   logLevel: 'info',
   notifications: { almostOut: false, cuttingItClose: false, willRunOut: false },
-  totalSpendMetric: 'cost',
-  totalSpendPeriod: 'today',
   detectionNoticeDismissed: true,
   providers: [
     {
@@ -40,7 +37,7 @@ const settings: AppSettings = {
       metrics: [
         { id: 'codex.session', enabled: true, section: 'alwaysVisible', pinned: true },
         { id: 'codex.weekly', enabled: true, section: 'alwaysVisible', pinned: true },
-        { id: 'codex.today', enabled: true, section: 'onDemand', pinned: false },
+        { id: 'codex.credits', enabled: true, section: 'onDemand', pinned: false },
       ],
     },
     {
@@ -145,8 +142,8 @@ describe('pointer reorder integrations', () => {
     const independent = structuredClone(settings);
     const metrics = independent.providers.find((provider) => provider.id === 'codex')!.metrics;
     metrics.find((metric) => metric.id === 'codex.weekly')!.pinned = false;
-    const today = metrics.find((metric) => metric.id === 'codex.today')!;
-    today.enabled = false;
+    const credits = metrics.find((metric) => metric.id === 'codex.credits')!;
+    credits.enabled = false;
 
     const { rerender } = render(CustomizeProviderDetail, {
       settings: independent,
@@ -160,12 +157,12 @@ describe('pointer reorder integrations', () => {
       reducedMotion: false,
     });
 
-    await fireEvent.click(screen.getByRole('button', { name: 'Pin Today' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Pin Extra Usage' }));
     const starred = onChange.mock.calls.at(-1)![0] as AppSettings;
-    const starredToday = starred.providers
+    const starredCredits = starred.providers
       .find((provider) => provider.id === 'codex')!
-      .metrics.find((metric) => metric.id === 'codex.today')!;
-    expect(starredToday).toMatchObject({ enabled: false, pinned: true });
+      .metrics.find((metric) => metric.id === 'codex.credits')!;
+    expect(starredCredits).toMatchObject({ enabled: false, pinned: true });
     expect(screen.getByRole('status')).toHaveTextContent('Starred for menu bar');
 
     onChange.mockClear();
@@ -192,7 +189,7 @@ describe('pointer reorder integrations', () => {
       reducedMotion: false,
     });
 
-    const button = screen.getByRole('button', { name: 'Pin Today' });
+    const button = screen.getByRole('button', { name: 'Pin Extra Usage' });
     const animate = vi.fn();
     Object.defineProperty(button, 'animate', { configurable: true, value: animate });
     await fireEvent.click(button);
@@ -270,15 +267,15 @@ describe('pointer reorder integrations', () => {
     });
 
     const weekly = screen.getByText('Weekly').closest('.customize-metric-row') as HTMLElement;
-    const today = screen.getByText('Today').closest('.customize-metric-row') as HTMLElement;
-    await drag(weekly, weekly.querySelector('[data-reorder-handle]')!, today, 'touch');
+    const credits = screen.getByText('Extra Usage').closest('.customize-metric-row') as HTMLElement;
+    await drag(weekly, weekly.querySelector('[data-reorder-handle]')!, credits, 'touch');
 
     const changed = onChange.mock.calls[0][0] as AppSettings;
     const metrics = changed.providers.find((provider) => provider.id === 'codex')!.metrics;
     expect(metrics.find((metric) => metric.id === 'codex.weekly')?.section).toBe('onDemand');
     expect(metrics.map((metric) => metric.id)).toEqual([
       'codex.session',
-      'codex.today',
+      'codex.credits',
       'codex.weekly',
     ]);
   });
