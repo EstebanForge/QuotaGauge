@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 - 2026-10-27
 
 ### Removed
 
@@ -9,6 +9,13 @@
 ### Changed
 
 - Claude, Codex, Cursor, Grok and OpenCode guides and meters now cover quota limits only. OpenCode detection now requires an OpenCode Go sign-in; local history from CLI-only use is no longer read.
+- Antigravity: the five-hour Gemini meter is now called "Five Hour" instead of "Session", matching what the agy CLI calls it.
+- Z.ai: the Weekly meter is gone. Z.ai dropped weekly token windows on their side, so it always read 0.
+
+### Fixed
+
+- Settings: a save made against stale settings is rejected early, and when a change has to be rolled back the app now reports it instead of staying quiet.
+- Antigravity: Argon Weekly works when QuotaGauge starts from the Dock or Finder. The app can now find the agy CLI even though GUI launches don't get your full PATH; set ANTIGRAVITY_CLI_PATH if agy lives somewhere unusual.
 
 ## 0.5.7 - 2026-10-26
 
