@@ -136,25 +136,35 @@ impl Storage {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;
-        cached
+        Ok(cached
             .filter(|(_, cached_identity)| match identity {
                 CacheIdentity::Unscoped => cached_identity.is_none(),
                 CacheIdentity::Resolved(expected) => cached_identity.as_deref() == Some(expected),
                 CacheIdentity::Unresolved => true,
             })
-            .map(|json| {
-                let mut snapshot: ProviderSnapshot = serde_json::from_str(&json.0)?;
-                // Count quotas predate the unit field. The only count quota persisted by older
-                // releases was request-based, so normalize it once at the cache boundary instead of
-                // teaching every presentation surface to infer provider semantics.
-                for quota in &mut snapshot.quotas {
-                    if quota.format == crate::models::QuotaFormat::Count && quota.unit.is_none() {
-                        quota.unit = Some("requests".into());
+            .and_then(|(json, _)| {
+                // A corrupt cache row must never fail the provider: decode problems read as absent
+                // so the next successful refresh heals the row instead of wedging the panel.
+                match serde_json::from_str::<ProviderSnapshot>(&json) {
+                    Ok(mut snapshot) => {
+                        // Count quotas predate the unit field. The only count quota persisted by older
+                        // releases was request-based, so normalize it once at the cache boundary instead of
+                        // teaching every presentation surface to infer provider semantics.
+                        for quota in &mut snapshot.quotas {
+                            if quota.format == crate::models::QuotaFormat::Count
+                                && quota.unit.is_none()
+                            {
+                                quota.unit = Some("requests".into());
+                            }
+                        }
+                        Some(snapshot)
+                    }
+                    Err(error) => {
+                        crate::app_warn!("cache", "cached snapshot payload is corrupt: {error}");
+                        None
                     }
                 }
-                Ok(snapshot)
-            })
-            .transpose()
+            }))
     }
 
     #[cfg(test)]
@@ -341,7 +351,13 @@ impl Storage {
                 |row| row.get(0),
             )
             .optional()?;
-        Ok(payload.and_then(|json| serde_json::from_str(&json).ok()))
+        Ok(payload.and_then(|json| match serde_json::from_str(&json) {
+            Ok(environment) => Some(environment),
+            Err(error) => {
+                crate::app_warn!("cache", "stored environment payload is corrupt: {error}");
+                None
+            }
+        }))
     }
 
     #[cfg(unix)]
@@ -505,6 +521,30 @@ mod tests {
         QuotaFormat, QuotaWindow, UsageHistory, UsagePeriod,
     };
     use crate::providers::CacheIdentity;
+
+    #[test]
+    fn corrupt_cache_payloads_read_as_absent_instead_of_erroring() {
+        let directory = tempdir().unwrap();
+        let storage = Storage::open(&directory.path().join("quotagauge.db")).unwrap();
+        {
+            let connection = storage.connection().unwrap();
+            connection
+                .execute(
+                    "INSERT INTO provider_snapshots(provider_id, payload, refreshed_at) \
+                     VALUES ('codex', '{not json', '2026-10-27T00:00:00Z')",
+                    [],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO provider_environment(id, payload) VALUES (1, '{not json')",
+                    [],
+                )
+                .unwrap();
+        }
+        assert!(storage.load_snapshot("codex").unwrap().is_none());
+        assert!(storage.load_provider_environment().unwrap().is_none());
+    }
 
     #[test]
     fn snapshot_round_trip_contains_no_credentials() {

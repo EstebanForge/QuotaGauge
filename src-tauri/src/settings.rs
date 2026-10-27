@@ -40,6 +40,11 @@ pub struct CredentialDetectionOutcome {
     pub newly_enabled_provider_ids: Vec<String>,
 }
 
+struct RevisionExpectations {
+    settings: u64,
+    account: u64,
+}
+
 pub struct SettingsService {
     storage: Arc<Storage>,
     registry: Arc<ProviderRegistry>,
@@ -311,7 +316,7 @@ impl SettingsService {
 
     #[cfg(test)]
     pub fn update(&self, mut settings: AppSettings) -> Result<AppSettings, String> {
-        self.update_internal(&mut settings, None, None, false)
+        self.update_internal(&mut settings, None, false)
     }
 
     pub fn update_from_view(
@@ -322,8 +327,10 @@ impl SettingsService {
     ) -> Result<AppSettings, String> {
         self.update_internal(
             &mut settings,
-            Some(expected_settings_revision),
-            Some(expected_account_revision),
+            Some(RevisionExpectations {
+                settings: expected_settings_revision,
+                account: expected_account_revision,
+            }),
             false,
         )
     }
@@ -336,8 +343,10 @@ impl SettingsService {
     ) -> Result<AppSettings, String> {
         self.update_internal(
             &mut settings,
-            Some(expected_settings_revision),
-            Some(expected_account_revision),
+            Some(RevisionExpectations {
+                settings: expected_settings_revision,
+                account: expected_account_revision,
+            }),
             true,
         )
     }
@@ -345,20 +354,19 @@ impl SettingsService {
     fn update_internal(
         &self,
         settings: &mut AppSettings,
-        expected_settings_revision: Option<u64>,
-        expected_account_revision: Option<u64>,
+        expected: Option<RevisionExpectations>,
         reset_all_account_names: bool,
     ) -> Result<AppSettings, String> {
         let mut current = self
             .settings
             .write()
             .map_err(|_| "QuotaGauge settings are temporarily unavailable.".to_owned())?;
-        if expected_settings_revision
-            .is_some_and(|revision| revision != self.settings_revision.load(Ordering::SeqCst))
-        {
-            return Err(
-                "Settings changed before they could be saved. Please try again.".to_owned(),
-            );
+        if let Some(expected) = &expected {
+            if expected.settings != self.settings_revision.load(Ordering::SeqCst) {
+                return Err(
+                    "Settings changed before they could be saved. Please try again.".to_owned(),
+                );
+            }
         }
         let enabled_before = enabled_provider_set(&current);
         let detected = current
@@ -370,7 +378,10 @@ impl SettingsService {
         let persisted_accounts = persisted_account_provider_ids(&self.storage)
             .map_err(|_| "QuotaGauge account settings could not be loaded.".to_owned())?;
         normalize_with_persisted_accounts(&self.registry, settings, &detected, &persisted_accounts);
-        if expected_account_revision != Some(self.account_revision.load(Ordering::SeqCst)) {
+        if expected
+            .map(|expected| expected.account != self.account_revision.load(Ordering::SeqCst))
+            .unwrap_or(true)
+        {
             let active_provider_ids = self
                 .active_account_identities
                 .read()
