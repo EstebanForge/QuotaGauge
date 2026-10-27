@@ -1,7 +1,4 @@
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::models::WindowMode;
 
@@ -21,14 +18,30 @@ pub enum LinuxDesktop {
     Other,
 }
 
+/// Desktop presentation states. TrayUnavailable implies floating; a tray
+/// presentation may still float when the user picks the floating window mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DesktopMode {
+    Tray,
+    Floating,
+    TrayUnavailable,
+}
+
 #[derive(Debug, Clone)]
 pub struct DesktopIntegration {
-    tray_available: Arc<AtomicBool>,
-    floating_window: Arc<AtomicBool>,
+    mode: Arc<Mutex<DesktopMode>>,
     platform_label: Option<String>,
 }
 
 impl DesktopIntegration {
+    fn lock_mode(&self) -> MutexGuard<'_, DesktopMode> {
+        self.mode.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn current_mode(&self) -> DesktopMode {
+        *self.lock_mode()
+    }
+
     pub fn detect() -> Self {
         #[cfg(target_os = "linux")]
         {
@@ -40,39 +53,57 @@ impl DesktopIntegration {
         #[cfg(not(target_os = "linux"))]
         {
             Self {
-                tray_available: Arc::new(AtomicBool::new(true)),
-                floating_window: Arc::new(AtomicBool::new(false)),
+                mode: Arc::new(Mutex::new(DesktopMode::Tray)),
                 platform_label: None,
             }
         }
     }
 
     pub fn tray_available(&self) -> bool {
-        self.tray_available.load(Ordering::SeqCst)
+        self.current_mode() != DesktopMode::TrayUnavailable
     }
 
     pub fn is_floating(&self) -> bool {
-        self.floating_window.load(Ordering::SeqCst)
+        self.current_mode() != DesktopMode::Tray
     }
 
     pub fn exits_on_close(&self) -> bool {
-        self.is_floating() && !self.tray_available()
+        self.current_mode() == DesktopMode::TrayUnavailable
+    }
+
+    /// The one place the floating predicate is computed; window.rs asks this
+    /// before mutating any window geometry.
+    pub fn floats_for(&self, mode: WindowMode) -> bool {
+        !self.tray_available() || mode == WindowMode::Floating
     }
 
     pub fn apply_window_mode(&self, mode: WindowMode) -> bool {
-        let floating = !self.tray_available() || mode == WindowMode::Floating;
-        self.set_floating(floating);
+        let floating = self.floats_for(mode);
+        let mut current = self.lock_mode();
+        *current = match (floating, *current) {
+            (false, _) => DesktopMode::Tray,
+            (true, DesktopMode::TrayUnavailable) => DesktopMode::TrayUnavailable,
+            (true, _) => DesktopMode::Floating,
+        };
         floating
     }
 
     pub fn disable_tray(&self) -> bool {
-        let changed = self.tray_available.swap(false, Ordering::SeqCst);
-        self.set_floating(true);
+        let mut current = self.lock_mode();
+        let changed = *current != DesktopMode::TrayUnavailable;
+        *current = DesktopMode::TrayUnavailable;
         changed
     }
 
+    /// Restores the floating chrome after a failed mode change. Without a tray
+    /// the floating presentation cannot be dropped, so TrayUnavailable stays.
     pub(crate) fn set_floating(&self, floating: bool) {
-        self.floating_window.store(floating, Ordering::SeqCst);
+        let mut current = self.lock_mode();
+        match (floating, *current) {
+            (true, DesktopMode::Tray) => *current = DesktopMode::Floating,
+            (false, DesktopMode::Floating) => *current = DesktopMode::Tray,
+            _ => {}
+        }
     }
 
     pub fn platform_summary(&self) -> Option<String> {
@@ -104,8 +135,11 @@ fn linux_integration(
         LinuxSessionType::Unknown => "unknown session",
     };
     DesktopIntegration {
-        tray_available: Arc::new(AtomicBool::new(tray_available)),
-        floating_window: Arc::new(AtomicBool::new(!tray_available)),
+        mode: Arc::new(Mutex::new(if tray_available {
+            DesktopMode::Tray
+        } else {
+            DesktopMode::TrayUnavailable
+        })),
         platform_label: Some(format!("{desktop} · {session}")),
     }
 }
@@ -238,6 +272,8 @@ mod tests {
         let with_tray =
             super::linux_integration(LinuxSessionType::Wayland, LinuxDesktop::Kde, true);
         assert!(with_tray.tray_available());
+        assert!(!with_tray.floats_for(WindowMode::Popup));
+        assert!(with_tray.floats_for(WindowMode::Floating));
         assert!(!with_tray.apply_window_mode(WindowMode::Popup));
         assert!(with_tray.apply_window_mode(WindowMode::Floating));
         assert!(!with_tray.exits_on_close());
@@ -245,6 +281,7 @@ mod tests {
         let without_tray =
             super::linux_integration(LinuxSessionType::Wayland, LinuxDesktop::Gnome, false);
         assert!(!without_tray.tray_available());
+        assert!(without_tray.floats_for(WindowMode::Popup));
         assert!(without_tray.apply_window_mode(WindowMode::Popup));
         assert!(without_tray.exits_on_close());
     }

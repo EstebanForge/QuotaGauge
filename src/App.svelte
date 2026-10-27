@@ -1,15 +1,10 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import { getVersion } from '@tauri-apps/api/app';
-  import { getCurrentWindow } from '@tauri-apps/api/window';
   import {
-    beginPanelResize,
     dismissMainWindow,
     getBootstrapState,
     getLogPath,
-    getPanelHeightMode,
-    getPanelResizeEdge,
-    lockPanelResizeAxis,
     onOpenScreen,
     onMainWindowHidden,
     onSettingsState,
@@ -25,10 +20,6 @@
     resetAllSettings as resetAllSettingsCommand,
     resetCustomization as resetCustomizationCommand,
     resetProviderCustomization as resetProviderCustomizationCommand,
-    setPanelHeightAutomatic,
-    setPanelHeightManual,
-    type PanelHeightMode,
-    type PanelResizeEdge,
   } from './lib/backend';
   import CustomizeProviderDetail from './lib/CustomizeProviderDetail.svelte';
   import CustomizeProviderList from './lib/CustomizeProviderList.svelte';
@@ -57,7 +48,7 @@
   import type { AppSettings, UsageViewState } from './lib/types';
   import { nextUpdateLabel, UpdateController } from './lib/updateController.svelte';
   import { automaticUpdateDelay, UPDATE_CHECK_INTERVAL_MS } from './lib/updateSchedule';
-  import { createWindowController } from './lib/windowController';
+  import { createWindowController } from './lib/windowController.svelte';
 
   type Screen = AppScreen;
   type Overlay =
@@ -110,20 +101,14 @@
   const providerDisplayName = (id: string) =>
     catalog.displayName(id, settingsState?.settings.providerNames);
   const updates = new UpdateController();
-  let resizeEdge = $state<PanelResizeEdge>(platform === 'windows' ? 'top' : 'bottom');
-  const renderedResizeEdge = $derived(floatingWindow ? 'bottom' : resizeEdge);
-  let panelHeightMode = $state<PanelHeightMode>('automatic');
-  let panelHeightModeRequest = 0;
-  let panelHeightModeMutation: Promise<void> = Promise.resolve();
-  let lastResizeGripPointerAt = Number.NEGATIVE_INFINITY;
-  let panelResizeOperation: Promise<void> | null = null;
   const share = createShareController();
   const windowController = createWindowController({
     screen: () => screen,
     refreshing: () => anyRefreshing,
     reordering: () => reordering,
-    automatic: () => panelHeightMode === 'automatic',
+    floating: () => floatingWindow,
     reducedMotion: () => reducedMotion,
+    initialResizeEdge: platform === 'windows' ? 'top' : 'bottom',
     onError: (message) => (settingsError = message),
   });
 
@@ -203,7 +188,7 @@
     const windowModeChanged = settingsState?.settings.windowMode !== next.windowMode;
     if (windowModeChanged) beginContentMorph();
     const save = settingsController.save(next);
-    if (windowModeChanged) void save.finally(updatePanelResizeEdge);
+    if (windowModeChanged) void save.finally(() => windowController.sizing.updateEdge());
   }
 
   function toggleFloatingWindow() {
@@ -392,18 +377,18 @@
     if (windowModeChanged) beginContentMorph();
     resettingAllSettings = true;
     try {
-      await panelHeightModeMutation;
+      await windowController.sizing.settled;
       await settingsController.runMutation((expectedSettingsRevision, expectedAccountRevision) =>
         resetAllSettingsCommand(expectedSettingsRevision, expectedAccountRevision),
       );
       customizationHistory = [];
-      updatePanelHeightMode();
-      updatePanelResizeEdge();
+      windowController.sizing.updateMode();
+      windowController.sizing.updateEdge();
       settingsError = null;
       share.show('All settings restored');
     } catch {
       settingsError = 'Settings could not be reset.';
-      updatePanelHeightMode();
+      windowController.sizing.updateMode();
     } finally {
       resettingAllSettings = false;
       overlay = null;
@@ -532,7 +517,7 @@
       event.target instanceof Element &&
       event.target.closest('.floating-chrome__drag') !== null
     ) {
-      handleFloatingWindowPointerDown(event);
+      windowController.sizing.floatingPointerDown(event);
     }
     if (
       optionsMenuElement?.open &&
@@ -540,89 +525,6 @@
       !optionsMenuElement.contains(event.target)
     ) {
       closeOptionsMenu();
-    }
-  }
-  function updatePanelResizeEdge() {
-    if (!('__TAURI_INTERNALS__' in window)) return;
-    void getPanelResizeEdge()
-      .then((edge) => (resizeEdge = edge))
-      .catch(() => undefined);
-  }
-  function updatePanelHeightMode() {
-    if (!('__TAURI_INTERNALS__' in window)) return;
-    const request = ++panelHeightModeRequest;
-    void getPanelHeightMode()
-      .then((mode) => {
-        if (request !== panelHeightModeRequest) return;
-        panelHeightMode = mode;
-        if (mode === 'automatic') scheduleWindowFit();
-      })
-      .catch(() => undefined);
-  }
-  function acceptPanelHeightMode(mode: PanelHeightMode) {
-    panelHeightModeRequest += 1;
-    panelHeightMode = mode;
-  }
-  function handlePanelResizePointerDown(event: PointerEvent) {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    event.stopPropagation();
-    const pointerAt = event.timeStamp;
-    const repeatedPress = event.detail > 1 || pointerAt - lastResizeGripPointerAt <= 400;
-    lastResizeGripPointerAt = repeatedPress ? Number.NEGATIVE_INFINITY : pointerAt;
-    if (repeatedPress) {
-      const activeResize = panelResizeOperation;
-      void (async () => {
-        if (activeResize) await activeResize;
-        await changePanelHeightMode('automatic');
-      })();
-      return;
-    }
-    const operation = (async () => {
-      try {
-        await panelHeightModeMutation;
-        const edge = await beginPanelResize();
-        resizeEdge = edge;
-        // The native begin command has already persisted the current height as manual. Mirroring it
-        // here stops any in-flight frontend auto-fit without waiting for the first resize event.
-        acceptPanelHeightMode('manual');
-        // TODO(macOS): Tao 0.35 reports native resize dragging as unsupported and Tauri currently
-        // swallows that runtime error. Re-test after Tauri/Tao upgrades; add an AppKit fallback if
-        // upstream support is still unavailable.
-        await getCurrentWindow().startResizeDragging(edge === 'top' ? 'North' : 'South');
-      } catch {
-        settingsError = 'QuotaGauge panel resize could not be started.';
-      } finally {
-        await lockPanelResizeAxis().catch(() => undefined);
-        updatePanelHeightMode();
-      }
-    })();
-    panelResizeOperation = operation;
-    void operation.finally(() => {
-      if (panelResizeOperation === operation) panelResizeOperation = null;
-    });
-  }
-  function handleFloatingWindowPointerDown(event: PointerEvent) {
-    if (event.button !== 0 || !('__TAURI_INTERNALS__' in window)) return;
-    event.preventDefault();
-    void getCurrentWindow()
-      .startDragging()
-      .catch(() => (settingsError = 'QuotaGauge window could not be moved.'));
-  }
-  async function changePanelHeightMode(mode: PanelHeightMode) {
-    if (!('__TAURI_INTERNALS__' in window)) return;
-    const request = ++panelHeightModeRequest;
-    const operation = panelHeightModeMutation.then(() =>
-      mode === 'automatic' ? setPanelHeightAutomatic() : setPanelHeightManual(),
-    );
-    panelHeightModeMutation = operation.catch(() => undefined);
-    try {
-      await operation;
-      if (request === panelHeightModeRequest) updatePanelHeightMode();
-    } catch {
-      if (request !== panelHeightModeRequest) return;
-      settingsError = 'QuotaGauge could not change the panel height mode.';
-      updatePanelHeightMode();
     }
   }
   async function requestNotifications() {
@@ -666,12 +568,12 @@
     motionQuery.addEventListener('change', updateMotionPreference);
     const refreshWindowState = () => {
       void settingsController.refreshIfIdle();
-      updatePanelResizeEdge();
-      updatePanelHeightMode();
+      windowController.sizing.updateEdge();
+      windowController.sizing.updateMode();
       scheduleWindowFit();
     };
-    updatePanelResizeEdge();
-    updatePanelHeightMode();
+    windowController.sizing.updateEdge();
+    windowController.sizing.updateMode();
     window.addEventListener('focus', refreshWindowState);
 
     const popover = document.querySelector<HTMLElement>('.popover');
@@ -787,13 +689,13 @@
   <p id="reorder-instructions" class="sr-only">
     Drag to reorder. With a keyboard, use Alt plus Up Arrow or Alt plus Down Arrow.
   </p>
-  {#if renderedResizeEdge === 'top'}
+  {#if windowController.sizing.resizeEdge === 'top'}
     <div
       class="panel-resize-dragger panel-resize-dragger--top"
       role="separator"
       aria-label="Resize panel height"
       aria-orientation="horizontal"
-      onpointerdown={handlePanelResizePointerDown}
+      onpointerdown={windowController.sizing.resizePointerDown}
     ></div>
   {/if}
   {#if floatingWindow}
@@ -887,9 +789,9 @@
               <SettingsScreen
                 settingsView={settingsState}
                 {platform}
-                {panelHeightMode}
+                panelHeightMode={windowController.sizing.mode}
                 onChange={saveSettings}
-                onPanelHeightModeChange={(mode) => void changePanelHeightMode(mode)}
+                onPanelHeightModeChange={(mode) => void windowController.sizing.changeMode(mode)}
                 onRequestNotifications={requestNotifications}
                 onOpenNotificationSettings={openNotificationSettings}
                 updateError={updates.error}
@@ -1108,13 +1010,13 @@
       {/if}
     </div>
   {/if}
-  {#if renderedResizeEdge === 'bottom'}
+  {#if windowController.sizing.resizeEdge === 'bottom'}
     <div
       class="panel-resize-dragger panel-resize-dragger--bottom"
       role="separator"
       aria-label="Resize panel height"
       aria-orientation="horizontal"
-      onpointerdown={handlePanelResizePointerDown}
+      onpointerdown={windowController.sizing.resizePointerDown}
     ></div>
   {/if}
 </main>

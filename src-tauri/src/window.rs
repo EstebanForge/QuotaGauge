@@ -1,8 +1,7 @@
 use std::{
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, Sender},
-        Arc, Mutex,
+        Arc, Mutex, MutexGuard, PoisonError,
     },
     thread,
     time::Duration,
@@ -42,13 +41,16 @@ struct PendingPanelHeight {
     height: u32,
 }
 
+struct PanelState {
+    active: bool,
+    generation: u64,
+    latest: Option<u32>,
+    mode: PanelHeightMode,
+}
+
 pub struct PanelResizeSession {
-    active: AtomicBool,
-    automatic: Arc<AtomicBool>,
-    generation: Arc<AtomicU64>,
-    latest_height: Mutex<Option<u32>>,
+    state: Arc<Mutex<PanelState>>,
     height_sender: Sender<PendingPanelHeight>,
-    persistence: Arc<Mutex<()>>,
     storage: Arc<Storage>,
 }
 
@@ -58,113 +60,105 @@ pub(crate) struct PanelResetToken {
 }
 
 impl PanelResizeSession {
+    fn lock_state(&self) -> MutexGuard<'_, PanelState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     pub fn new(storage: Arc<Storage>) -> Self {
-        let automatic = Arc::new(AtomicBool::new(
-            storage.load_panel_height().ok().flatten().is_none(),
-        ));
-        let generation = Arc::new(AtomicU64::new(0));
-        let persistence = Arc::new(Mutex::new(()));
+        let mode = match storage.load_panel_height() {
+            Ok(Some(_)) => PanelHeightMode::Manual,
+            _ => PanelHeightMode::Automatic,
+        };
         let (height_sender, height_receiver) = mpsc::channel::<PendingPanelHeight>();
-        let worker_automatic = automatic.clone();
-        let worker_generation = generation.clone();
-        let worker_persistence = persistence.clone();
+        let state = Arc::new(Mutex::new(PanelState {
+            active: false,
+            generation: 0,
+            latest: None,
+            mode,
+        }));
+        let worker_state = state.clone();
         let worker_storage = storage.clone();
         thread::spawn(move || {
             while let Ok(mut pending) = height_receiver.recv() {
                 while let Ok(next) = height_receiver.recv_timeout(PANEL_RESIZE_SAVE_DELAY) {
                     pending = next;
                 }
-                let Ok(_guard) = worker_persistence.lock() else {
-                    continue;
-                };
-                if pending.generation == worker_generation.load(Ordering::SeqCst)
-                    && !worker_automatic.load(Ordering::SeqCst)
-                {
+                let panel = worker_state.lock().unwrap_or_else(PoisonError::into_inner);
+                if pending.generation == panel.generation && panel.mode == PanelHeightMode::Manual {
                     let _ = worker_storage.save_panel_height(pending.height);
                 }
             }
         });
         Self {
-            active: AtomicBool::new(false),
-            automatic,
-            generation,
-            latest_height: Mutex::new(None),
+            state,
             height_sender,
-            persistence,
             storage,
         }
     }
 
     fn begin(&self, height: u32) -> Result<(), String> {
-        self.active.store(true, Ordering::SeqCst);
-        if let Ok(mut latest) = self.latest_height.lock() {
-            *latest = None;
+        let mut panel = self.lock_state();
+        panel.active = true;
+        panel.latest = None;
+        match self.storage.save_panel_height(height) {
+            Ok(()) => {
+                panel.generation += 1;
+                panel.mode = PanelHeightMode::Manual;
+                Ok(())
+            }
+            Err(_) => {
+                panel.active = false;
+                Err("QuotaGauge panel state could not be saved.".to_owned())
+            }
         }
-        if let Err(error) = self.set_manual(height) {
-            self.active.store(false, Ordering::SeqCst);
-            return Err(error);
-        }
-        Ok(())
     }
 
     pub fn finish(&self, current_height: Option<u32>) {
-        let was_active = self.active.swap(false, Ordering::SeqCst);
-        let recorded_height = self
-            .latest_height
-            .lock()
-            .ok()
-            .and_then(|mut height| height.take());
+        let mut panel = self.lock_state();
+        let was_active = std::mem::replace(&mut panel.active, false);
+        let recorded_height = panel.latest.take();
         let Some(height) = current_height.or(recorded_height) else {
             return;
         };
         if !was_active {
             return;
         }
-        let Ok(_guard) = self.persistence.lock() else {
-            return;
-        };
-        if !self.automatic.load(Ordering::SeqCst) && self.storage.save_panel_height(height).is_ok()
-        {
-            self.generation.fetch_add(1, Ordering::SeqCst);
+        if panel.mode == PanelHeightMode::Manual && self.storage.save_panel_height(height).is_ok() {
+            panel.generation += 1;
         }
     }
 
     pub fn set_manual(&self, height: u32) -> Result<(), String> {
-        let _guard = self
-            .persistence
-            .lock()
-            .map_err(|_| "QuotaGauge panel state is unavailable.")?;
+        let mut panel = self.lock_state();
         self.storage
             .save_panel_height(height)
             .map_err(|_| "QuotaGauge panel state could not be saved.".to_owned())?;
-        self.generation.fetch_add(1, Ordering::SeqCst);
-        self.automatic.store(false, Ordering::SeqCst);
+        panel.generation += 1;
+        panel.mode = PanelHeightMode::Manual;
         Ok(())
     }
 
     fn record(&self, height: u32) {
-        if !self.active.load(Ordering::SeqCst) {
-            return;
-        }
-        if let Ok(mut latest) = self.latest_height.lock() {
-            *latest = Some(height);
-        }
-        let _ = self.height_sender.send(PendingPanelHeight {
-            generation: self.generation.load(Ordering::SeqCst),
-            height,
-        });
+        let generation = {
+            let mut panel = self.lock_state();
+            if !panel.active {
+                return;
+            }
+            panel.latest = Some(height);
+            panel.generation
+        };
+        let _ = self
+            .height_sender
+            .send(PendingPanelHeight { generation, height });
     }
 
     pub fn mode(&self) -> PanelHeightMode {
-        if self.automatic.load(Ordering::SeqCst) {
-            PanelHeightMode::Automatic
-        } else {
-            PanelHeightMode::Manual
-        }
+        self.lock_state().mode
     }
 
     fn allows_automatic_fit(&self) -> bool {
-        self.automatic.load(Ordering::SeqCst) && !self.active.load(Ordering::SeqCst)
+        let panel = self.lock_state();
+        panel.mode == PanelHeightMode::Automatic && !panel.active
     }
 
     pub fn set_automatic(&self) -> Result<(), String> {
@@ -172,14 +166,7 @@ impl PanelResizeSession {
     }
 
     pub(crate) fn begin_automatic_reset(&self) -> Result<PanelResetToken, String> {
-        let mut latest = self
-            .latest_height
-            .lock()
-            .map_err(|_| "QuotaGauge panel state is unavailable.".to_owned())?;
-        let _guard = self
-            .persistence
-            .lock()
-            .map_err(|_| "QuotaGauge panel state is unavailable.")?;
+        let mut panel = self.lock_state();
         let previous_height = self
             .storage
             .load_panel_height()
@@ -187,38 +174,36 @@ impl PanelResizeSession {
         self.storage
             .clear_panel_height()
             .map_err(|_| "QuotaGauge panel state could not be saved.".to_owned())?;
-        self.active.store(false, Ordering::SeqCst);
-        *latest = None;
-        let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
-        self.automatic.store(true, Ordering::SeqCst);
+        panel.active = false;
+        panel.latest = None;
+        panel.generation += 1;
+        panel.mode = PanelHeightMode::Automatic;
         Ok(PanelResetToken {
             previous_height,
-            generation,
+            generation: panel.generation,
         })
     }
 
     pub(crate) fn rollback_automatic_reset(&self, token: PanelResetToken) -> Result<bool, String> {
-        let _guard = self
-            .persistence
-            .lock()
-            .map_err(|_| "QuotaGauge panel state is unavailable.")?;
-        if self.generation.load(Ordering::SeqCst) != token.generation
-            || !self.automatic.load(Ordering::SeqCst)
-        {
+        let mut panel = self.lock_state();
+        if panel.generation != token.generation || panel.mode != PanelHeightMode::Automatic {
             return Ok(false);
         }
-        if let Some(height) = token.previous_height {
-            self.storage
-                .save_panel_height(height)
-                .map_err(|_| "QuotaGauge panel state could not be restored.".to_owned())?;
-            self.automatic.store(false, Ordering::SeqCst);
-        } else {
-            self.storage
-                .clear_panel_height()
-                .map_err(|_| "QuotaGauge panel state could not be restored.".to_owned())?;
-            self.automatic.store(true, Ordering::SeqCst);
+        match token.previous_height {
+            Some(height) => {
+                self.storage
+                    .save_panel_height(height)
+                    .map_err(|_| "QuotaGauge panel state could not be restored.".to_owned())?;
+                panel.mode = PanelHeightMode::Manual;
+            }
+            None => {
+                self.storage
+                    .clear_panel_height()
+                    .map_err(|_| "QuotaGauge panel state could not be restored.".to_owned())?;
+                panel.mode = PanelHeightMode::Automatic;
+            }
         }
-        self.generation.fetch_add(1, Ordering::SeqCst);
+        panel.generation += 1;
         Ok(true)
     }
 
@@ -551,7 +536,7 @@ pub fn apply_window_mode(
 ) -> Result<(), String> {
     let integration = window.app_handle().state::<DesktopIntegration>();
     let previous_floating = integration.is_floating();
-    let floating = !integration.tray_available() || mode == WindowMode::Floating;
+    let floating = integration.floats_for(mode);
 
     window
         .app_handle()
@@ -869,34 +854,26 @@ fn current_logical_height(window: &Window) -> Option<u32> {
     )
 }
 
-#[cfg(target_os = "windows")]
-pub fn resize_popup_anchored(window: &WebviewWindow, height: u32) -> Result<(), String> {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        SetWindowPos, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOZORDER,
-    };
+struct PopupAnchoring {
+    outer_x: i32,
+    anchored: VerticalFrame,
+}
 
+fn anchored_popup_frame(
+    window: &WebviewWindow,
+    target_outer_height: u32,
+) -> Result<PopupAnchoring, String> {
     let outer_position = window
         .outer_position()
         .map_err(|_| "QuotaGauge window position is unavailable.")?;
     let outer_size = window
         .outer_size()
         .map_err(|_| "QuotaGauge window size is unavailable.")?;
-    let inner_size = window
-        .inner_size()
-        .map_err(|_| "QuotaGauge content size is unavailable.")?;
-    let scale = window
-        .scale_factor()
-        .map_err(|_| "QuotaGauge display scale is unavailable.")?;
     let monitor = window
         .current_monitor()
         .map_err(|_| "QuotaGauge display is unavailable.")?
         .ok_or("QuotaGauge display is unavailable.")?;
     let work_area = monitor.work_area();
-    let frame_overhead = outer_size.height.saturating_sub(inner_size.height);
-    let target_inner_height = (f64::from(height) * scale)
-        .round()
-        .clamp(1.0, f64::from(u32::MAX));
-    let target_outer_height = (target_inner_height as u32).saturating_add(frame_overhead);
     let anchored = anchored_vertical_frame(
         VerticalFrame {
             top: outer_position.y,
@@ -908,6 +885,35 @@ pub fn resize_popup_anchored(window: &WebviewWindow, height: u32) -> Result<(), 
         },
         target_outer_height,
     );
+    Ok(PopupAnchoring {
+        outer_x: outer_position.x,
+        anchored,
+    })
+}
+
+#[cfg(target_os = "windows")]
+pub fn resize_popup_anchored(window: &WebviewWindow, height: u32) -> Result<(), String> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOZORDER,
+    };
+
+    let inner_size = window
+        .inner_size()
+        .map_err(|_| "QuotaGauge content size is unavailable.")?;
+    let outer_size = window
+        .outer_size()
+        .map_err(|_| "QuotaGauge window size is unavailable.")?;
+    let scale = window
+        .scale_factor()
+        .map_err(|_| "QuotaGauge display scale is unavailable.")?;
+    let target_inner_height = (f64::from(height) * scale)
+        .round()
+        .clamp(1.0, f64::from(u32::MAX));
+    let frame_overhead = outer_size.height.saturating_sub(inner_size.height);
+    let anchoring = anchored_popup_frame(
+        window,
+        (target_inner_height as u32).saturating_add(frame_overhead),
+    )?;
     let result = unsafe {
         SetWindowPos(
             window
@@ -915,10 +921,10 @@ pub fn resize_popup_anchored(window: &WebviewWindow, height: u32) -> Result<(), 
                 .map_err(|_| "QuotaGauge native window is unavailable.")?
                 .0 as _,
             std::ptr::null_mut(),
-            outer_position.x,
-            anchored.top,
+            anchoring.outer_x,
+            anchoring.anchored.top,
             i32::try_from(outer_size.width).unwrap_or(i32::MAX),
-            i32::try_from(anchored.height).unwrap_or(i32::MAX),
+            i32::try_from(anchoring.anchored.height).unwrap_or(i32::MAX),
             SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOZORDER,
         )
     };
@@ -930,38 +936,20 @@ pub fn resize_popup_anchored(window: &WebviewWindow, height: u32) -> Result<(), 
 
 #[cfg(not(target_os = "windows"))]
 pub fn resize_popup_anchored(window: &WebviewWindow, height: u32) -> Result<(), String> {
-    let outer_position = window
-        .outer_position()
-        .map_err(|_| "QuotaGauge window position is unavailable.")?;
-    let outer_size = window
-        .outer_size()
-        .map_err(|_| "QuotaGauge window size is unavailable.")?;
-    let monitor = window
-        .current_monitor()
-        .map_err(|_| "QuotaGauge display is unavailable.")?
-        .ok_or("QuotaGauge display is unavailable.")?;
-    let work_area = monitor.work_area();
     let scale = window
         .scale_factor()
         .map_err(|_| "QuotaGauge display scale is unavailable.")?;
     let target_outer_height = (f64::from(height) * scale)
         .round()
         .clamp(1.0, f64::from(u32::MAX)) as u32;
-    let anchored = anchored_vertical_frame(
-        VerticalFrame {
-            top: outer_position.y,
-            height: outer_size.height,
-        },
-        VerticalFrame {
-            top: work_area.position.y,
-            height: work_area.size.height,
-        },
-        target_outer_height,
-    );
+    let anchoring = anchored_popup_frame(window, target_outer_height)?;
     window
-        .set_size(tauri::LogicalSize::new(320.0, f64::from(height)))
+        .set_size(tauri::LogicalSize::new(PANEL_WIDTH, f64::from(height)))
         .and_then(|_| {
-            window.set_position(tauri::PhysicalPosition::new(outer_position.x, anchored.top))
+            window.set_position(tauri::PhysicalPosition::new(
+                anchoring.outer_x,
+                anchoring.anchored.top,
+            ))
         })
         .map_err(|_| "QuotaGauge window could not be resized.".into())
 }
@@ -1046,7 +1034,7 @@ pub fn handle_window_event(window: &Window, event: &WindowEvent) {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{sync::Arc, thread, time::Duration};
 
     use tempfile::tempdir;
 
@@ -1059,6 +1047,24 @@ mod tests {
     use crate::models::ThemePreference;
     use crate::storage::Storage;
     use tauri::Theme;
+
+    #[test]
+    fn recorded_heights_persist_once_the_debounce_settles() {
+        let directory = tempdir().unwrap();
+        let storage = Arc::new(Storage::open(&directory.path().join("quotagauge.db")).unwrap());
+        let session = PanelResizeSession::new(storage.clone());
+
+        session.begin(540).unwrap();
+        session.record(612);
+        assert_eq!(storage.load_panel_height().unwrap(), Some(540));
+        thread::sleep(super::PANEL_RESIZE_SAVE_DELAY + Duration::from_millis(200));
+        assert_eq!(storage.load_panel_height().unwrap(), Some(612));
+
+        session.record(700);
+        session.set_automatic().unwrap();
+        thread::sleep(super::PANEL_RESIZE_SAVE_DELAY + Duration::from_millis(200));
+        assert_eq!(storage.load_panel_height().unwrap(), None);
+    }
 
     #[test]
     fn a_real_resize_owns_the_height_until_automatic_mode_is_restored() {

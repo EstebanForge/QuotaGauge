@@ -1,5 +1,14 @@
 import { currentMonitor, getCurrentWindow } from '@tauri-apps/api/window';
-import { fitPanelToContent } from './backend';
+import {
+  beginPanelResize,
+  fitPanelToContent,
+  getPanelHeightMode,
+  getPanelResizeEdge,
+  lockPanelResizeAxis,
+  setPanelHeightAutomatic,
+  setPanelHeightManual,
+} from './backend';
+import type { PanelHeightMode, PanelResizeEdge } from './backend';
 import { springMotion } from './motion';
 import { panelTargetHeight, screenPanelHeight, shouldDeferPanelFit } from './panelSizing';
 import type { AppScreen } from './screens';
@@ -8,8 +17,9 @@ interface WindowControllerOptions {
   screen: () => AppScreen;
   refreshing: () => boolean;
   reordering: () => boolean;
-  automatic: () => boolean;
+  floating: () => boolean;
   reducedMotion: () => boolean;
+  initialResizeEdge: PanelResizeEdge;
   onError: (message: string) => void;
 }
 
@@ -29,6 +39,16 @@ export function createWindowController(options: WindowControllerOptions) {
   let pendingResizeHeight: number | null = null;
   let dashboardBodyHeight: number | null = null;
   let lastKeyboardActivity = 0;
+
+  // Panel sizing: the resize edge, the manual/automatic height mode and the drag grip
+  // choreography. All native calls funnel through here so App.svelte only renders.
+  let resizeEdge = $state<PanelResizeEdge>(options.initialResizeEdge);
+  let panelHeightMode = $state<PanelHeightMode>('automatic');
+  let panelHeightModeRequest = 0;
+  let panelHeightModeMutation: Promise<void> = Promise.resolve();
+  let lastResizeGripPointerAt = Number.NEGATIVE_INFINITY;
+  let panelResizeOperation: Promise<void> | null = null;
+  const renderedResizeEdge = $derived(options.floating() ? 'bottom' : resizeEdge);
 
   // macOS WebKit seeds keyboard-style focus to the first tabbable element (the first card's drag
   // grip) when the panel window resizes, painting a stray focus ring for pointer users.
@@ -64,7 +84,7 @@ export function createWindowController(options: WindowControllerOptions) {
     if (typeof window === 'undefined') return;
     cancelPendingResize();
     window.clearTimeout(contentMorphTimer);
-    contentMorphActive = options.automatic() && !options.reducedMotion();
+    contentMorphActive = panelHeightMode === 'automatic' && !options.reducedMotion();
     if (!contentMorphActive) {
       scheduleFit();
       return;
@@ -104,7 +124,8 @@ export function createWindowController(options: WindowControllerOptions) {
     const pageHeight = renderedHeight > 0 ? renderedHeight : page.offsetHeight || page.scrollHeight;
     stage.style.height = `${pageHeight}px`;
 
-    if (!options.automatic() || !('__TAURI_INTERNALS__' in window) || !resizeAvailable) return;
+    if (panelHeightMode !== 'automatic' || !('__TAURI_INTERNALS__' in window) || !resizeAvailable)
+      return;
 
     const contentStyle = window.getComputedStyle(content);
     const contentPadding =
@@ -155,7 +176,7 @@ export function createWindowController(options: WindowControllerOptions) {
     const started = performance.now();
     const motion = springMotion(false);
     const animate = (time: number) => {
-      if (generation !== resizeGeneration || !options.automatic()) return;
+      if (generation !== resizeGeneration || panelHeightMode !== 'automatic') return;
       const progress = Math.min(1, (time - started) / motion.duration);
       const eased = motion.easing(progress);
       void resize(Math.round(current + (target - current) * eased));
@@ -169,7 +190,7 @@ export function createWindowController(options: WindowControllerOptions) {
     if (resizeInFlight) return;
     resizeInFlight = true;
     try {
-      while (pendingResizeHeight !== null && resizeAvailable && options.automatic()) {
+      while (pendingResizeHeight !== null && resizeAvailable && panelHeightMode === 'automatic') {
         const nextHeight = pendingResizeHeight;
         pendingResizeHeight = null;
         await fitPanelToContent(nextHeight);
@@ -186,9 +207,115 @@ export function createWindowController(options: WindowControllerOptions) {
     }
   }
 
+  function updateResizeEdge() {
+    if (!('__TAURI_INTERNALS__' in window)) return;
+    void getPanelResizeEdge()
+      .then((edge) => (resizeEdge = edge))
+      .catch(() => undefined);
+  }
+
+  function updateHeightMode() {
+    if (!('__TAURI_INTERNALS__' in window)) return;
+    const request = ++panelHeightModeRequest;
+    void getPanelHeightMode()
+      .then((mode) => {
+        if (request !== panelHeightModeRequest) return;
+        panelHeightMode = mode;
+        if (mode === 'automatic') scheduleFit();
+      })
+      .catch(() => undefined);
+  }
+
+  function acceptHeightMode(mode: PanelHeightMode) {
+    panelHeightModeRequest += 1;
+    panelHeightMode = mode;
+  }
+
+  function handlePanelResizePointerDown(event: PointerEvent) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const pointerAt = event.timeStamp;
+    const repeatedPress = event.detail > 1 || pointerAt - lastResizeGripPointerAt <= 400;
+    lastResizeGripPointerAt = repeatedPress ? Number.NEGATIVE_INFINITY : pointerAt;
+    if (repeatedPress) {
+      const activeResize = panelResizeOperation;
+      void (async () => {
+        if (activeResize) await activeResize;
+        await changeHeightMode('automatic');
+      })();
+      return;
+    }
+    const operation = (async () => {
+      try {
+        await panelHeightModeMutation;
+        const edge = await beginPanelResize();
+        resizeEdge = edge;
+        // The native begin command has already persisted the current height as manual. Mirroring it
+        // here stops any in-flight frontend auto-fit without waiting for the first resize event.
+        acceptHeightMode('manual');
+        // TODO(macOS): Tao 0.35 reports native resize dragging as unsupported and Tauri currently
+        // swallows that runtime error. Re-test after Tauri/Tao upgrades; add an AppKit fallback if
+        // upstream support is still unavailable.
+        await getCurrentWindow().startResizeDragging(edge === 'top' ? 'North' : 'South');
+      } catch {
+        options.onError('QuotaGauge panel resize could not be started.');
+      } finally {
+        await lockPanelResizeAxis().catch(() => undefined);
+        updateHeightMode();
+      }
+    })();
+    panelResizeOperation = operation;
+    void operation.finally(() => {
+      if (panelResizeOperation === operation) panelResizeOperation = null;
+    });
+  }
+
+  function handleFloatingWindowPointerDown(event: PointerEvent) {
+    if (event.button !== 0 || !('__TAURI_INTERNALS__' in window)) return;
+    event.preventDefault();
+    void getCurrentWindow()
+      .startDragging()
+      .catch(() => options.onError('QuotaGauge window could not be moved.'));
+  }
+
+  async function changeHeightMode(mode: PanelHeightMode) {
+    if (!('__TAURI_INTERNALS__' in window)) return;
+    const request = ++panelHeightModeRequest;
+    const operation = panelHeightModeMutation.then(() =>
+      mode === 'automatic' ? setPanelHeightAutomatic() : setPanelHeightManual(),
+    );
+    panelHeightModeMutation = operation.catch(() => undefined);
+    try {
+      await operation;
+      if (request === panelHeightModeRequest) updateHeightMode();
+    } catch {
+      if (request !== panelHeightModeRequest) return;
+      options.onError('QuotaGauge could not change the panel height mode.');
+      updateHeightMode();
+    }
+  }
+
   return {
     beginContentMorph,
     scheduleFit,
+    sizing: {
+      get mode() {
+        return panelHeightMode;
+      },
+      get resizeEdge() {
+        return renderedResizeEdge;
+      },
+      get settled() {
+        return panelHeightModeMutation;
+      },
+      updateEdge: updateResizeEdge,
+      updateMode: updateHeightMode,
+      acceptMode: acceptHeightMode,
+      changeMode: changeHeightMode,
+      resizePointerDown: handlePanelResizePointerDown,
+      floatingPointerDown: handleFloatingWindowPointerDown,
+    },
     dispose() {
       window.clearTimeout(contentMorphTimer);
       contentMorphActive = false;

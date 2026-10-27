@@ -5,6 +5,12 @@ const mocks = vi.hoisted(() => ({
   currentMonitor: vi.fn(),
   getCurrentWindow: vi.fn(),
   fitPanelToContent: vi.fn(),
+  getPanelResizeEdge: vi.fn(),
+  getPanelHeightMode: vi.fn(),
+  setPanelHeightAutomatic: vi.fn(),
+  setPanelHeightManual: vi.fn(),
+  beginPanelResize: vi.fn(),
+  lockPanelResizeAxis: vi.fn(),
 }));
 
 vi.mock('@tauri-apps/api/window', () => ({
@@ -14,9 +20,15 @@ vi.mock('@tauri-apps/api/window', () => ({
 
 vi.mock('./backend', () => ({
   fitPanelToContent: mocks.fitPanelToContent,
+  getPanelResizeEdge: mocks.getPanelResizeEdge,
+  getPanelHeightMode: mocks.getPanelHeightMode,
+  setPanelHeightAutomatic: mocks.setPanelHeightAutomatic,
+  setPanelHeightManual: mocks.setPanelHeightManual,
+  beginPanelResize: mocks.beginPanelResize,
+  lockPanelResizeAxis: mocks.lockPanelResizeAxis,
 }));
 
-import { createWindowController } from './windowController';
+import { createWindowController } from './windowController.svelte';
 
 describe('hybrid window controller', () => {
   beforeEach(() => {
@@ -78,7 +90,8 @@ describe('hybrid window controller', () => {
       screen: () => 'dashboard',
       refreshing: () => false,
       reordering: () => false,
-      automatic: () => true,
+      floating: () => false,
+      initialResizeEdge: 'bottom' as const,
       reducedMotion: () => false,
       onError: vi.fn(),
     });
@@ -97,10 +110,12 @@ describe('hybrid window controller', () => {
       screen: () => 'dashboard',
       refreshing: () => false,
       reordering: () => false,
-      automatic: () => false,
+      floating: () => false,
+      initialResizeEdge: 'bottom' as const,
       reducedMotion: () => false,
       onError: vi.fn(),
     });
+    controller.sizing.acceptMode('manual');
 
     controller.scheduleFit();
 
@@ -130,7 +145,8 @@ describe('hybrid window controller', () => {
       screen: () => 'dashboard',
       refreshing: () => false,
       reordering: () => false,
-      automatic: () => true,
+      floating: () => false,
+      initialResizeEdge: 'bottom' as const,
       reducedMotion: () => true,
       onError: vi.fn(),
     });
@@ -162,7 +178,8 @@ describe('hybrid window controller', () => {
       screen: () => activeScreen,
       refreshing: () => false,
       reordering: () => false,
-      automatic: () => true,
+      floating: () => false,
+      initialResizeEdge: 'bottom' as const,
       reducedMotion: () => true,
       onError: vi.fn(),
     });
@@ -205,7 +222,8 @@ describe('hybrid window controller', () => {
       screen: () => activeScreen,
       refreshing: () => false,
       reordering: () => false,
-      automatic: () => true,
+      floating: () => false,
+      initialResizeEdge: 'bottom' as const,
       reducedMotion: () => true,
       onError: vi.fn(),
     });
@@ -233,7 +251,8 @@ describe('hybrid window controller', () => {
       screen: () => 'dashboard',
       refreshing: () => refreshing,
       reordering: () => false,
-      automatic: () => true,
+      floating: () => false,
+      initialResizeEdge: 'bottom' as const,
       reducedMotion: () => true,
       onError: vi.fn(),
     });
