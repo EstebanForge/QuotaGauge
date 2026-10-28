@@ -315,12 +315,9 @@ mod tests {
             [
                 (
                     "Dashboard".into(),
-                    "https://www.kimi.com/code/console".into()
+                    "https://www.kimi.ai/code/console".into()
                 ),
-                (
-                    "API Keys".into(),
-                    "https://www.kimi.com/code/console".into()
-                ),
+                ("API Keys".into(), "https://www.kimi.ai/code/console".into()),
             ]
         );
         assert_eq!(

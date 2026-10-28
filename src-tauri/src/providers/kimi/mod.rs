@@ -28,8 +28,8 @@ pub(crate) fn definition() -> ProviderDefinition {
         short_name: "K".into(),
         fallback_enabled: false,
         links: vec![
-            ProviderLink::new("Dashboard", "https://www.kimi.com/code/console"),
-            ProviderLink::new("API Keys", "https://www.kimi.com/code/console"),
+            ProviderLink::new("Dashboard", "https://www.kimi.ai/code/console"),
+            ProviderLink::new("API Keys", "https://www.kimi.ai/code/console"),
         ],
         metrics: vec![
             MetricDefinition::quota(

@@ -3,7 +3,7 @@ use std::time::Duration;
 use super::KimiError;
 use crate::providers::http;
 
-const USAGES_URL: &str = "https://api.kimi.com/coding/v1/usages";
+const USAGES_URL: &str = "https://api.kimi.ai/coding/v1/usages";
 
 pub use crate::providers::http::EndpointResponse;
 
