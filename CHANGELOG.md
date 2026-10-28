@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.1 - 2026-10-28
+
+### Fixed
+
+- Kimi: international accounts now use the `kimi.ai` usage endpoint and Code Console after Kimi moved them off `kimi.com`.
+
 ## 0.6.0 - 2026-10-27
 
 ### Removed
