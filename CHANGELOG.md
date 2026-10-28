@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.6.3 - 2026-10-28
+
+### Fixed
+
+- The updater's security check failed on every 0.6.2 download: the release manifest double-encoded the updater signatures. Manifests now embed the signature files verbatim.
+
+### Added
+
+- A manual "Check for Updates" that finds the version you dismissed restores its banner and installs it right away when the platform updater can.
+
+### Removed
+
+- The "Keep Window Open" pin and the floating-window preference are gone. The panel is always a tray popup that hides on blur; on Linux without a tray host it still opens as a standalone window. Settings that still carry the old window mode load normally.
+
 ## 0.6.2 - 2026-10-28
 
 ### Fixed
