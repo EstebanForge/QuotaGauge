@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.4 - 2026-10-28
+
+### Fixed
+
+- 0.6.3 failed to launch on every platform: the Kimi Monthly meter became a third default pin and the registry's two-pin invariant aborted startup. Monthly now ships unstarred; star it in Customize for the menu bar. If you installed 0.6.3, its updater never starts, so reinstall 0.6.4 manually. The provider catalog test now covers every built-in provider, and releases are gated on an end-to-end launch smoke (docs/releasing.md).
+
 ## 0.6.3 - 2026-10-28
 
 ### Fixed

@@ -6,6 +6,20 @@ and macOS signing are independent opt-ins because they require externally provis
 If the updater key is encrypted, also configure `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. The updater
 key is project-generated and does not require a paid certificate authority or signing account.
 
+## Pre-release gates
+
+Run both gates before tagging; unit tests cannot see the setup hook, and a definition invariant
+violation aborts startup before any window appears (0.6.3 shipped exactly that).
+
+```sh
+npm run verify                                    # versions, contracts, frontend, rust
+scripts/e2e/smoke.sh src-tauri/target/debug/quotagauge /tmp/qg-smoke
+```
+
+Build the smoke binary with embedded assets first (`cd src-tauri && cargo build --features
+tauri/custom-protocol`); without the feature the webview loads the vite devUrl and the smoke
+silently tests the wrong thing.
+
 ## Default release policy
 
 Leave both native-signing repository variables unset or set them to `false`:
