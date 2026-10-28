@@ -156,6 +156,14 @@ Data flow: providers -> UsageService refresh (events `usage-state`, `open-screen
   override). Keep platform-specific behavior working on all three OSes.
 - Run quality gates as separate invocations (or confirm each tool's output appeared) — chained
   `&&` scripts can short-circuit early and mask failures.
+- Run `scripts/e2e/smoke.sh <binary> <artifact-dir>` before tagging ANY release: unit tests cannot
+  see the setup hook, and 0.6.3 shipped a boot panic (kimi definition with 3 default pins) that a
+  10-second smoke would have caught.
+- `builtin_provider_catalog_keeps_the_product_defaults` (providers/registry.rs tests) validates ONLY
+  the providers listed in it — every new provider and every `definition()` change must be reflected
+  there, or registry invariants (max 2 default pins, visible metric, tray labels) go unchecked.
+  Max 2 default pins per provider is a hard registry invariant; `kimi.monthly` is deliberately
+  unpinned by default for that reason.
 
 ## Commit & PR guidelines
 

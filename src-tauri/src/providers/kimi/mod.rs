@@ -60,7 +60,7 @@ pub(crate) fn definition() -> ProviderDefinition {
                 false,
                 true,
                 MetricSection::AlwaysVisible,
-                true,
+                false,
                 "M",
             ),
         ],

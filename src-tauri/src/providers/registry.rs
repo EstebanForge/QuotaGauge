@@ -488,7 +488,8 @@ mod tests {
     #[test]
     fn builtin_provider_catalog_keeps_the_product_defaults() {
         use crate::providers::{
-            antigravity, claude, codex, copilot, cursor, devin, grok, opencode, openrouter, zai,
+            antigravity, claude, codex, copilot, cursor, devin, grok, kimi, minimax, opencode,
+            openrouter, zai,
         };
 
         let registry = ProviderRegistry::new(vec![
@@ -502,6 +503,8 @@ mod tests {
             runtime(opencode::definition()),
             runtime(openrouter::definition()),
             runtime(zai::definition()),
+            runtime(kimi::definition()),
+            runtime(minimax::definition()),
         ])
         .unwrap();
         let catalog = registry.catalog();
@@ -523,6 +526,8 @@ mod tests {
                 "opencode",
                 "openrouter",
                 "zai",
+                "kimi",
+                "minimax",
             ]
         );
         assert_eq!(
