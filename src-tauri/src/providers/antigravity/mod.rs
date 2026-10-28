@@ -19,7 +19,7 @@ use self::{
     client::{AntigravityClient, CloudOutcome, RefreshOutcome},
     discovery::discover,
     mapper::{
-        build_legacy_quotas, insert_argon, parse_agy_cli_quota, parse_cloud_models,
+        build_legacy_quotas, insert_argon, parse_agy_cli_quota_checked, parse_cloud_models,
         parse_command_model_configs, parse_plan, parse_quota_buckets, parse_quota_summaries,
         parse_quota_summary, parse_user_status,
     },
@@ -126,12 +126,22 @@ impl AntigravityProvider {
 
     fn refresh_inner(&self) -> Result<ProviderSnapshot, AntigravityError> {
         if let Some(server) = discover() {
+            crate::app_debug!(
+                "antigravity",
+                "language server discovered (ports={:?})",
+                server.ports
+            );
             if let Some(summary) = self
                 .client
                 .call_language_server(&server, "RetrieveUserQuotaSummary")
             {
                 if let Some(mut quotas) = parse_quota_summary(&summary) {
                     self.augment_missing_argon(&mut quotas);
+                    crate::app_debug!(
+                        "antigravity",
+                        "language server summary quotas: [{}]",
+                        quota_outline(&quotas)
+                    );
                     let plan = self
                         .client
                         .call_language_server(&server, "GetUserStatus")
@@ -232,12 +242,26 @@ impl AntigravityProvider {
         let (summaries, summary_auth_failed) =
             self.client
                 .cloud_code_all(QUOTA_SUMMARY_PATH, token, json!({}));
+        crate::app_debug!(
+            "antigravity",
+            "cloud quota summaries: {} body(s)",
+            summaries.len()
+        );
         if !summaries.is_empty() {
             if let Some(mut quotas) = parse_quota_summaries(&summaries) {
                 self.augment_missing_session_pool(token, &mut quotas);
                 self.augment_missing_argon(&mut quotas);
+                crate::app_debug!(
+                    "antigravity",
+                    "cloud summary quotas: [{}]",
+                    quota_outline(&quotas)
+                );
                 return Ok(snapshot(self.load_remote_plan(token), quotas));
             }
+            crate::app_debug!(
+                "antigravity",
+                "cloud summary bodies did not parse into quotas"
+            );
         }
         if summary_auth_failed {
             return Err(AntigravityError::AuthExpired);
@@ -315,12 +339,29 @@ impl AntigravityProvider {
         let home = (!home.as_os_str().is_empty()).then_some(&home);
         let candidates =
             agy_cli_candidates(cli_path_env.as_deref(), home.map(|path| path.as_path()));
-        if let Some(argon) = candidates
-            .iter()
-            .find_map(|program| argon_from_cli_report(program))
-        {
-            insert_argon(quotas, argon);
+        crate::app_debug!(
+            "antigravity",
+            "Argon missing from the quota snapshot; trying agy ({} {}, candidates={})",
+            AGY_CLI_PATH_ENV,
+            if cli_path_env.is_some() {
+                "set"
+            } else {
+                "unset"
+            },
+            candidates.len()
+        );
+        for program in &candidates {
+            if let Some(argon) = argon_from_cli_report(program) {
+                let name = program
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| program.to_string_lossy().into_owned());
+                crate::app_debug!("antigravity", "Argon supplied by {name}");
+                insert_argon(quotas, argon);
+                return;
+            }
         }
+        crate::app_debug!("antigravity", "no agy candidate supplied Argon");
     }
 
     /// The daily host omits the Gemini session pool; `fetchAvailableModels` still carries the live
@@ -384,19 +425,50 @@ fn argon_from_cli_report(program: &Path) -> Option<QuotaWindow> {
         ) {
             Ok(output) => output,
             // A hang or a missing binary will not improve on the next subcommand or candidate.
-            Err(_) => return None,
+            Err(_) => {
+                crate::app_debug!(
+                    "antigravity",
+                    "agy binary failed to spawn or timed out on -p {subcommand}"
+                );
+                return None;
+            }
         };
         if !output.status.success() {
+            crate::app_debug!(
+                "antigravity",
+                "agy -p {subcommand} exited with {}",
+                output.status
+            );
             continue;
         }
-        let Ok(value) = serde_json::from_slice::<Value>(&output.stdout) else {
-            continue;
+        let value = match serde_json::from_slice::<Value>(&output.stdout) {
+            Ok(value) => value,
+            Err(_) => {
+                crate::app_debug!(
+                    "antigravity",
+                    "agy -p {subcommand} printed {} bytes of non-JSON output",
+                    output.stdout.len()
+                );
+                continue;
+            }
         };
-        if let Some(argon) = parse_agy_cli_quota(&value) {
-            return Some(argon);
+        match parse_agy_cli_quota_checked(&value) {
+            Ok(argon) => return Some(argon),
+            Err(reject) => crate::app_debug!(
+                "antigravity",
+                "agy -p {subcommand} report unusable for Argon: {reject:?}"
+            ),
         }
     }
     None
+}
+
+fn quota_outline(quotas: &[crate::models::QuotaWindow]) -> String {
+    quotas
+        .iter()
+        .map(|quota| format!("{} {:.0}%", quota.id, quota.used_percent))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn access_token_candidates(

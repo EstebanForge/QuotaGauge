@@ -37,6 +37,19 @@ const BUCKETS: [(&str, &str, &str, u64); 4] = [
     ),
 ];
 
+/// Why an Argon window could not be built; logged at debug level so live payload drift is
+/// diagnosable instead of silently dropping the meter.
+#[derive(Debug, PartialEq)]
+pub enum ArgonReject {
+    NoGroups,
+    NoArgonGroup,
+    WeeklyBucketCount(usize),
+    MissingBucketId,
+    SharedBucketId,
+    BucketDisabled,
+    MissingFraction,
+}
+
 pub fn parse_quota_summary(value: &Value) -> Option<Vec<QuotaWindow>> {
     parse_quota_summaries(std::slice::from_ref(value))
 }
@@ -62,9 +75,11 @@ pub fn parse_quota_summaries(values: &[Value]) -> Option<Vec<QuotaWindow>> {
     let mut argon = None;
     for groups in &group_lists {
         let mut argon_buckets = Vec::new();
+        let mut seen_argon_group = false;
         for group in groups.iter() {
             let argon_group =
                 group.get("displayName").and_then(Value::as_str) == Some(ARGON_GROUP_NAME);
+            seen_argon_group |= argon_group;
             for bucket in group
                 .get("buckets")
                 .and_then(Value::as_array)
@@ -79,7 +94,24 @@ pub fn parse_quota_summaries(values: &[Value]) -> Option<Vec<QuotaWindow>> {
             }
         }
         if argon.is_none() {
-            argon = argon_window(&argon_buckets);
+            if !seen_argon_group {
+                crate::app_debug!(
+                    "antigravity",
+                    "summary body has no '{}' group (groups: {})",
+                    ARGON_GROUP_NAME,
+                    group_outline(groups)
+                );
+            } else {
+                argon = argon_window_checked(&argon_buckets)
+                    .inspect_err(|_| {
+                        crate::app_debug!(
+                            "antigravity",
+                            "summary body Argon buckets: {}",
+                            bucket_outline(&argon_buckets)
+                        );
+                    })
+                    .ok();
+            }
         }
     }
 
@@ -113,13 +145,14 @@ pub fn insert_argon(quotas: &mut Vec<QuotaWindow>, argon: QuotaWindow) {
 
 /// `agy -p "/quota" --output-format json` nests the groups under `command.data` and renames the
 /// canonical fields (`name`, `remaining_fraction`); normalize into the summary bucket shape.
-pub fn parse_agy_cli_quota(value: &Value) -> Option<QuotaWindow> {
+pub fn parse_agy_cli_quota_checked(value: &Value) -> Result<QuotaWindow, ArgonReject> {
     let groups = value
         .pointer("/command/data/groups")
         .or_else(|| value.pointer("/response/groups"))
-        .or_else(|| value.get("groups"))?
-        .as_array()?;
-    let buckets = groups
+        .or_else(|| value.get("groups"))
+        .and_then(Value::as_array)
+        .ok_or(ArgonReject::NoGroups)?;
+    let argon_groups = groups
         .iter()
         .filter(|group| {
             group
@@ -128,6 +161,18 @@ pub fn parse_agy_cli_quota(value: &Value) -> Option<QuotaWindow> {
                 .or_else(|| group.get("displayName").and_then(Value::as_str))
                 == Some(ARGON_GROUP_NAME)
         })
+        .collect::<Vec<_>>();
+    if argon_groups.is_empty() {
+        crate::app_debug!(
+            "antigravity",
+            "agy report has no '{}' group (groups: {})",
+            ARGON_GROUP_NAME,
+            group_outline(groups)
+        );
+        return Err(ArgonReject::NoArgonGroup);
+    }
+    let buckets = argon_groups
+        .iter()
         .filter_map(|group| group.get("buckets").and_then(Value::as_array))
         .flatten()
         .map(|bucket| {
@@ -146,7 +191,7 @@ pub fn parse_agy_cli_quota(value: &Value) -> Option<QuotaWindow> {
         })
         .collect::<Vec<_>>();
     let refs: Vec<&Value> = buckets.iter().collect();
-    argon_window(&refs)
+    argon_window_checked(&refs)
 }
 
 fn pool_bucket(
@@ -172,38 +217,119 @@ fn pool_bucket(
 
 /// Argon ships its own quota group instead of a stable bucket id, so the group name plus exactly
 /// one weekly bucket identifies the window; anything ambiguous is dropped rather than guessed.
-fn argon_window(buckets: &[&Value]) -> Option<QuotaWindow> {
+fn argon_window_checked(buckets: &[&Value]) -> Result<QuotaWindow, ArgonReject> {
     let weekly = buckets
         .iter()
         .filter(|bucket| bucket.get("window").and_then(Value::as_str) == Some("weekly"))
         .collect::<Vec<_>>();
     if weekly.len() != 1 {
-        return None;
+        crate::app_debug!(
+            "antigravity",
+            "Argon needs exactly one weekly bucket, found {}",
+            weekly.len()
+        );
+        return Err(ArgonReject::WeeklyBucketCount(weekly.len()));
     }
     let bucket = weekly[0];
     if bucket.get("disabled").and_then(Value::as_bool) == Some(true) {
-        return None;
+        crate::app_debug!("antigravity", "Argon weekly bucket is disabled");
+        return Err(ArgonReject::BucketDisabled);
     }
     let id = bucket
         .get("bucketId")
         .and_then(Value::as_str)
-        .filter(|id| !id.is_empty())?;
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| {
+            crate::app_debug!("antigravity", "Argon weekly bucket has no bucketId");
+            ArgonReject::MissingBucketId
+        })?;
     if BUCKETS.iter().any(|spec| spec.0 == id) {
-        return None;
+        crate::app_debug!(
+            "antigravity",
+            "Argon weekly bucket id '{id}' collides with a standard pool bucket"
+        );
+        return Err(ArgonReject::SharedBucketId);
     }
-    let fraction = bucket.get("remainingFraction").and_then(number)?;
+    let fraction = bucket
+        .get("remainingFraction")
+        .and_then(number)
+        .ok_or_else(|| {
+            crate::app_debug!(
+                "antigravity",
+                "Argon weekly bucket '{id}' has no usable remainingFraction"
+            );
+            ArgonReject::MissingFraction
+        })?;
     let reset = bucket
         .get("resetTime")
         .and_then(Value::as_str)
         .and_then(|text| DateTime::parse_from_rfc3339(text).ok())
         .map(|date| date.to_utc());
-    Some(quota_window(
+    crate::app_debug!(
+        "antigravity",
+        "Argon weekly accepted: bucket '{id}', {:.1}% remaining, reset {}",
+        fraction * 100.0,
+        reset
+            .map(|reset| reset.to_rfc3339())
+            .unwrap_or_else(|| "n/a".into())
+    );
+    Ok(quota_window(
         "argonWeekly",
         "Argon Weekly",
         fraction,
         reset,
         7 * 24 * 60 * 60,
     ))
+}
+
+fn group_outline(groups: &[Value]) -> String {
+    let names = groups
+        .iter()
+        .map(|group| {
+            group
+                .get("displayName")
+                .or_else(|| group.get("name"))
+                .and_then(Value::as_str)
+                .unwrap_or("?")
+        })
+        .collect::<Vec<_>>();
+    if names.is_empty() {
+        "none".to_owned()
+    } else {
+        format!("[{}]", names.join(", "))
+    }
+}
+
+fn bucket_outline(buckets: &[&Value]) -> String {
+    if buckets.is_empty() {
+        return "none".to_owned();
+    }
+    let items = buckets
+        .iter()
+        .map(|bucket| {
+            format!(
+                "{}/{}/{}{}",
+                bucket
+                    .get("bucketId")
+                    .or_else(|| bucket.get("id"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("?"),
+                bucket.get("window").and_then(Value::as_str).unwrap_or("?"),
+                bucket
+                    .get("remainingFraction")
+                    .or_else(|| bucket.get("remaining_fraction"))
+                    .and_then(number)
+                    .map(|fraction| format!("{fraction:.2}"))
+                    .unwrap_or_else(|| "?".to_owned()),
+                if bucket.get("disabled").and_then(Value::as_bool) == Some(true) {
+                    "/disabled"
+                } else {
+                    ""
+                }
+            )
+        })
+        .collect::<Vec<_>>();
+    format!("[{}]", items.join(", "))
 }
 
 fn quota_window(
@@ -410,13 +536,14 @@ mod tests {
     use serde_json::{json, Value};
 
     use super::{
-        build_legacy_quotas, parse_agy_cli_quota, parse_cloud_models, parse_command_model_configs,
-        parse_quota_buckets, parse_quota_summaries, parse_quota_summary, parse_user_status,
+        build_legacy_quotas, parse_agy_cli_quota_checked, parse_cloud_models,
+        parse_command_model_configs, parse_quota_buckets, parse_quota_summaries,
+        parse_quota_summary, parse_user_status,
     };
 
     #[test]
     fn legacy_bucket_id_wins_over_the_newer_id_field() {
-        let parsed = parse_agy_cli_quota(&json!({
+        let parsed = parse_agy_cli_quota_checked(&json!({
             "groups": [
                 {"name": "Gemini 4 Argon", "buckets": [
                     {"bucket_id": "legacy-id", "id": "newer-id", "window": "weekly",
@@ -530,12 +657,71 @@ mod tests {
                 ]}
             ]}}
         });
-        let argon = parse_agy_cli_quota(&value).unwrap();
+        let argon = parse_agy_cli_quota_checked(&value).unwrap();
         assert_eq!(argon.id, "argonWeekly");
         assert_eq!(argon.used_percent, 81.0);
 
-        assert!(parse_agy_cli_quota(&json!({"command": {"data": {"groups": []}}})).is_none());
-        assert!(parse_agy_cli_quota(&json!({})).is_none());
+        assert!(
+            parse_agy_cli_quota_checked(&json!({"command": {"data": {"groups": []}}})).is_err()
+        );
+        assert!(parse_agy_cli_quota_checked(&json!({})).is_err());
+    }
+
+    #[test]
+    fn argon_rejections_carry_the_reason_a_bucket_was_dropped() {
+        use super::{parse_agy_cli_quota_checked, ArgonReject};
+
+        assert_eq!(
+            parse_agy_cli_quota_checked(&json!({})),
+            Err(ArgonReject::NoGroups)
+        );
+        assert_eq!(
+            parse_agy_cli_quota_checked(&json!({"groups": [
+                {"name": "Gemini Models", "buckets": []}
+            ]})),
+            Err(ArgonReject::NoArgonGroup)
+        );
+        assert_eq!(
+            parse_agy_cli_quota_checked(&json!({"groups": [
+                {"name": "Gemini 4 Argon", "buckets": [
+                    {"id": "a", "window": "weekly", "remaining_fraction": 0.9},
+                    {"id": "b", "window": "weekly", "remaining_fraction": 0.8}
+                ]}
+            ]})),
+            Err(ArgonReject::WeeklyBucketCount(2))
+        );
+        assert_eq!(
+            parse_agy_cli_quota_checked(&json!({"groups": [
+                {"name": "Gemini 4 Argon", "buckets": [
+                    {"id": "a", "window": "weekly", "remaining_fraction": 0.9, "disabled": true}
+                ]}
+            ]})),
+            Err(ArgonReject::BucketDisabled)
+        );
+        assert_eq!(
+            parse_agy_cli_quota_checked(&json!({"groups": [
+                {"name": "Gemini 4 Argon", "buckets": [
+                    {"id": "gemini-weekly", "window": "weekly", "remaining_fraction": 0.9}
+                ]}
+            ]})),
+            Err(ArgonReject::SharedBucketId)
+        );
+        assert_eq!(
+            parse_agy_cli_quota_checked(&json!({"groups": [
+                {"name": "Gemini 4 Argon", "buckets": [
+                    {"id": "argon-x", "window": "weekly"}
+                ]}
+            ]})),
+            Err(ArgonReject::MissingFraction)
+        );
+        assert_eq!(
+            parse_agy_cli_quota_checked(&json!({"groups": [
+                {"name": "Gemini 4 Argon", "buckets": [
+                    {"window": "weekly", "remaining_fraction": 0.9}
+                ]}
+            ]})),
+            Err(ArgonReject::MissingBucketId)
+        );
     }
 
     #[test]
