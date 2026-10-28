@@ -130,39 +130,7 @@ describe('QuotaGauge dashboard', () => {
     expect(screen.getByText('QuotaGauge 9.9.9')).toBeInTheDocument();
   });
 
-  it('toggles floating window mode from the footer pin when a tray is available', async () => {
-    render(App);
-    await screen.findByText('Plus');
-
-    const pin = screen.getByRole('button', { name: 'Keep Window Open' });
-    expect(pin).toHaveAttribute('aria-pressed', 'false');
-    await fireEvent.click(pin);
-
-    await waitFor(() =>
-      expect(mocks.invoke).toHaveBeenCalledWith(
-        'save_app_settings',
-        expect.objectContaining({
-          settings: expect.objectContaining({ windowMode: 'floating' }),
-        }),
-      ),
-    );
-    expect(screen.getByRole('button', { name: 'Return to Tray Popup' })).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    );
-
-    await fireEvent.click(screen.getByRole('button', { name: 'Return to Tray Popup' }));
-    await waitFor(() =>
-      expect(mocks.invoke).toHaveBeenCalledWith(
-        'save_app_settings',
-        expect.objectContaining({
-          settings: expect.objectContaining({ windowMode: 'popup' }),
-        }),
-      ),
-    );
-  });
-
-  it('provides a native drag surface and hide control in floating window mode', async () => {
+  it('provides a native drag surface and hide control when no tray is available', async () => {
     Object.defineProperty(window, '__TAURI_INTERNALS__', {
       configurable: true,
       value: {},
@@ -175,10 +143,7 @@ describe('QuotaGauge dashboard', () => {
     const defaultInvoke = mocks.invoke.getMockImplementation()!;
     mockInvoke((command: string, args?: InvokeArgs) => {
       if (command === 'get_app_settings')
-        return Promise.resolve({
-          ...settingsState,
-          settings: { ...settingsState.settings, windowMode: 'floating' as const },
-        });
+        return Promise.resolve({ ...settingsState, trayAvailable: false });
       if (command === 'get_panel_resize_edge') return new Promise(() => undefined);
       return defaultInvoke(command, args);
     });
@@ -188,65 +153,13 @@ describe('QuotaGauge dashboard', () => {
       await screen.findByText('Plus');
       const dragSurface = container.querySelector<HTMLElement>('.floating-chrome__drag');
       expect(dragSurface).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'Hide QuotaGauge' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Close QuotaGauge' })).toBeInTheDocument();
       expect(screen.getByRole('separator', { name: 'Resize panel height' })).toHaveClass(
         'panel-resize-dragger--bottom',
       );
 
       await fireEvent.pointerDown(dragSurface!, { button: 0 });
       expect(mocks.startDragging).toHaveBeenCalledOnce();
-    } finally {
-      delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
-      Object.defineProperty(navigator, 'userAgent', { configurable: true, value: userAgent });
-    }
-  });
-
-  it('refreshes the resize edge after switching from floating window to tray popup', async () => {
-    Object.defineProperty(window, '__TAURI_INTERNALS__', {
-      configurable: true,
-      value: {},
-    });
-    const userAgent = navigator.userAgent;
-    Object.defineProperty(navigator, 'userAgent', {
-      configurable: true,
-      value: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-    });
-    let appliedMode: AppSettings['windowMode'] = 'floating';
-    const defaultInvoke = mocks.invoke.getMockImplementation()!;
-    mockInvoke((command: string, args?: InvokeArgs) => {
-      if (command === 'get_app_settings')
-        return Promise.resolve({
-          ...settingsState,
-          settings: { ...settingsState.settings, windowMode: 'floating' as const },
-        });
-      if (command === 'save_app_settings') {
-        appliedMode = args?.settings?.windowMode ?? appliedMode;
-        return Promise.resolve({
-          ...settingsState,
-          settings: args?.settings ?? settingsState.settings,
-        });
-      }
-      if (command === 'get_panel_resize_edge')
-        return Promise.resolve(appliedMode === 'floating' ? 'bottom' : 'top');
-      return defaultInvoke(command, args);
-    });
-
-    try {
-      render(App);
-      await screen.findByText('Plus');
-      expect(screen.getByRole('separator', { name: 'Resize panel height' })).toHaveClass(
-        'panel-resize-dragger--bottom',
-      );
-      await fireEvent.click(screen.getByLabelText('Open options'));
-      await fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
-      await fireEvent.click(screen.getByRole('combobox', { name: 'Window Mode' }));
-      await fireEvent.click(screen.getByRole('option', { name: 'Tray Popup' }));
-
-      await waitFor(() =>
-        expect(screen.getByRole('separator', { name: 'Resize panel height' })).toHaveClass(
-          'panel-resize-dragger--top',
-        ),
-      );
     } finally {
       delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
       Object.defineProperty(navigator, 'userAgent', { configurable: true, value: userAgent });
@@ -1337,6 +1250,159 @@ describe('QuotaGauge dashboard', () => {
     expect(menu).not.toHaveAttribute('open');
   });
 
+  it('a manual check reinstates a dismissed update and installs it', async () => {
+    const dismissed = {
+      ...settingsState,
+      settings: { ...settingsState.settings, dismissedUpdateVersion: '0.7.0' },
+    };
+    mockInvoke((command: string, args?: InvokeArgs) => {
+      if (command === 'get_usage_state') return Promise.resolve(liveState);
+      if (command === 'get_app_settings') return Promise.resolve(dismissed);
+      if (command === 'save_app_settings')
+        return Promise.resolve({ ...dismissed, settings: args?.settings ?? dismissed.settings });
+      if (command === 'check_for_updates')
+        return Promise.resolve({
+          available: true,
+          currentVersion: '0.6.2',
+          version: '0.7.0',
+          body: null,
+          installable: true,
+          releaseUrl: 'https://github.com/EstebanForge/QuotaGauge/releases/tag/0.7.0',
+        });
+      return Promise.resolve();
+    });
+    render(App);
+    await screen.findByText('Plus');
+    await fireEvent.click(screen.getByText('Options').closest('summary')!);
+    await fireEvent.click(screen.getByRole('button', { name: 'Check for Updates…' }));
+    await waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith('install_update'));
+    expect(screen.getByText('Update Available')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Updating…' })).toBeInTheDocument();
+    await waitFor(() => {
+      const saves = mocks.invoke.mock.calls.filter(([command]) => command === 'save_app_settings');
+      const last = saves.at(-1)![1] as { settings: { dismissedUpdateVersion: string | null } };
+      expect(last.settings.dismissedUpdateVersion).toBeNull();
+    });
+  });
+
+  it('a manual check clears the dismissal of a non-installable update without installing', async () => {
+    const dismissed = {
+      ...settingsState,
+      settings: { ...settingsState.settings, dismissedUpdateVersion: '0.7.0' },
+    };
+    mockInvoke((command: string, args?: InvokeArgs) => {
+      if (command === 'get_usage_state') return Promise.resolve(liveState);
+      if (command === 'get_app_settings') return Promise.resolve(dismissed);
+      if (command === 'save_app_settings')
+        return Promise.resolve({ ...dismissed, settings: args?.settings ?? dismissed.settings });
+      if (command === 'check_for_updates')
+        return Promise.resolve({
+          available: true,
+          currentVersion: '0.6.2',
+          version: '0.7.0',
+          body: null,
+          installable: false,
+          releaseUrl: 'https://github.com/EstebanForge/QuotaGauge/releases/tag/0.7.0',
+        });
+      return Promise.resolve();
+    });
+    render(App);
+    await screen.findByText('Plus');
+    await fireEvent.click(screen.getByText('Options').closest('summary')!);
+    await fireEvent.click(screen.getByRole('button', { name: 'Check for Updates…' }));
+    expect(await screen.findByText('Download from GitHub')).toBeInTheDocument();
+    expect(mocks.invoke).not.toHaveBeenCalledWith('install_update');
+    await waitFor(() => {
+      const saves = mocks.invoke.mock.calls.filter(([command]) => command === 'save_app_settings');
+      const last = saves.at(-1)![1] as { settings: { dismissedUpdateVersion: string | null } };
+      expect(last.settings.dismissedUpdateVersion).toBeNull();
+    });
+  });
+
+  it('a manual check leaves a live undismissed update to the banner button', async () => {
+    mockInvoke((command: string, args?: InvokeArgs) => {
+      if (command === 'get_usage_state') return Promise.resolve(liveState);
+      if (command === 'get_app_settings') return Promise.resolve(settingsState);
+      if (command === 'save_app_settings')
+        return Promise.resolve({
+          ...settingsState,
+          settings: args?.settings ?? settingsState.settings,
+        });
+      if (command === 'check_for_updates')
+        return Promise.resolve({
+          available: true,
+          currentVersion: '0.6.2',
+          version: '0.7.0',
+          body: null,
+          installable: true,
+          releaseUrl: 'https://github.com/EstebanForge/QuotaGauge/releases/tag/0.7.0',
+        });
+      return Promise.resolve();
+    });
+    render(App);
+    await screen.findByText('Plus');
+    await fireEvent.click(screen.getByText('Options').closest('summary')!);
+    await fireEvent.click(screen.getByRole('button', { name: 'Check for Updates…' }));
+    expect(await screen.findByRole('button', { name: 'Install Update' })).toBeInTheDocument();
+    expect(mocks.invoke).not.toHaveBeenCalledWith('install_update');
+  });
+
+  it('a manual check that finds a newer version than the dismissed one only shows the banner', async () => {
+    const dismissed = {
+      ...settingsState,
+      settings: { ...settingsState.settings, dismissedUpdateVersion: '0.7.0' },
+    };
+    mockInvoke((command: string, args?: InvokeArgs) => {
+      if (command === 'get_usage_state') return Promise.resolve(liveState);
+      if (command === 'get_app_settings') return Promise.resolve(dismissed);
+      if (command === 'save_app_settings')
+        return Promise.resolve({ ...dismissed, settings: args?.settings ?? dismissed.settings });
+      if (command === 'check_for_updates')
+        return Promise.resolve({
+          available: true,
+          currentVersion: '0.7.0',
+          version: '0.8.0',
+          body: null,
+          installable: true,
+          releaseUrl: 'https://github.com/EstebanForge/QuotaGauge/releases/tag/0.8.0',
+        });
+      return Promise.resolve();
+    });
+    render(App);
+    await screen.findByText('Plus');
+    await fireEvent.click(screen.getByText('Options').closest('summary')!);
+    await fireEvent.click(screen.getByRole('button', { name: 'Check for Updates…' }));
+    expect(await screen.findByRole('button', { name: 'Install Update' })).toBeInTheDocument();
+    expect(mocks.invoke).not.toHaveBeenCalledWith('install_update');
+    const saves = mocks.invoke.mock.calls.filter(([command]) => command === 'save_app_settings');
+    const last = saves.at(-1)![1] as { settings: { dismissedUpdateVersion: string | null } };
+    expect(last.settings.dismissedUpdateVersion).toBe('0.7.0');
+  });
+
+  it('a failed manual check never fires the dismissal override', async () => {
+    const dismissed = {
+      ...settingsState,
+      settings: { ...settingsState.settings, dismissedUpdateVersion: '0.7.0' },
+    };
+    mockInvoke((command: string, args?: InvokeArgs) => {
+      if (command === 'get_usage_state') return Promise.resolve(liveState);
+      if (command === 'get_app_settings') return Promise.resolve(dismissed);
+      if (command === 'save_app_settings')
+        return Promise.resolve({ ...dismissed, settings: args?.settings ?? dismissed.settings });
+      if (command === 'check_for_updates') return Promise.reject(new Error('offline'));
+      return Promise.resolve();
+    });
+    render(App);
+    await screen.findByText('Plus');
+    await fireEvent.click(screen.getByText('Options').closest('summary')!);
+    await fireEvent.click(screen.getByRole('button', { name: 'Check for Updates…' }));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(mocks.invoke).not.toHaveBeenCalledWith('install_update');
+    expect(mocks.invoke.mock.calls.filter(([command]) => command === 'save_app_settings')).toEqual(
+      [],
+    );
+  });
+
   it('resets native Options and Share details when the popup is hidden', async () => {
     let emitMainWindowHidden: (() => void) | undefined;
     mocks.listen.mockImplementation(
@@ -1558,17 +1624,6 @@ describe('QuotaGauge dashboard', () => {
       await screen.findByText('Plus');
       await fireEvent.click(screen.getByLabelText('Open options'));
       await fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
-      const windowMode = screen.getByRole('combobox', { name: 'Window Mode' });
-      await fireEvent.click(windowMode);
-      await fireEvent.click(screen.getByRole('option', { name: 'Floating Window' }));
-      await waitFor(() =>
-        expect(mocks.invoke).toHaveBeenCalledWith(
-          'save_app_settings',
-          expect.objectContaining({
-            settings: expect.objectContaining({ windowMode: 'floating' }),
-          }),
-        ),
-      );
 
       const heightMode = screen.getByRole('combobox', { name: 'Panel Height' });
       await waitFor(() => expect(heightMode).toHaveTextContent('Manual'));

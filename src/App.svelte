@@ -89,10 +89,7 @@
   const reducedMotion = $derived(
     systemReducedMotion || Boolean(settingsState?.settings.reduceAnimations),
   );
-  const floatingWindow = $derived(
-    !!settingsState &&
-      (!settingsState.trayAvailable || settingsState.settings.windowMode === 'floating'),
-  );
+  const floatingWindow = $derived(!!settingsState && !settingsState.trayAvailable);
   const providerDisplayName = (id: string) =>
     catalog.displayName(id, settingsState?.settings.providerNames);
   const updates = new UpdateController();
@@ -180,19 +177,7 @@
   }
   function saveSettings(next: AppSettings) {
     settingsError = null;
-    const windowModeChanged = settingsState?.settings.windowMode !== next.windowMode;
-    if (windowModeChanged) beginContentMorph();
-    const save = settingsController.save(next);
-    if (windowModeChanged) void save.finally(() => windowController.sizing.updateEdge());
-  }
-
-  function toggleFloatingWindow() {
-    const current = settingsState;
-    if (!current?.trayAvailable) return;
-    saveSettings({
-      ...current.settings,
-      windowMode: floatingWindow ? 'popup' : 'floating',
-    });
+    return settingsController.save(next);
   }
 
   function cloneSettings(value: AppSettings): AppSettings {
@@ -368,8 +353,6 @@
   }
   async function confirmAllSettingsReset() {
     if (!settingsState || resettingAllSettings) return;
-    const windowModeChanged = settingsState.settings.windowMode !== 'popup';
-    if (windowModeChanged) beginContentMorph();
     resettingAllSettings = true;
     try {
       await windowController.sizing.settled;
@@ -521,7 +504,7 @@
   }
   async function checkForUpdates(manual = false) {
     if (!settingsState) return;
-    await updates.check(
+    const status = await updates.check(
       manual,
       (checkedAt) => {
         if (!settingsState) return;
@@ -529,6 +512,23 @@
       },
       (message: string) => share.show(message),
     );
+    const current = settingsState;
+    // A manual check overrides a dismissal: bring the banner back and, when the
+    // platform updater can, run the install the dismissal had been holding off.
+    // A skipped or failed check returns no status, so stale results never fire it.
+    if (
+      !manual ||
+      !current ||
+      !status?.available ||
+      !status.version ||
+      status.version !== current.settings.dismissedUpdateVersion
+    )
+      return;
+    await saveSettings({ ...current.settings, dismissedUpdateVersion: null });
+    if (status.installable && settingsState?.settings.dismissedUpdateVersion === null) {
+      if (screen !== 'dashboard') navigate('dashboard');
+      void updates.install();
+    }
   }
 
   onMount(() => {
@@ -683,7 +683,7 @@
       <button
         class="floating-chrome__close"
         type="button"
-        aria-label={settingsState?.trayAvailable ? 'Hide QuotaGauge' : 'Close QuotaGauge'}
+        aria-label="Close QuotaGauge"
         onclick={closeMainWindow}
       >
         <Icon name="close" size={12} strokeWidth={2.1} />
@@ -821,19 +821,6 @@
         </button>
         {#if screen === 'dashboard'}
           <div class="footer-actions">
-            {#if settingsState.trayAvailable}
-              <button
-                class="window-mode-toggle"
-                class:window-mode-toggle--active={floatingWindow}
-                type="button"
-                aria-label={floatingWindow ? 'Return to Tray Popup' : 'Keep Window Open'}
-                aria-pressed={floatingWindow}
-                data-tooltip={floatingWindow ? 'Return to Tray Popup' : 'Keep Window Open'}
-                onclick={toggleFloatingWindow}
-              >
-                <Icon name={floatingWindow ? 'pin-filled' : 'pin'} size={14} strokeWidth={1.9} />
-              </button>
-            {/if}
             <details class="options-menu" bind:this={optionsMenuElement}>
               <summary aria-label="Open options" onkeydown={handleOptionsKey}
                 ><span>Options</span><Icon
@@ -1328,53 +1315,6 @@
 
     .footer-actions .options-menu {
       margin-left: 0;
-    }
-
-    .window-mode-toggle {
-      display: grid;
-      width: 26px;
-      height: 26px;
-      padding: 0;
-      border: 0;
-      border-radius: 8px;
-      color: var(--secondary);
-      background: transparent;
-      cursor: pointer;
-      place-items: center;
-      transition:
-        color 120ms ease,
-        background-color 120ms ease,
-        transform 80ms ease;
-    }
-
-    .window-mode-toggle:hover {
-      color: var(--text);
-      background: var(--button-hover);
-    }
-
-    .window-mode-toggle--active {
-      color: var(--meter-fill);
-    }
-
-    .window-mode-toggle:active {
-      transform: scale(0.92);
-    }
-
-    .window-mode-toggle:focus-visible {
-      outline: 2px solid color-mix(in srgb, var(--meter-fill) 55%, transparent);
-      outline-offset: 1px;
-    }
-
-    .window-mode-toggle::after {
-      top: auto;
-      bottom: calc(100% + 7px);
-      transform: translate(-50%, 2px) scale(0.97);
-      transform-origin: bottom center;
-    }
-
-    .window-mode-toggle:hover::after,
-    .window-mode-toggle:focus-visible::after {
-      transform: translate(-50%, 0) scale(1);
     }
 
     .options-menu > summary i {

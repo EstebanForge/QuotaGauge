@@ -15,8 +15,8 @@ export class UpdateController {
     manual: boolean,
     onChecked: (checkedAt: string) => void,
     onMessage: (message: string) => void,
-  ) {
-    if (this.checking || this.installing) return;
+  ): Promise<UpdateStatus | undefined> {
+    if (this.checking || this.installing) return undefined;
     this.checking = true;
     if (manual) this.error = null;
     try {
@@ -24,8 +24,10 @@ export class UpdateController {
       this.status = status;
       onChecked(new SvelteDate().toISOString());
       if (manual) onMessage(updateCheckMessage(status));
+      return status;
     } catch (error) {
       if (manual) this.error = updateFailure(error, 'Updates could not be checked.');
+      return undefined;
     } finally {
       this.checking = false;
     }
