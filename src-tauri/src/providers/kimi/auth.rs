@@ -6,7 +6,7 @@ use crate::{
 use super::KimiError;
 
 const CONFIG_PATHS: &[&str] = &["~/.config/quotagauge/kimi.json"];
-const ENVIRONMENT_NAMES: &[&str] = &["KIMI_API_KEY"];
+const ENVIRONMENT_NAMES: &[&str] = &["KIMI_API_KEY", "KIMI_CODE_API_KEY"];
 
 #[derive(Clone)]
 pub struct KimiAuthStore {

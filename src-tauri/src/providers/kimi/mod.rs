@@ -1,5 +1,6 @@
 mod auth;
 mod client;
+mod local_credentials;
 mod mapper;
 
 use std::sync::Arc;
@@ -52,14 +53,30 @@ pub(crate) fn definition() -> ProviderDefinition {
                 true,
                 "W",
             ),
+            MetricDefinition::quota(
+                "kimi.monthly",
+                "Monthly",
+                "monthly",
+                false,
+                true,
+                MetricSection::AlwaysVisible,
+                true,
+                "M",
+            ),
         ],
     }
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub(super) enum KimiError {
-    #[error("Add a Kimi API key in Customize or set KIMI_API_KEY.")]
+    #[error(
+        "Add a Kimi API key in Customize, sign in with the Kimi CLI (kimi), or connect Kimi in pi."
+    )]
     MissingKey,
+    #[error("The Kimi sign-in expired. Run the Kimi CLI (kimi) or pi to renew it.")]
+    SigninExpired,
+    #[error("The Kimi sign-in was rejected. Run the Kimi CLI (kimi) or pi to sign in again.")]
+    SigninRejected,
     #[error("The Kimi API key is invalid. Check it in the Kimi Code console.")]
     InvalidKey,
     #[error("Could not reach Kimi. Check your internet connection.")]
@@ -84,7 +101,10 @@ impl From<crate::providers::http::HttpError> for KimiError {
 impl From<KimiError> for ProviderError {
     fn from(error: KimiError) -> Self {
         let kind = match error {
-            KimiError::MissingKey | KimiError::InvalidKey => ProviderErrorKind::Authentication,
+            KimiError::MissingKey
+            | KimiError::InvalidKey
+            | KimiError::SigninExpired
+            | KimiError::SigninRejected => ProviderErrorKind::Authentication,
             KimiError::ConnectionFailed => ProviderErrorKind::Network,
             KimiError::RequestFailed(429) => ProviderErrorKind::RateLimited,
             KimiError::RequestFailed(401) => ProviderErrorKind::Authentication,
@@ -101,6 +121,8 @@ impl From<KimiError> for ProviderError {
 pub struct KimiProvider {
     auth: KimiAuthStore,
     client: Arc<KimiClient>,
+    /// Test seam; None resolves the home directory from the environment.
+    home: Option<std::path::PathBuf>,
 }
 
 impl KimiProvider {
@@ -108,6 +130,7 @@ impl KimiProvider {
         Ok(Self {
             auth: KimiAuthStore::new(),
             client: Arc::new(KimiClient::new().map_err(ProviderError::from)?),
+            home: None,
         })
     }
 
@@ -116,11 +139,26 @@ impl KimiProvider {
         Self {
             auth,
             client: Arc::new(client),
+            home: None,
         }
     }
 
-    fn refresh_snapshot(&self, api_key: &str) -> Result<ProviderSnapshot, ProviderError> {
-        let response = required_response(self.client.fetch(api_key))?;
+    #[cfg(test)]
+    fn with_local_home(mut self, home: std::path::PathBuf) -> Self {
+        self.home = Some(home);
+        self
+    }
+
+    fn local_home(&self) -> Option<std::path::PathBuf> {
+        self.home.clone().or_else(local_credentials::env_home)
+    }
+
+    fn refresh_snapshot(
+        &self,
+        api_key: &str,
+        source: CredentialSource,
+    ) -> Result<ProviderSnapshot, ProviderError> {
+        let response = required_response(self.client.fetch(api_key), source)?;
         let mapped = map_usage(&response.body)?;
         Ok(ProviderSnapshot {
             provider_id: "kimi".into(),
@@ -135,6 +173,12 @@ impl KimiProvider {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CredentialSource {
+    ApiKey,
+    LocalSignin,
+}
+
 impl UsageProvider for KimiProvider {
     fn definition(&self) -> ProviderDefinition {
         definition()
@@ -142,15 +186,27 @@ impl UsageProvider for KimiProvider {
 
     fn has_local_credentials(&self) -> bool {
         self.auth.has_local_credentials()
+            || self
+                .local_home()
+                .is_some_and(|home| local_credentials::load_from_home(&home).is_some())
     }
 
     fn refresh(&self) -> Result<ProviderSnapshot, ProviderError> {
-        let api_key = self
-            .auth
-            .load()
-            .map_err(ProviderError::from)?
+        if let Some(key) = self.auth.load().map_err(ProviderError::from)? {
+            return self.refresh_snapshot(key.as_str(), CredentialSource::ApiKey);
+        }
+        let home = self
+            .local_home()
             .ok_or_else(|| ProviderError::from(KimiError::MissingKey))?;
-        self.refresh_snapshot(api_key.as_str())
+        match local_credentials::load_from_home(&home) {
+            Some(local_credentials::LocalKimiCredential::Fresh(access)) => {
+                self.refresh_snapshot(&access, CredentialSource::LocalSignin)
+            }
+            Some(local_credentials::LocalKimiCredential::Expired) => {
+                Err(ProviderError::from(KimiError::SigninExpired))
+            }
+            None => Err(ProviderError::from(KimiError::MissingKey)),
+        }
     }
 
     fn api_key_status(&self) -> Option<Result<ApiKeyStatus, ProviderError>> {
@@ -172,10 +228,14 @@ impl UsageProvider for KimiProvider {
 
 fn required_response(
     response: Result<EndpointResponse, KimiError>,
+    source: CredentialSource,
 ) -> Result<EndpointResponse, KimiError> {
     let response = response?;
     if matches!(response.status, StatusCode::UNAUTHORIZED) {
-        return Err(KimiError::InvalidKey);
+        return Err(match source {
+            CredentialSource::ApiKey => KimiError::InvalidKey,
+            CredentialSource::LocalSignin => KimiError::SigninRejected,
+        });
     }
     if !response.status.is_success() {
         return Err(KimiError::RequestFailed(response.status.as_u16()));
@@ -190,6 +250,8 @@ mod tests {
         sync::{Arc, Mutex},
         time::Duration,
     };
+
+    use tempfile::tempdir;
 
     use crate::{
         models::ProviderErrorKind,
@@ -270,6 +332,72 @@ mod tests {
     }
 
     #[test]
+    fn local_cli_and_pi_credentials_work_without_an_api_key() {
+        let future = (chrono::Utc::now().timestamp_millis() + 3_600_000) / 1_000;
+        for (relative_path, payload) in [
+            (
+                ".kimi-code/credentials/kimi-code.json",
+                format!(
+                    r#"{{"access_token":"local-access","refresh_token":"r","expires_at":{future}}}"#
+                ),
+            ),
+            (
+                ".pi/agent/auth.json",
+                format!(
+                    r#"{{"kimi-coding":{{"type":"oauth","access":"local-access","refresh":"r","expires":{}}}}}"#,
+                    future * 1_000
+                ),
+            ),
+        ] {
+            let home = tempdir().unwrap();
+            let path = home.path().join(relative_path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, payload).unwrap();
+
+            let provider = KimiProvider::with_dependencies(
+                auth(None),
+                KimiClient::for_test(
+                    &test_http::serve_once(200, &[], QUOTA_BODY),
+                    Duration::from_secs(1),
+                ),
+            )
+            .with_local_home(home.path().to_path_buf());
+
+            let snapshot = provider.refresh().unwrap();
+            assert_eq!(snapshot.provider_id, "kimi");
+            assert!(provider.has_local_credentials());
+        }
+    }
+
+    #[test]
+    fn expired_local_credentials_still_require_a_key() {
+        let stale = chrono::Utc::now().timestamp_millis();
+        let home = tempdir().unwrap();
+        let path = home.path().join(".kimi-code/credentials/kimi-code.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            path,
+            format!(
+                r#"{{"access_token":"local-access","expires_at":{}}}"#,
+                stale / 1_000
+            ),
+        )
+        .unwrap();
+
+        let error = KimiProvider::with_dependencies(
+            auth(None),
+            KimiClient::for_test(
+                &test_http::serve_once(200, &[], QUOTA_BODY),
+                Duration::from_secs(1),
+            ),
+        )
+        .with_local_home(home.path().to_path_buf())
+        .refresh()
+        .unwrap_err();
+        assert_eq!(error.kind(), ProviderErrorKind::Authentication);
+    }
+
+    #[test]
     fn missing_invalid_and_rate_limited_keys_are_distinct() {
         let missing = KimiProvider::with_dependencies(
             auth(None),
@@ -278,6 +406,8 @@ mod tests {
                 Duration::from_secs(1),
             ),
         )
+        // An empty home keeps the real machine's local Kimi credentials out of the test.
+        .with_local_home(tempdir().unwrap().path().to_path_buf())
         .refresh()
         .unwrap_err();
         assert_eq!(missing.kind(), ProviderErrorKind::Authentication);
