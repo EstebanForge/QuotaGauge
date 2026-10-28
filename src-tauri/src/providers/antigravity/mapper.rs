@@ -135,7 +135,11 @@ pub fn parse_agy_cli_quota(value: &Value) -> Option<QuotaWindow> {
             if let Some(fraction) = bucket.get("remaining_fraction").and_then(number) {
                 normalized["remainingFraction"] = Value::from(fraction);
             }
-            if let Some(id) = bucket.get("bucket_id").and_then(Value::as_str) {
+            if let Some(id) = bucket
+                .get("bucket_id")
+                .or_else(|| bucket.get("id"))
+                .and_then(Value::as_str)
+            {
                 normalized["bucketId"] = Value::from(id);
             }
             normalized
@@ -411,6 +415,21 @@ mod tests {
     };
 
     #[test]
+    fn legacy_bucket_id_wins_over_the_newer_id_field() {
+        let parsed = parse_agy_cli_quota(&json!({
+            "groups": [
+                {"name": "Gemini 4 Argon", "buckets": [
+                    {"bucket_id": "legacy-id", "id": "newer-id", "window": "weekly",
+                     "remaining_fraction": 0.19}
+                ]}
+            ]
+        }));
+
+        let argon = parsed.unwrap();
+        assert_eq!(argon.id, "argonWeekly");
+    }
+
+    #[test]
     fn maps_authoritative_pool_summary_in_fixed_order() {
         let value: Value = serde_json::from_str(include_str!("fixtures/quota_summary.json"))
             .expect("valid fixture");
@@ -507,7 +526,7 @@ mod tests {
                     {"bucket_id": "gemini-5h", "remaining_fraction": 0.9}
                 ]},
                 {"name": "Gemini 4 Argon", "buckets": [
-                    {"bucket_id": "argon-weekly", "window": "weekly", "remaining_fraction": 0.19}
+                    {"id": "gemini-argon-wtu-weekly", "window": "weekly", "remaining_fraction": 0.19}
                 ]}
             ]}}
         });

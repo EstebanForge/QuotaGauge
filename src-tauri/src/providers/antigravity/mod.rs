@@ -491,10 +491,10 @@ fn snapshot(plan: Option<String>, quotas: Vec<crate::models::QuotaWindow>) -> Pr
 }
 
 fn has_refresh_source(
-    has_credentials: bool,
-    local_server_available: impl FnOnce() -> bool,
+    local_server_available: bool,
+    has_credentials: impl FnOnce() -> bool,
 ) -> bool {
-    has_credentials || local_server_available()
+    local_server_available || has_credentials()
 }
 
 impl crate::providers::UsageProvider for AntigravityProvider {
@@ -503,7 +503,7 @@ impl crate::providers::UsageProvider for AntigravityProvider {
     }
 
     fn has_local_credentials(&self) -> bool {
-        has_refresh_source(auth::has_local_credentials(), || discover().is_some())
+        has_refresh_source(discover().is_some(), auth::has_local_credentials)
     }
 
     fn refresh(&self) -> Result<ProviderSnapshot, crate::providers::ProviderError> {

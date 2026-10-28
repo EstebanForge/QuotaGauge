@@ -123,6 +123,44 @@ impl AccessTokenCache {
 }
 
 pub fn load_token() -> Result<Option<AntigravityToken>, AntigravityError> {
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from);
+    match home {
+        Some(home) if !home.as_os_str().is_empty() => load_token_from_home(&home),
+        _ => load_token_from_store(),
+    }
+}
+
+fn load_token_from_home(home: &Path) -> Result<Option<AntigravityToken>, AntigravityError> {
+    // Local files avoid recurring keychain prompts; keychain remains the final fallback.
+    for relative_path in [
+        ".gemini/antigravity-cli/antigravity-oauth-token",
+        ".gemini/antigravity-acp/acp_token.json",
+        ".gemini/jetski-standalone-oauth-token",
+    ] {
+        if let Ok(Some(bytes)) = read_bounded(&home.join(relative_path)) {
+            if let Some(credentials) = extract_file_token(&bytes) {
+                return Ok(Some(credentials));
+            }
+        }
+    }
+    load_token_from_store()
+}
+
+// Files must be JSON credentials; bare strings stay keychain-only.
+fn extract_file_token(bytes: &[u8]) -> Option<AntigravityToken> {
+    let text = std::str::from_utf8(bytes)
+        .ok()?
+        .trim_start_matches('\u{feff}')
+        .trim();
+    if !text.starts_with('{') {
+        return None;
+    }
+    extract_token(bytes)
+}
+
+fn load_token_from_store() -> Result<Option<AntigravityToken>, AntigravityError> {
     let Some(raw) = read_generic_password("gemini", "antigravity")
         .map_err(|_| AntigravityError::CredentialStoreUnreadable)?
     else {
@@ -288,8 +326,8 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        credential_fingerprint, credential_state_is_actionable, extract_token, AccessTokenCache,
-        AntigravityToken,
+        credential_fingerprint, credential_state_is_actionable, extract_token,
+        load_token_from_home, AccessTokenCache, AntigravityToken,
     };
     use crate::providers::antigravity::AntigravityError;
 
@@ -301,6 +339,53 @@ mod tests {
         assert_eq!(token.access_token.as_deref(), Some("access"));
         assert_eq!(token.refresh_token.as_deref(), Some("refresh"));
         assert!(token.expiry.is_some());
+    }
+
+    #[test]
+    fn unusable_first_file_falls_through_to_the_next_one() {
+        let directory = tempdir().unwrap();
+        let stale = directory
+            .path()
+            .join(".gemini/antigravity-cli/antigravity-oauth-token");
+        fs::create_dir_all(stale.parent().unwrap()).unwrap();
+        fs::write(stale, "not-json-at-all").unwrap();
+        let acp = directory
+            .path()
+            .join(".gemini/antigravity-acp/acp_token.json");
+        fs::create_dir_all(acp.parent().unwrap()).unwrap();
+        fs::write(acp, r#"{"access_token":"acp-access"}"#).unwrap();
+
+        let credentials = load_token_from_home(directory.path()).unwrap().unwrap();
+        assert_eq!(credentials.access_token.as_deref(), Some("acp-access"));
+    }
+
+    #[test]
+    fn cli_acp_and_jetski_files_are_valid_local_sources() {
+        const REFRESH: &str = "file-refresh";
+        let flat = format!(r#"{{"refresh_token":"{REFRESH}"}}"#);
+        let nested = format!(
+            r#"{{"token":{{"access_token":"file-access","refresh_token":"{REFRESH}","expiry":"2026-10-27T12:10:36-03:00"}},"auth_method":"consumer","id_token":"id"}}"#
+        );
+        for (relative_path, payload) in [
+            (
+                ".gemini/antigravity-cli/antigravity-oauth-token",
+                flat.as_str(),
+            ),
+            (".gemini/antigravity-acp/acp_token.json", flat.as_str()),
+            (".gemini/jetski-standalone-oauth-token", nested.as_str()),
+        ] {
+            let directory = tempdir().unwrap();
+            let path = directory.path().join(relative_path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, payload).unwrap();
+
+            let credentials = load_token_from_home(directory.path()).unwrap().unwrap();
+            assert_eq!(
+                credentials.refresh_token.as_deref(),
+                Some("file-refresh"),
+                "{relative_path}"
+            );
+        }
     }
 
     #[test]
