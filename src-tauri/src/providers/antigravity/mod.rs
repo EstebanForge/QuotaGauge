@@ -33,7 +33,7 @@ const RETRIEVE_QUOTA_PATH: &str = "/v1internal:retrieveUserQuota";
 /// drive from a refresh.
 const AGY_CLI_TIMEOUT: Duration = Duration::from_secs(15);
 const AGY_CLI_PATH_ENV: &str = "ANTIGRAVITY_CLI_PATH";
-const AGY_PRINT_SUBCOMMANDS: [&str; 2] = ["quota", "usage"];
+const AGY_PRINT_SUBCOMMANDS: [&str; 2] = ["/quota", "/usage"];
 
 pub(crate) fn definition() -> ProviderDefinition {
     ProviderDefinition {
@@ -413,8 +413,8 @@ fn agy_cli_candidates(cli_path_env: Option<&str>, home: Option<&Path>) -> Vec<Pa
     candidates
 }
 
-/// `agy` exposes non-interactive print reports since 1.1.11; `/quota` and `/usage` differ
-/// across CLI builds, so both are attempted against a resolvable binary.
+/// The slash forms are agy's non-interactive print reports; the bare word is answered as a chat
+/// prompt (slow, burns tokens, no groups in the JSON), so it must never be spawned.
 fn argon_from_cli_report(program: &Path) -> Option<QuotaWindow> {
     for subcommand in AGY_PRINT_SUBCOMMANDS {
         let mut command = crate::child_process::background_command(program);
@@ -665,7 +665,9 @@ mod tests {
         std::fs::write(
             &script,
             concat!(
-                "#!/bin/sh\necho '",
+                "#!/bin/sh\n",
+                "if [ \"$2\" != \"/quota\" ]; then exit 1; fi\n",
+                "echo '",
                 "{\"command\":{\"data\":{\"groups\":[{\"name\":\"Gemini 4 Argon\",\"buckets\":[",
                 "{\"bucket_id\":\"argon-weekly\",\"window\":\"weekly\",\"remaining_fraction\":0.19}",
                 "]}]}}}'\n"
@@ -689,7 +691,7 @@ mod tests {
             &script,
             concat!(
                 "#!/bin/sh\n",
-                "if [ \"$2\" = \"/quota\" ]; then exit 1; fi\n",
+                "if [ \"$2\" != \"/usage\" ]; then exit 1; fi\n",
                 "if [ -n \"$AGY_CLI_DISABLE_AUTO_UPDATE\" ]; then fraction=0.81; else fraction=0.99; fi\n",
                 "echo '{\"command\":{\"data\":{\"groups\":[{\"name\":\"Gemini 4 Argon\",\"buckets\":[",
                 "{\"bucket_id\":\"argon-weekly\",\"window\":\"weekly\",\"remaining_fraction\":'\"$fraction\"'}]}]}}}'\n"
