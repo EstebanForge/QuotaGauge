@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.6 - 2026-10-28
+
+### Fixed
+
+- Antigravity: the Argon meter loads again. QuotaGauge asked the agy CLI in a way that triggers a chat reply instead of the quota report, so Argon read no data; the correct report form is used now.
+
 ## 0.6.5 - 2026-10-28
 
 ### Fixed
