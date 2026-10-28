@@ -99,7 +99,7 @@ $env:LOCALAPPDATA = Join-Path $smokeRoot 'local'
 New-Item -ItemType Directory -Force -Path $installRoot, $env:APPDATA, $env:LOCALAPPDATA | Out-Null
 $stdout = Join-Path $smokeRoot 'stdout.log'
 $stderr = Join-Path $smokeRoot 'stderr.log'
-$appLog = Join-Path $env:LOCALAPPDATA 'QuotaGauge\logs\QuotaGauge.log'
+$logDir = Join-Path $env:LOCALAPPDATA 'QuotaGauge\logs'
 
 $process = $null
 $uninstaller = $null
@@ -140,11 +140,13 @@ try {
   $startupComplete = $false
   for ($attempt = 0; $attempt -lt 60; $attempt++) {
     if ($process.HasExited) {
-      Get-Content -LiteralPath $stdout, $stderr, $appLog -ErrorAction SilentlyContinue
+      Get-Content -LiteralPath $stdout, $stderr -ErrorAction SilentlyContinue
       throw 'QuotaGauge exited during the Windows tray startup smoke test.'
     }
-    if (Test-Path -LiteralPath $appLog -PathType Leaf) {
-      [string]$appLogContents = Get-Content -LiteralPath $appLog -Raw -ErrorAction SilentlyContinue
+    $appLog = Get-ChildItem -LiteralPath $logDir -Filter 'QuotaGauge-*.log' -File -ErrorAction SilentlyContinue |
+      Sort-Object LastWriteTime | Select-Object -Last 1
+    if ($appLog) {
+      [string]$appLogContents = Get-Content -LiteralPath $appLog.FullName -Raw -ErrorAction SilentlyContinue
       $trayReady = $appLogContents.Contains('system tray integration ready')
       $startupComplete = $appLogContents.Contains('QuotaGauge startup completed')
       if ($trayReady -and $startupComplete) {
@@ -154,7 +156,7 @@ try {
     Start-Sleep -Seconds 1
   }
   if (!$trayReady -or !$startupComplete) {
-    Get-Content -LiteralPath $stdout, $stderr, $appLog -ErrorAction SilentlyContinue
+    Get-Content -LiteralPath $stdout, $stderr -ErrorAction SilentlyContinue
     throw 'QuotaGauge did not report a ready Windows tray before the startup deadline.'
   }
 

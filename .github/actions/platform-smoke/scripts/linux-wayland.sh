@@ -30,7 +30,7 @@ dbus-run-session -- bash -euo pipefail -c '
   mkdir -p "${XDG_CONFIG_HOME}" "${XDG_STATE_HOME}"
   chmod 700 "${XDG_RUNTIME_DIR}"
   stdio_log="${runner_temp}/quotagauge-wayland-app-${RANDOM}.log"
-  runtime_log="${XDG_STATE_HOME}/quotagauge/logs/QuotaGauge.log"
+  
   weston_log="${runner_temp}/quotagauge-weston-${RANDOM}.log"
   weston --backend=headless-backend.so --socket="${WAYLAND_DISPLAY}" --idle-time=0 \
     --log="${weston_log}" &
@@ -63,6 +63,7 @@ dbus-run-session -- bash -euo pipefail -c '
   app_pid=$!
   ready=false
   for _ in $(seq 1 30); do
+    runtime_log="$(find "${XDG_STATE_HOME}/quotagauge/logs" -name "QuotaGauge-*.log" -type f 2>/dev/null | sort | tail -1)"
     if ! kill -0 "${app_pid}" 2>/dev/null; then
       cat "${stdio_log}" >&2 || true
       cat "${runtime_log}" >&2 || true

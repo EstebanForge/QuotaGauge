@@ -377,9 +377,13 @@ pub fn run() {
             logging::set_level(settings.get().log_level);
             app_info!(
                 "config",
-                "QuotaGauge v{} starting (level={}, log=QuotaGauge.log)",
+                "QuotaGauge v{} starting (level={}, log={})",
                 app.package_info().version,
-                logging::current_level().log_label()
+                logging::current_level().log_label(),
+                logging::log_path()
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or_default()
             );
             let notifications = Arc::new(NotificationEvaluator::default());
             app.manage(registry.clone());

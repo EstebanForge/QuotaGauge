@@ -9,7 +9,7 @@ use std::{
     },
 };
 
-use chrono::{SecondsFormat, Utc};
+use chrono::{DateTime, SecondsFormat, Utc};
 use regex::{Captures, Regex};
 
 use crate::models::LogLevel;
@@ -24,13 +24,7 @@ pub fn init(path: PathBuf, level: LogLevel) {
     if LOGGER.get().is_some() {
         return;
     }
-    let mut sink = LogFile::new(path, DEFAULT_MAX_BYTES);
-    if let Err(error) = sink.open() {
-        eprintln!("QuotaGauge file log disabled: {error}");
-    }
-    let _ = LOGGER.set(AppLogger {
-        sink: Mutex::new(sink),
-    });
+    let _ = LOGGER.set(AppLogger::new(path));
 }
 
 pub fn set_level(level: LogLevel) {
@@ -59,13 +53,7 @@ pub fn emit(level: LogLevel, tag: &str, arguments: fmt::Arguments<'_>) {
     let Some(logger) = LOGGER.get() else {
         return;
     };
-    let Ok(mut sink) = logger.sink.lock() else {
-        eprintln!("QuotaGauge file log disabled: lock unavailable");
-        return;
-    };
-    if let Err(error) = sink.append(&line) {
-        eprintln!("QuotaGauge file log disabled: {error}");
-    }
+    logger.append_with_month(&line, &month_stamp(Utc::now()));
 }
 
 fn format_line(timestamp: &str, level: LogLevel, tag: &str, message: &str) -> String {
@@ -77,16 +65,127 @@ pub fn log_path() -> PathBuf {
         .get()
         .and_then(|logger| {
             logger
-                .sink
+                .state
                 .lock()
                 .ok()
-                .map(|sink| sink.path().to_path_buf())
+                .map(|state| state.sink.path().to_path_buf())
         })
         .unwrap_or_else(default_log_path)
 }
 
 pub fn default_log_path() -> PathBuf {
-    default_log_directory().join("QuotaGauge.log")
+    default_log_directory().join(monthly_log_file_name(Utc::now()))
+}
+
+fn monthly_log_file_name(now: DateTime<Utc>) -> String {
+    format!("QuotaGauge-{}.log", now.format("%Y%m"))
+}
+
+fn month_stamp(now: DateTime<Utc>) -> String {
+    now.format("%Y%m").to_string()
+}
+
+/// File-name template a monthly log rotates inside: the original path's directory and stem,
+/// with the month inserted before the extension.
+struct LogTemplate {
+    directory: PathBuf,
+    stem: String,
+    extension: Option<String>,
+}
+
+impl LogTemplate {
+    fn from_path(path: &Path) -> Self {
+        let stem = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("QuotaGauge");
+        Self {
+            directory: path
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(std::env::temp_dir),
+            stem: stem.strip_month_suffix().to_owned(),
+            extension: path
+                .extension()
+                .and_then(|value| value.to_str())
+                .map(str::to_owned),
+        }
+    }
+
+    fn path_for_month(&self, month: &str) -> PathBuf {
+        let name = match &self.extension {
+            Some(extension) => format!("{}-{month}.{extension}", self.stem),
+            None => format!("{}-{month}", self.stem),
+        };
+        self.directory.join(name)
+    }
+}
+
+/// A shipped log name already carries the starting month (`QuotaGauge-202610.log`); the rotating
+/// stem is whatever precedes that stamp so later months never accumulate suffixes.
+trait StripMonthSuffix {
+    fn strip_month_suffix(&self) -> &str;
+}
+
+impl StripMonthSuffix for str {
+    fn strip_month_suffix(&self) -> &str {
+        let bytes = self.as_bytes();
+        if bytes.len() > 7 && bytes[bytes.len() - 7] == b'-' {
+            let stamp = &self[self.len() - 6..];
+            if stamp.chars().all(|character| character.is_ascii_digit()) {
+                return &self[..self.len() - 7];
+            }
+        }
+        self
+    }
+}
+
+struct AppLogger {
+    state: Mutex<LogState>,
+}
+
+struct LogState {
+    sink: LogFile,
+    template: LogTemplate,
+    month: String,
+}
+
+impl AppLogger {
+    fn new(path: PathBuf) -> Self {
+        let template = LogTemplate::from_path(&path);
+        let mut sink = LogFile::new(path, DEFAULT_MAX_BYTES);
+        if let Err(error) = sink.open() {
+            eprintln!("QuotaGauge file log disabled: {error}");
+        }
+        Self {
+            state: Mutex::new(LogState {
+                sink,
+                template,
+                month: month_stamp(Utc::now()),
+            }),
+        }
+    }
+
+    fn append_with_month(&self, line: &str, month: &str) {
+        let Ok(mut state) = self.state.lock() else {
+            eprintln!("QuotaGauge file log disabled: lock unavailable");
+            return;
+        };
+        // YYYYMM stamps compare lexicographically; only roll forward so a thread that read the
+        // stamp before a swap cannot rotate the sink back into the old month.
+        if month > state.month.as_str() {
+            let path = state.template.path_for_month(month);
+            let mut sink = LogFile::new(path, DEFAULT_MAX_BYTES);
+            if let Err(error) = sink.open() {
+                eprintln!("QuotaGauge file log disabled: {error}");
+            }
+            state.sink = sink;
+            state.month = month.to_owned();
+        }
+        if let Err(error) = state.sink.append(line) {
+            eprintln!("QuotaGauge file log disabled: {error}");
+        }
+    }
 }
 
 fn default_log_directory() -> PathBuf {
@@ -124,10 +223,6 @@ fn home_directory() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
-}
-
-struct AppLogger {
-    sink: Mutex<LogFile>,
 }
 
 pub struct LogFile {
@@ -604,12 +699,19 @@ mod tests {
     }
 
     #[test]
-    fn default_path_uses_the_platform_log_directory_and_advertised_file_name() {
+    fn default_path_uses_the_platform_log_directory_and_a_monthly_file_name() {
         let path = default_log_path();
-        assert_eq!(
-            path.file_name().and_then(|value| value.to_str()),
-            Some("QuotaGauge.log")
-        );
+        let name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
+        assert!(name.starts_with("QuotaGauge-"), "unexpected name {name}");
+        assert!(name.ends_with(".log"), "unexpected name {name}");
+        let stamp = name
+            .trim_start_matches("QuotaGauge-")
+            .trim_end_matches(".log");
+        assert_eq!(stamp.len(), 6, "unexpected stamp {stamp}");
+        assert!(stamp.chars().all(|character| character.is_ascii_digit()));
         #[cfg(not(target_os = "macos"))]
         assert_eq!(
             path.parent()
@@ -630,6 +732,53 @@ mod tests {
         assert!(path.to_string_lossy().contains("QuotaGauge\\logs"));
         #[cfg(all(unix, not(target_os = "macos")))]
         assert!(path.to_string_lossy().contains("quotagauge/logs"));
+    }
+
+    #[test]
+    fn monthly_template_inserts_the_month_before_the_extension() {
+        use super::LogTemplate;
+
+        let template = LogTemplate::from_path(Path::new("/logs/QuotaGauge-202601.log"));
+        assert_eq!(
+            template.path_for_month("202611"),
+            Path::new("/logs/QuotaGauge-202611.log")
+        );
+
+        let extension_less = LogTemplate::from_path(Path::new("QuotaGauge"));
+        assert_eq!(
+            extension_less.path_for_month("202611"),
+            Path::new("QuotaGauge-202611")
+        );
+    }
+
+    #[test]
+    fn append_rotates_to_a_new_file_when_the_month_changes() {
+        let directory = tempdir().unwrap();
+        let current = super::month_stamp(chrono::Utc::now());
+        let next = super::month_stamp(chrono::Utc::now() + chrono::Duration::days(31));
+        // Production passes the default path, whose name embeds the starting month.
+        let logger =
+            super::AppLogger::new(directory.path().join(format!("QuotaGauge-{current}.log")));
+
+        logger.append_with_month("first line", &current);
+        logger.append_with_month("second line", &next);
+        logger.append_with_month("third line", &next);
+
+        let current_file = directory.path().join(format!("QuotaGauge-{current}.log"));
+        let next_file = directory.path().join(format!("QuotaGauge-{next}.log"));
+        let old = fs::read_to_string(&current_file).unwrap();
+        assert!(old.contains("first line"));
+        assert!(!old.contains("second line"));
+
+        let new = fs::read_to_string(&next_file).unwrap();
+        assert!(new.contains("second line"));
+        assert!(new.contains("third line"));
+
+        // A late line stamped with the older month never rotates the sink backwards.
+        logger.append_with_month("fourth line", &current);
+        let new = fs::read_to_string(&next_file).unwrap();
+        assert!(new.contains("fourth line"));
+        assert_eq!(fs::read_to_string(&current_file).unwrap(), old);
     }
 
     #[test]

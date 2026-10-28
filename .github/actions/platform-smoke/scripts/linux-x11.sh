@@ -33,7 +33,7 @@ xvfb-run -a dbus-run-session -- bash -euo pipefail -c '
   export XDG_SESSION_TYPE="x11"
   mkdir -p "${XDG_CONFIG_HOME}" "${XDG_STATE_HOME}"
   stdio_log="${runner_temp}/quotagauge-x11-app-${RANDOM}.log"
-  runtime_log="${XDG_STATE_HOME}/quotagauge/logs/QuotaGauge.log"
+  
   wm_log="${runner_temp}/quotagauge-x11-openbox-${RANDOM}.log"
   watcher_log="${runner_temp}/quotagauge-x11-watcher-${RANDOM}.log"
   watcher_pid=""
@@ -91,6 +91,7 @@ xvfb-run -a dbus-run-session -- bash -euo pipefail -c '
   app_pid=$!
   ready=false
   for _ in $(seq 1 30); do
+    runtime_log="$(find "${XDG_STATE_HOME}/quotagauge/logs" -name "QuotaGauge-*.log" -type f 2>/dev/null | sort | tail -1)"
     if ! kill -0 "${app_pid}" 2>/dev/null; then
       cat "${stdio_log}" >&2 || true
       cat "${runtime_log}" >&2 || true

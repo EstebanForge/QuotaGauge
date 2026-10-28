@@ -67,7 +67,7 @@ install_root="$(mktemp -d "${runner_temp}/quotagauge-macos-install.XXXXXX")"
 app="${install_root}/Applications/QuotaGauge.app"
 binary="${app}/Contents/MacOS/quotagauge"
 launch_log="${runner_temp}/quotagauge-macos-${RANDOM}.log"
-app_log="${HOME}/Library/Logs/QuotaGauge/QuotaGauge.log"
+log_dir="${HOME}/Library/Logs/QuotaGauge"
 app_pid=''
 mounted=false
 cleanup() {
@@ -87,8 +87,8 @@ if pgrep -x quotagauge >/dev/null 2>&1; then
   echo 'Refusing to disturb an existing QuotaGauge process on the macOS runner.' >&2
   exit 1
 fi
-if test -e "${app_log}"; then
-  echo "Refusing to use an existing QuotaGauge log for the macOS smoke test: ${app_log}" >&2
+if compgen -G "${log_dir}/QuotaGauge-*.log" > /dev/null; then
+  echo "Refusing to use existing QuotaGauge logs for the macOS smoke test: ${log_dir}" >&2
   exit 1
 fi
 
@@ -147,6 +147,7 @@ tray_ready=false
 startup_complete=false
 for _ in $(seq 1 30); do
   app_pid="$(pgrep -f "${binary}" | head -n 1 || true)"
+  app_log="$(find "${log_dir}" -name "QuotaGauge-*.log" -type f 2>/dev/null | sort | tail -1)"
   if test -f "${app_log}"; then
     grep -Fq 'system tray integration ready' "${app_log}" && tray_ready=true
     grep -Fq 'QuotaGauge startup completed' "${app_log}" && startup_complete=true

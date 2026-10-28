@@ -124,7 +124,7 @@ if [[ -n $APP_LOG ]]; then
   cp "$APP_LOG" "$OUT/app-log.txt"
   pass "app log written: ${APP_LOG#"$HOME"/}"
 else
-  fail "no QuotaGauge.log found under the isolated HOME"
+  fail "no QuotaGauge-*.log found under the isolated HOME"
 fi
 
 if [[ $EXIT_CODE == 0 ]]; then
