@@ -75,6 +75,10 @@ Data flow: providers -> UsageService refresh (events `usage-state`, `open-screen
 
 - Versions must stay identical in `package.json`, `src-tauri/tauri.conf.json`,
   `src-tauri/Cargo.toml` — bump all three together; `verify:versions` enforces it.
+- Bump mechanics: `npm version <v> --no-git-tag-version` also repairs package-lock.json's root
+  version fields; set `tauri.conf.json` and `Cargo.toml` by hand, then `cargo update -p quotagauge`
+  syncs Cargo.lock. Prettier reformats `tauri.conf.json`'s dmg block on every write — revert that
+  drive-by reformat so the bump commit contains the version line only.
 - `scripts/verify/*.js` are NOT in `npm run verify` except `verify:contracts`' five. Run them
   after touching: Tauri commands (`verify-command-contract`), `models.rs` (`verify-model-contract`),
   provider wiring (`verify-provider-registry-contract` regex-asserts the exact
@@ -103,6 +107,15 @@ Data flow: providers -> UsageService refresh (events `usage-state`, `open-screen
   tarball + .sig + a fresh latest.json (three platform keys) to the release. Never rebuild
   dist after the version bump without rebuilding the binary: vite used to bake package.json's
   version into the UI; the app version now comes from the binary at runtime via getVersion().
+- Updater manifest: `.sig` files from `tauri signer sign` are ALREADY base64 of minisign text, and
+  `latest.json`'s `signature` field must carry that content verbatim (trimmed only). Base64-encoding
+  it a second time made every 0.6.2 download fail the updater's security check. Verify
+  cryptographically — the tauri CLI has no `verify` subcommand; build a tiny `minisign-verify`
+  binary (the same crate the plugin uses) against `plugins.updater.pubkey` in `tauri.conf.json` —
+  for all three platforms BEFORE upload, then re-verify the published manifest bytes from the
+  release URL. Signature-nonempty + HTTP 200 is not verification.
+- `cargo test` accepts ONE positional filter — additional filters go after `--`. The rtk output
+  wrapper misreports cargo test summaries; write the run to a file and grep it instead.
 - `generate_context!` embeds `dist/` at compile time: rebuild the frontend (`npm run build`)
   before any cargo build that should carry current assets, or you ship stale UI silently.
 - Rust style: no `unwrap`/`expect` outside `#[cfg(test)]`; typed errors internally, `String` only
@@ -111,6 +124,26 @@ Data flow: providers -> UsageService refresh (events `usage-state`, `open-screen
 - Frontend: Svelte 5 runes (`$state`), discriminated unions over boolean flags, behavioral tests in
   `App.test.ts`. Reuse the refresh epilogue helpers (`publish_refresh*` in notifications.rs), the
   shared HTTP client (`providers/http.rs`), and `apply_api_key_mutation` instead of re-inlining them.
+- Frontend test mocks must honor the real invoke contract: a catch-all resolving `undefined` for
+  `save_app_settings` poisons the settings mutation queue (a failed mutation bumps the generation,
+  so later saves cancel as stale and never invoke). Return
+  `{...dismissed, settings: args?.settings ?? dismissed.settings}`.
+- Update flow: `updates.check()` returns the fresh `UpdateStatus` or undefined (skipped/failed).
+  A manual check that finds the dismissed version clears the dismissal and installs when
+  installable; overrides must act only on the returned status, never on previously cached state.
+- `windowMode` is a REMOVED setting: floating is purely the no-tray fallback (`floats()` =
+  `!tray_available()`), popup chrome comes from `tauri.conf.json` at build time, and persisted
+  payloads still carrying `windowMode` must keep loading (serde default; schema_version stays 7).
+- Provider credentials are read-only reuse with a fixed precedence; never refresh on QuotaGauge's
+  side. Kimi: saved key/env (`KIMI_API_KEY`, `KIMI_CODE_API_KEY`) >
+  `~/.kimi-code/credentials/kimi-code.json` (`expires_at` unix seconds) > `~/.pi/agent/auth.json`
+  `kimi-coding` entry (`expires` unix millis) — refreshing would rotate the refresh token and break
+  the owning client's grant. Antigravity: local language-server first, then
+  `~/.gemini/antigravity-cli/antigravity-oauth-token`, `antigravity-acp/acp_token.json`,
+  `jetski-standalone-oauth-token`, OS keychain last; `~/.gemini/oauth_creds.json` belongs to
+  Google's Gemini CLI (can be a different Google account) and is deliberately NOT a source. Kimi
+  newer plans return ratio pools (`limit_5h`, `limit_month_total`); `limit_7d` is legacy and
+  `limit_month_code` shares the monthly pool (parsed, not shown).
 - `openquota` strings that remain are intentional (legacy migration in legacy.rs, api_key.rs
   LEGACY_SERVICE, README/installation.md migration notes, one log line). Do not "clean them up".
 - Repo is currently PRIVATE with CI + Release workflows disabled and Dependabot at 0 (stand-down);
