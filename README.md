@@ -34,15 +34,15 @@ QuotaGauge reads 12 providers out of the box. Most of them use the credentials a
 
 - [Claude Code](docs/providers/claude.md)
 - [Codex](docs/providers/codex.md)
-- [Cursor](docs/providers/cursor.md)
+- [Cursor](docs/providers/cursor.md) (not tested by me)
 - [Antigravity](docs/providers/antigravity.md)
 - [Copilot](docs/providers/copilot.md)
-- [Devin](docs/providers/devin.md)
-- [Grok](docs/providers/grok.md)
-- [OpenCode](docs/providers/opencode.md)
-- [OpenRouter](docs/providers/openrouter.md)
+- [Devin](docs/providers/devin.md) (not tested by me)
+- [Grok](docs/providers/grok.md) (not tested by me)
+- [OpenCode](docs/providers/opencode.md) (not tested by me)
+- [OpenRouter](docs/providers/openrouter.md) (not tested by me)
 - [Z.ai](docs/providers/zai.md)
-- [Kimi](docs/providers/kimi.md)
+- [Kimi](docs/providers/kimi.md) (not tested by me)
 - [MiniMax](docs/providers/minimax.md)
 
 Each provider has its own guide with everything it reads and where it reads it from.
