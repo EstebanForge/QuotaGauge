@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.6.2 - 2026-10-28
+
+### Fixed
+
+- Antigravity: quota lookups now read the local credential files written by the Antigravity CLI, ACP, and the standalone app before the OS keychain, so macOS stops asking for "gemini" keychain access on every refresh. Provider detection checks the running language server first for the same reason.
+- Antigravity: the agy CLI now reports Argon quota again (its JSON renamed `bucket_id` to `id`).
+- Kimi: usage responses that only contain the new ratio pools (`limit_5h`, `limit_7d`, `limit_month_total`) no longer fail; 0.6.1 could not read them and showed "usage data unavailable".
+
+### Added
+
+- Kimi: a Monthly meter for the newer plans that replaced the weekly quota with a monthly pool.
+- Kimi: without an API key, QuotaGauge now reuses the local Kimi Code CLI credential (`~/.kimi-code/credentials/kimi-code.json`) or the pi coding agent's `kimi-coding` sign-in (`~/.pi/agent/auth.json`), read-only. Tokens are never refreshed by QuotaGauge.
+- Kimi: the `KIMI_CODE_API_KEY` environment variable is honored alongside `KIMI_API_KEY`.
+
 ## 0.6.1 - 2026-10-28
 
 ### Fixed
