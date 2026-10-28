@@ -14,7 +14,6 @@ const settings: AppSettings = {
   theme: 'system',
   density: 'default',
   reduceAnimations: false,
-  windowMode: 'popup',
   menuBarStyle: 'text',
   usageDisplay: 'left',
   resetDisplay: 'countdown',

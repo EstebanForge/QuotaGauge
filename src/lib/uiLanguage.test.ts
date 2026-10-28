@@ -50,7 +50,6 @@ describe('native UI language contract', () => {
       'Global Shortcut',
       'Icon Style',
       'Appearance',
-      'Window Mode',
       'Usage Display',
       'Notifications',
       'Advanced',

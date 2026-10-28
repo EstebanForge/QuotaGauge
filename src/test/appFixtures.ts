@@ -281,7 +281,6 @@ export const settingsState: SettingsViewState = {
     theme: 'system',
     density: 'default',
     reduceAnimations: false,
-    windowMode: 'popup',
     menuBarStyle: 'text',
     usageDisplay: 'left',
     resetDisplay: 'countdown',

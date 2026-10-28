@@ -148,8 +148,7 @@ fn apply_linux_tray_fallback(app: &AppHandle) {
     app.state::<PopupDismissGuard>().cancel_pending();
 
     if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
-        let mode = app.state::<Arc<SettingsService>>().get().window_mode;
-        match window::apply_window_mode(&window, mode, true) {
+        match window::apply_window_chrome(&window) {
             Ok(()) => show_main_window(&window),
             Err(error) => {
                 app_warn!(
@@ -369,7 +368,7 @@ pub fn run() {
             let (settings_service, credential_detection_plan) =
                 SettingsService::new_deferred(storage.clone(), registry.clone())?;
             let settings = Arc::new(settings_service);
-            let floating_window = desktop_integration.apply_window_mode(settings.get().window_mode);
+            let floating_window = desktop_integration.apply_window_mode();
             let service = Arc::new(ProviderService::new_with_settings(
                 registry.clone(),
                 storage.clone(),
@@ -424,9 +423,7 @@ pub fn run() {
 
             if desktop_integration.is_floating() {
                 if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
-                    if let Err(error) =
-                        window::apply_window_mode(&window, settings.get().window_mode, true)
-                    {
+                    if let Err(error) = window::apply_window_chrome(&window) {
                         app_warn!(
                             "window",
                             "standalone startup mode could not be applied: {error}"

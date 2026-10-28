@@ -30,7 +30,6 @@ function settingsView(
       theme,
       density: 'default',
       reduceAnimations: false,
-      windowMode: 'popup',
       menuBarStyle: 'text',
       usageDisplay: 'left',
       resetDisplay: 'countdown',

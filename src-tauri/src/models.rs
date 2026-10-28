@@ -553,15 +553,6 @@ impl LogLevel {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum WindowMode {
-    Floating,
-    #[default]
-    #[serde(other)]
-    Popup,
-}
-
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct NotificationPreferences {
@@ -580,7 +571,6 @@ pub struct AppSettings {
     pub theme: ThemePreference,
     pub density: DensityPreference,
     pub reduce_animations: bool,
-    pub window_mode: WindowMode,
     pub menu_bar_style: MenuBarStyle,
     pub usage_display: UsageDisplay,
     pub reset_display: ResetDisplay,
@@ -606,7 +596,6 @@ impl Default for AppSettings {
             theme: ThemePreference::System,
             density: DensityPreference::Default,
             reduce_animations: false,
-            window_mode: WindowMode::Popup,
             menu_bar_style: MenuBarStyle::Bars,
             usage_display: UsageDisplay::Left,
             reset_display: ResetDisplay::Countdown,
@@ -650,7 +639,7 @@ pub struct SettingsViewState {
 mod tests {
     use super::{
         ApiKeyMutationOutcome, ApiKeyStatus, AppSettings, LogLevel, ProviderApiKeyState,
-        ProviderErrorKind, ProviderLink, ProviderSnapshot, ProviderViewState, WindowMode,
+        ProviderErrorKind, ProviderLink, ProviderSnapshot, ProviderViewState,
     };
 
     #[test]
@@ -661,7 +650,6 @@ mod tests {
         object.remove("lastUpdateCheckAt");
         object.remove("logLevel");
         object.remove("providerNames");
-        object.remove("windowMode");
         object.remove("reduceAnimations");
 
         let settings: AppSettings = serde_json::from_value(value).unwrap();
@@ -669,7 +657,6 @@ mod tests {
         assert!(settings.provider_names.is_empty());
         assert_eq!(settings.last_update_check_at, None);
         assert_eq!(settings.log_level, LogLevel::Info);
-        assert_eq!(settings.window_mode, WindowMode::Popup);
         assert!(!settings.reduce_animations);
     }
 
@@ -679,14 +666,6 @@ mod tests {
         value["logLevel"] = serde_json::json!("trace");
         let settings: AppSettings = serde_json::from_value(value).unwrap();
         assert_eq!(settings.log_level, LogLevel::Info);
-    }
-
-    #[test]
-    fn unknown_persisted_window_modes_fall_back_to_popup() {
-        let mut value = serde_json::to_value(AppSettings::default()).unwrap();
-        value["windowMode"] = serde_json::json!("detached");
-        let settings: AppSettings = serde_json::from_value(value).unwrap();
-        assert_eq!(settings.window_mode, WindowMode::Popup);
     }
 
     #[test]

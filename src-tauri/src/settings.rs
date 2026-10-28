@@ -1799,7 +1799,6 @@ mod tests {
             SettingsService::new_for_test(storage.clone(), catalog.clone(), &detected).unwrap();
         let mut settings = first.get();
         settings.density = crate::models::DensityPreference::Compact;
-        settings.window_mode = crate::models::WindowMode::Floating;
         settings.dismissed_update_version = Some("0.2.0".to_owned());
         settings.last_update_check_at = Some(chrono::Utc::now());
         settings.providers.rotate_left(1);
@@ -2067,6 +2066,8 @@ mod tests {
                 );",
             )
             .unwrap();
+        // windowMode stays in this legacy payload: it is a removed setting, and the
+        // parse must keep tolerating unknown fields from old databases.
         let legacy = r#"{"schemaVersion":7,"providers":[{"id":"codex","enabled":true,"detected":true,
                 "expanded":false,"metrics":[
                     {"id":"codex.session","enabled":true,"section":"alwaysVisible","pinned":true},

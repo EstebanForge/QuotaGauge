@@ -20,11 +20,8 @@ use tauri::{
 use tauri_plugin_positioner::{Position, WindowExt};
 
 use crate::{
-    desktop_integration::DesktopIntegration,
-    models::{ThemePreference, WindowMode},
-    popup::PopupDismissGuard,
-    settings::SettingsService,
-    storage::Storage,
+    desktop_integration::DesktopIntegration, models::ThemePreference, popup::PopupDismissGuard,
+    settings::SettingsService, storage::Storage,
 };
 
 pub const MAIN_WINDOW: &str = "main";
@@ -529,54 +526,36 @@ fn set_window_chrome(window: &WebviewWindow, floating: bool) -> tauri::Result<()
         .and_then(|_| window.set_decorations(false))
 }
 
-pub fn apply_window_mode(
-    window: &WebviewWindow,
-    mode: WindowMode,
-    center_floating: bool,
-) -> Result<(), String> {
+/// Only reached when no tray host exists (Linux fallback): the window presents
+/// as a floating, centered, standalone window.
+pub fn apply_window_chrome(window: &WebviewWindow) -> Result<(), String> {
     let integration = window.app_handle().state::<DesktopIntegration>();
-    let previous_floating = integration.is_floating();
-    let floating = integration.floats_for(mode);
 
     window
         .app_handle()
         .state::<PopupDismissGuard>()
         .cancel_pending();
     finish_native_panel_resize(window);
-    if set_window_chrome(window, floating).is_err() {
-        let _ = set_window_chrome(window, previous_floating);
-        return Err("QuotaGauge window mode could not be changed.".to_owned());
+    if set_window_chrome(window, integration.floats()).is_err() {
+        return Err("QuotaGauge window chrome could not be changed.".to_owned());
     }
 
-    integration.apply_window_mode(mode);
+    integration.apply_window_mode();
     window
         .app_handle()
         .state::<PopupDismissGuard>()
         .cancel_pending();
-    let result = {
-        crate::webview_memory::set_inactive(window, false);
-        let _ = window.unminimize();
-        if floating {
-            if center_floating {
-                let _ = window.center();
-            }
-        } else {
-            position_popup(window);
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = restore_manual_panel_height(window);
-        }
-        window
-            .show()
-            .and_then(|_| window.set_focus())
-            .map_err(|_| "QuotaGauge window could not be shown.".to_owned())
-    };
-    if result.is_err() {
-        integration.set_floating(previous_floating);
-        let _ = set_window_chrome(window, previous_floating);
+    crate::webview_memory::set_inactive(window, false);
+    let _ = window.unminimize();
+    let _ = window.center();
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = restore_manual_panel_height(window);
     }
-    result
+    window
+        .show()
+        .and_then(|_| window.set_focus())
+        .map_err(|_| "QuotaGauge window could not be shown.".to_owned())
 }
 
 fn hide_main_native_window(window: &Window) {

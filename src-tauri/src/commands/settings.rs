@@ -78,7 +78,6 @@ async fn save_app_settings_inner(
     let previous = settings_service.get();
     let next_shortcut = settings.global_shortcut.clone();
     let autostart_changed = previous.launch_at_login != settings.launch_at_login;
-    let window_mode_changed = previous.window_mode != settings.window_mode;
     // The command guard keeps revisions stable against other commands, so checking the
     // settings revision here lets the routine conflict path fail before any OS side
     // effect; update_internal's guard and the account-name resync still run at persist
@@ -94,35 +93,6 @@ async fn save_app_settings_inner(
     )?;
     if autostart_changed {
         if let Err(error) = set_autostart(&app, settings.launch_at_login) {
-            revert_shortcut(
-                &app,
-                settings.global_shortcut.as_deref(),
-                previous.global_shortcut.as_deref(),
-                &mut revert_failures,
-            );
-            return Err(with_revert_failures(error, &revert_failures));
-        }
-    }
-    if window_mode_changed {
-        let Some(window) = app.get_webview_window(crate::window::MAIN_WINDOW) else {
-            if autostart_changed {
-                revert_autostart(&app, &previous, &mut revert_failures);
-            }
-            revert_shortcut(
-                &app,
-                settings.global_shortcut.as_deref(),
-                previous.global_shortcut.as_deref(),
-                &mut revert_failures,
-            );
-            return Err(with_revert_failures(
-                "QuotaGauge window is unavailable.".to_owned(),
-                &revert_failures,
-            ));
-        };
-        if let Err(error) = crate::window::apply_window_mode(&window, settings.window_mode, true) {
-            if autostart_changed {
-                revert_autostart(&app, &previous, &mut revert_failures);
-            }
             revert_shortcut(
                 &app,
                 settings.global_shortcut.as_deref(),
@@ -157,28 +127,6 @@ async fn save_app_settings_inner(
                 previous.global_shortcut.as_deref(),
                 &mut revert_failures,
             );
-            if window_mode_changed {
-                match app.get_webview_window(crate::window::MAIN_WINDOW) {
-                    Some(window) => {
-                        if crate::window::apply_window_mode(&window, previous.window_mode, false)
-                            .is_err()
-                        {
-                            crate::app_warn!(
-                                "config",
-                                "window mode could not be reverted after a failed settings save"
-                            );
-                            revert_failures.push("the window mode");
-                        }
-                    }
-                    None => {
-                        crate::app_warn!(
-                            "config",
-                            "window mode could not be reverted after a failed settings save"
-                        );
-                        revert_failures.push("the window mode");
-                    }
-                }
-            }
             return Err(with_revert_failures(error, &revert_failures));
         }
     };

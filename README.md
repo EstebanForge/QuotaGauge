@@ -49,7 +49,7 @@ Each provider has its own guide with everything it reads and where it reads it f
 
 ## Features
 
-- Tray or floating dashboard, with pinned metrics in the tray or macOS menu bar
+- Tray popup dashboard, with pinned metrics in the tray or macOS menu bar; on Linux without a tray host the dashboard opens as a standalone window
 - Show quota used or quota remaining
 - Pacing alerts: will your quota last until the next reset?
 - Custom layouts: reorder providers, hide rows, choose what stays visible

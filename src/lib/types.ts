@@ -162,7 +162,6 @@ export interface AppSettings {
   theme: 'system' | 'light' | 'dark';
   density: 'default' | 'compact';
   reduceAnimations: boolean;
-  windowMode: 'popup' | 'floating';
   menuBarStyle: 'text' | 'bars';
   usageDisplay: 'used' | 'left';
   resetDisplay: 'countdown' | 'exact';

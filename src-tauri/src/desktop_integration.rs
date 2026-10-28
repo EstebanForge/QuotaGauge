@@ -1,7 +1,5 @@
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use crate::models::WindowMode;
-
 #[cfg(any(target_os = "linux", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinuxSessionType {
@@ -72,13 +70,14 @@ impl DesktopIntegration {
     }
 
     /// The one place the floating predicate is computed; window.rs asks this
-    /// before mutating any window geometry.
-    pub fn floats_for(&self, mode: WindowMode) -> bool {
-        !self.tray_available() || mode == WindowMode::Floating
+    /// before mutating any window geometry. Floating is the no-tray fallback
+    /// (Linux), never a user preference.
+    pub fn floats(&self) -> bool {
+        !self.tray_available()
     }
 
-    pub fn apply_window_mode(&self, mode: WindowMode) -> bool {
-        let floating = self.floats_for(mode);
+    pub fn apply_window_mode(&self) -> bool {
+        let floating = self.floats();
         let mut current = self.lock_mode();
         *current = match (floating, *current) {
             (false, _) => DesktopMode::Tray,
@@ -95,14 +94,12 @@ impl DesktopIntegration {
         changed
     }
 
-    /// Restores the floating chrome after a failed mode change. Without a tray
-    /// the floating presentation cannot be dropped, so TrayUnavailable stays.
+    /// Marks the standalone (no-tray) presentation after a chrome failure; the
+    /// floating presentation cannot be dropped, so TrayUnavailable stays.
     pub(crate) fn set_floating(&self, floating: bool) {
         let mut current = self.lock_mode();
-        match (floating, *current) {
-            (true, DesktopMode::Tray) => *current = DesktopMode::Floating,
-            (false, DesktopMode::Floating) => *current = DesktopMode::Tray,
-            _ => {}
+        if floating && *current == DesktopMode::Tray {
+            *current = DesktopMode::Floating;
         }
     }
 
@@ -236,7 +233,6 @@ pub fn wait_for_status_notifier_loss() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{parse_desktop, parse_session_type, LinuxDesktop, LinuxSessionType};
-    use crate::models::WindowMode;
 
     #[test]
     fn recognizes_x11_and_wayland_sessions_case_insensitively() {
@@ -268,28 +264,26 @@ mod tests {
     }
 
     #[test]
-    fn window_mode_is_independent_from_tray_availability() {
+    fn floating_follows_tray_availability() {
         let with_tray =
             super::linux_integration(LinuxSessionType::Wayland, LinuxDesktop::Kde, true);
         assert!(with_tray.tray_available());
-        assert!(!with_tray.floats_for(WindowMode::Popup));
-        assert!(with_tray.floats_for(WindowMode::Floating));
-        assert!(!with_tray.apply_window_mode(WindowMode::Popup));
-        assert!(with_tray.apply_window_mode(WindowMode::Floating));
+        assert!(!with_tray.floats());
+        assert!(!with_tray.apply_window_mode());
         assert!(!with_tray.exits_on_close());
 
         let without_tray =
             super::linux_integration(LinuxSessionType::Wayland, LinuxDesktop::Gnome, false);
         assert!(!without_tray.tray_available());
-        assert!(without_tray.floats_for(WindowMode::Popup));
-        assert!(without_tray.apply_window_mode(WindowMode::Popup));
+        assert!(without_tray.floats());
+        assert!(without_tray.apply_window_mode());
         assert!(without_tray.exits_on_close());
     }
 
     #[test]
     fn losing_the_tray_permanently_falls_back_to_a_visible_window_mode() {
         let integration = super::linux_integration(LinuxSessionType::X11, LinuxDesktop::Kde, true);
-        assert!(!integration.apply_window_mode(WindowMode::Popup));
+        assert!(!integration.apply_window_mode());
 
         assert!(integration.disable_tray());
         assert!(!integration.tray_available());
