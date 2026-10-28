@@ -5,7 +5,6 @@ use crate::models::{QuotaFormat, QuotaWindow};
 
 use super::KimiError;
 
-const WEEKLY_PERIOD_SECONDS: u64 = 7 * 24 * 60 * 60;
 const MONTHLY_PERIOD_SECONDS: u64 = 30 * 24 * 60 * 60;
 const DEFAULT_WINDOW_PERIOD_SECONDS: u64 = 5 * 60 * 60;
 
@@ -56,9 +55,9 @@ fn title_case(value: &str) -> String {
 }
 
 fn map_quotas(body: &Value) -> Result<Vec<QuotaWindow>, KimiError> {
-    // Convention: the short rolling window is the Session quota and the main usage quota is the
-    // Weekly quota. Session is shown first. The newer API reports ratio pools under "usages";
-    // the legacy count-based "usage"/"limits" sections remain as fallback.
+    // Kimi exposes two windows: the rolling 5-hour session and the monthly pool (their console
+    // shows the same pair). The weekly window and the legacy count-based "usage" section are
+    // gone from Kimi and are ignored here.
     let mut quotas = Vec::new();
     let session = ratio_pool_quota(
         body,
@@ -71,13 +70,6 @@ fn map_quotas(body: &Value) -> Result<Vec<QuotaWindow>, KimiError> {
     if let Some(session) = session {
         quotas.push(session);
     }
-    let weekly = ratio_pool_quota(body, "limit_7d", "weekly", "Weekly", WEEKLY_PERIOD_SECONDS)
-        .or_else(|| weekly_quota(body).ok());
-    if let Some(weekly) = weekly {
-        quotas.push(weekly);
-    }
-    // Newer plans replace the weekly quota with a monthly pool; limit_month_code is Kimi Code's
-    // share of that same pool, so it stays a detail, not a window.
     if let Some(monthly) = ratio_pool_quota(
         body,
         "limit_month_total",
@@ -110,37 +102,6 @@ fn ratio_pool_quota(
         used_percent: (used_ratio * 100.0).clamp(0.0, 100.0),
         resets_at: iso_time(pool.get("reset_time")),
         period_seconds,
-        format: QuotaFormat::Percent,
-        used_value: None,
-        limit_value: None,
-        unit: None,
-        estimated: false,
-        source_note: None,
-    })
-}
-
-fn weekly_quota(body: &Value) -> Result<QuotaWindow, KimiError> {
-    let usage = body
-        .get("usage")
-        .and_then(Value::as_object)
-        .ok_or(KimiError::InvalidResponse)?;
-    let limit = number(usage.get("limit"))
-        .filter(|value| *value >= 0.0)
-        .ok_or(KimiError::InvalidResponse)?;
-    let used = number(usage.get("used"))
-        .filter(|value| *value >= 0.0)
-        .ok_or(KimiError::InvalidResponse)?;
-    let used_percent = if limit > 0.0 {
-        (used / limit * 100.0).clamp(0.0, 100.0)
-    } else {
-        0.0
-    };
-    Ok(QuotaWindow {
-        id: "weekly".into(),
-        label: "Weekly".into(),
-        used_percent,
-        resets_at: iso_time(usage.get("resetTime")),
-        period_seconds: WEEKLY_PERIOD_SECONDS,
         format: QuotaFormat::Percent,
         used_value: None,
         limit_value: None,
@@ -226,7 +187,6 @@ fn iso_time(value: Option<&Value>) -> Option<DateTime<Utc>> {
 
 #[cfg(test)]
 mod tests {
-    use chrono::{TimeZone, Utc};
     use serde_json::{json, Value};
 
     use super::{map_usage, plan_name, DEFAULT_WINDOW_PERIOD_SECONDS};
@@ -254,43 +214,26 @@ mod tests {
                 .iter()
                 .map(|quota| quota.id.as_str())
                 .collect::<Vec<_>>(),
-            ["session", "weekly"]
+            ["session"]
         );
 
         let session = &mapped.quotas[0];
         assert_eq!(session.used_percent, 20.0);
         assert_eq!(session.period_seconds, 5 * 60 * 60);
-
-        let weekly = &mapped.quotas[1];
-        assert_eq!(weekly.used_percent, 25.0);
-        assert_eq!(weekly.format, QuotaFormat::Percent);
-        assert_eq!(weekly.used_value, None);
-        assert_eq!(weekly.limit_value, None);
-        assert_eq!(weekly.unit, None);
-        assert_eq!(weekly.period_seconds, 7 * 24 * 60 * 60);
-        assert_eq!(
-            weekly.resets_at.map(|datetime| datetime.timestamp()),
-            Some(
-                Utc.with_ymd_and_hms(2026, 8, 10, 2, 17, 43)
-                    .single()
-                    .unwrap()
-                    .timestamp()
-            )
-        );
+        assert_eq!(session.format, QuotaFormat::Percent);
+        assert_eq!(session.used_value, None);
+        assert_eq!(session.limit_value, None);
+        assert_eq!(session.unit, None);
     }
 
     #[test]
-    fn ratio_pool_payload_maps_session_weekly_and_monthly_quotas() {
+    fn ratio_pool_payload_maps_session_and_monthly_quotas() {
         let mapped = map_usage(&json!({
             "user": {"membership": {"level": "LEVEL_BASIC"}},
             "usages": {
                 "limit_5h": {
                     "used_ratio": 0.2,
                     "reset_time": "2026-10-28T15:00:00Z"
-                },
-                "limit_7d": {
-                    "used_ratio": 0.25,
-                    "reset_time": "2026-11-01T00:00:00Z"
                 },
                 "limit_month_total": {
                     "used_ratio": 0.4,
@@ -307,7 +250,7 @@ mod tests {
                 .iter()
                 .map(|quota| (quota.id.as_str(), quota.used_percent))
                 .collect::<Vec<_>>(),
-            [("session", 20.0), ("weekly", 25.0), ("monthly", 40.0)]
+            [("session", 20.0), ("monthly", 40.0)]
         );
         assert!(mapped.quotas.iter().all(|quota| quota.resets_at.is_some()));
         let monthly = mapped
@@ -319,23 +262,42 @@ mod tests {
     }
 
     #[test]
-    fn newer_plans_without_a_weekly_pool_show_session_and_monthly_only() {
-        let mapped = map_usage(&json!({
+    fn the_retired_weekly_window_is_ignored_wherever_it_appears() {
+        let with_ratio_pool = map_usage(&json!({
             "usages": {
                 "limit_5h": {"used_ratio": 0.1, "reset_time": "2026-10-28T15:00:00Z"},
+                "limit_7d": {"used_ratio": 0.9, "reset_time": "2026-11-01T00:00:00Z"},
                 "limit_month_total": {"used_ratio": 0.5, "reset_time": "2026-11-15T00:00:00Z"},
                 "limit_month_code": {"used_ratio": 0.4, "reset_time": "2026-11-15T00:00:00Z"}
             }
         }))
         .unwrap();
-
         assert_eq!(
-            mapped
+            with_ratio_pool
                 .quotas
                 .iter()
-                .map(|quota| (quota.id.as_str(), quota.used_percent))
+                .map(|quota| quota.id.as_str())
                 .collect::<Vec<_>>(),
-            [("session", 10.0), ("monthly", 50.0)]
+            ["session", "monthly"]
+        );
+
+        // The legacy count-based usage section used to carry the weekly window.
+        let legacy = map_usage(&json!({
+            "user": {"membership": {"level": "LEVEL_PRO"}},
+            "usage": {"limit": "50", "used": "0", "resetTime": null},
+            "limits": [
+                {"window": {"duration": 5, "timeUnit": "TIME_UNIT_HOUR"},
+                 "detail": {"limit": "100", "remaining": "75"}}
+            ]
+        }))
+        .unwrap();
+        assert_eq!(
+            legacy
+                .quotas
+                .iter()
+                .map(|quota| quota.id.as_str())
+                .collect::<Vec<_>>(),
+            ["session"]
         );
     }
 
@@ -355,20 +317,15 @@ mod tests {
     }
 
     #[test]
-    fn missing_session_is_optional_but_weekly_is_required() {
-        let mapped = map_usage(&json!({
-            "user": {"membership": {"level": "LEVEL_PRO"}},
-            "usage": {"limit": "50", "used": "0", "resetTime": null}
-        }))
-        .unwrap();
-
-        assert_eq!(mapped.plan.as_deref(), Some("Pro"));
-        assert_eq!(mapped.quotas.len(), 1);
-        assert_eq!(mapped.quotas[0].id, "weekly");
-        assert_eq!(mapped.quotas[0].used_percent, 0.0);
-        assert_eq!(mapped.quotas[0].resets_at, None);
-
+    fn a_payload_with_no_usable_window_is_rejected() {
         assert!(map_usage(&json!({"limits":[]})).is_err());
+
+        // The legacy usage section alone is no longer a window source.
+        assert!(map_usage(&json!({
+            "user": {"membership": {"level": "LEVEL_PRO"}},
+            "usage": {"limit": "50", "used": "0"}
+        }))
+        .is_err());
     }
 
     #[test]
@@ -394,34 +351,13 @@ mod tests {
     }
 
     #[test]
-    fn an_invalid_weekly_section_keeps_a_valid_session_quota() {
-        let mut body = captured();
-        body["usage"]["used"] = json!("not-a-number");
-
-        let mapped = map_usage(&body).unwrap();
-        assert_eq!(
-            mapped
-                .quotas
-                .iter()
-                .map(|quota| quota.id.as_str())
-                .collect::<Vec<_>>(),
-            ["session"]
-        );
-    }
-
-    #[test]
-    fn an_invalid_session_section_keeps_a_valid_weekly_quota() {
+    fn an_invalid_session_section_yields_invalid_response() {
         let mut body = captured();
         body["limits"][0]["detail"]["remaining"] = json!("not-a-number");
 
-        let mapped = map_usage(&body).unwrap();
         assert_eq!(
-            mapped
-                .quotas
-                .iter()
-                .map(|quota| quota.id.as_str())
-                .collect::<Vec<_>>(),
-            ["weekly"]
+            map_usage(&body).unwrap_err(),
+            super::super::KimiError::InvalidResponse
         );
     }
 

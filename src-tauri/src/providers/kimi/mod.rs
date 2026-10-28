@@ -44,23 +44,13 @@ pub(crate) fn definition() -> ProviderDefinition {
                 "S",
             ),
             MetricDefinition::quota(
-                "kimi.weekly",
-                "Weekly",
-                "weekly",
-                false,
-                true,
-                MetricSection::AlwaysVisible,
-                true,
-                "W",
-            ),
-            MetricDefinition::quota(
                 "kimi.monthly",
                 "Monthly",
                 "monthly",
                 false,
                 true,
                 MetricSection::AlwaysVisible,
-                false,
+                true,
                 "M",
             ),
         ],
@@ -306,9 +296,9 @@ mod tests {
     }
 
     const QUOTA_BODY: &str = r#"{"user":{"membership":{"level":"LEVEL_BASIC"}},
-        "usage":{"limit":"100","used":"25","resetTime":"2026-08-10T02:17:43.139020Z"},
-        "limits":[{"window":{"duration":300,"timeUnit":"TIME_UNIT_MINUTE"},
-        "detail":{"limit":"100","remaining":"80","resetTime":"2026-08-07T06:17:43.139020Z"}}]}"#;
+        "usages":{"limit_5h":{"used_ratio":0.2,"reset_time":"2026-10-28T15:00:00Z"},
+        "limit_month_total":{"used_ratio":0.4,"reset_time":"2026-11-15T00:00:00Z"},
+        "limit_month_code":{"used_ratio":0.35,"reset_time":"2026-11-15T00:00:00Z"}}}"#;
 
     #[test]
     fn refresh_maps_usage_and_window() {
@@ -327,7 +317,7 @@ mod tests {
                 .iter()
                 .map(|quota| quota.id.as_str())
                 .collect::<Vec<_>>(),
-            ["session", "weekly"]
+            ["session", "monthly"]
         );
     }
 
@@ -459,6 +449,14 @@ mod tests {
                 .map(|link| link.label.as_str())
                 .collect::<Vec<_>>(),
             ["Dashboard", "API Keys"]
+        );
+        assert_eq!(
+            definition
+                .metrics
+                .iter()
+                .map(|metric| metric.id.as_str())
+                .collect::<Vec<_>>(),
+            ["kimi.session", "kimi.monthly"]
         );
     }
 }

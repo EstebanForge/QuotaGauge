@@ -142,8 +142,9 @@ Data flow: providers -> UsageService refresh (events `usage-state`, `open-screen
   `~/.gemini/antigravity-cli/antigravity-oauth-token`, `antigravity-acp/acp_token.json`,
   `jetski-standalone-oauth-token`, OS keychain last; `~/.gemini/oauth_creds.json` belongs to
   Google's Gemini CLI (can be a different Google account) and is deliberately NOT a source. Kimi
-  newer plans return ratio pools (`limit_5h`, `limit_month_total`); `limit_7d` is legacy and
-  `limit_month_code` shares the monthly pool (parsed, not shown).
+  newer plans return ratio pools (`limit_5h`, `limit_month_total`); the weekly window is gone from
+  Kimi entirely (no `limit_7d`; the legacy `usage` weekly section is gone while the `limits`
+  array still feeds the session window) and QuotaGauge maps session + monthly only.
 - `openquota` strings that remain are intentional (legacy migration in legacy.rs, api_key.rs
   LEGACY_SERVICE, README/installation.md migration notes, one log line). Do not "clean them up".
 - Repo is currently PRIVATE with CI + Release workflows disabled and Dependabot at 0 (stand-down);
@@ -162,8 +163,8 @@ Data flow: providers -> UsageService refresh (events `usage-state`, `open-screen
 - `builtin_provider_catalog_keeps_the_product_defaults` (providers/registry.rs tests) validates ONLY
   the providers listed in it — every new provider and every `definition()` change must be reflected
   there, or registry invariants (max 2 default pins, visible metric, tray labels) go unchecked.
-  Max 2 default pins per provider is a hard registry invariant; `kimi.monthly` is deliberately
-  unpinned by default for that reason.
+  Max 2 default pins per provider is a hard registry invariant; Kimi's two pins are Session and
+  Monthly.
 
 ## Commit & PR guidelines
 

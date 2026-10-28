@@ -1,14 +1,15 @@
 # Kimi
 
-QuotaGauge tracks the Session (rolling five-hour), Weekly, and Monthly quotas of a Kimi Code membership. Session and Weekly are starred for the menu bar by default; star Monthly in Customize to add it there too. Monthly always appears on the panel for plans that report it (newer plans have no Weekly window, so Monthly is the second meter that matters there).
+QuotaGauge tracks the two windows Kimi's own console shows: the rolling 5-hour Session and the Monthly pool. Both are starred for the menu bar by default on fresh setups. If you used an older version, your saved layout is kept and Monthly may need a star in **Customize**.
 
 ## What it tracks
 
-| Metric  | Meaning                                           |
-| ------- | ------------------------------------------------- |
-| Session | Usage remaining in the rolling 5-hour window      |
-| Weekly  | Usage remaining in the rolling 7-day window       |
-| Monthly | Usage remaining in the monthly pool (newer plans) |
+| Metric  | Meaning                                      |
+| ------- | -------------------------------------------- |
+| Session | Usage remaining in the rolling 5-hour window |
+| Monthly | Usage remaining in the monthly pool          |
+
+Kimi removed the old 7-day weekly window from their plans and console; QuotaGauge no longer shows it. Upgrades drop the stale Weekly row from the panel automatically.
 
 ## Setup
 
