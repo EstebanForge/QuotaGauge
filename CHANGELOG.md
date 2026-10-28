@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.5 - 2026-10-28
+
+### Fixed
+
+- Kimi: the Weekly meter is gone. Kimi removed 7-day quotas from their plans; QuotaGauge now tracks only the Session (5-hour) and Monthly windows, like Kimi's own console. Upgrades drop the stale Weekly row and keep your other settings.
+
+### Added
+
+- The log file is monthly: `QuotaGauge-YYYYMM.log` in the same folder, a new file each month, so no single log grows forever.
+- Debug logging for the Antigravity Argon meter. At the Debug log level, a refresh now records the path taken, the CLI attempts, and the exact reason an Argon bucket was dropped. Set the log level to Debug in Settings, refresh, then check the log to see why Argon is missing.
+
 ## 0.6.4 - 2026-10-28
 
 ### Fixed
