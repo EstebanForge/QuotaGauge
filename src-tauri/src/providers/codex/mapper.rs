@@ -214,19 +214,25 @@ fn map_window(
     now: DateTime<Utc>,
 ) -> Option<QuotaWindow> {
     let used_percent = candidate.used_percent?;
+    // Server-controlled durations are clamped: huge values panic in chrono arithmetic
+    // and resets beyond a year are meaningless for quota windows.
+    const MAX_RESET_AFTER_SECONDS: f64 = 366.0 * 24.0 * 3600.0;
+    const MAX_PERIOD_SECONDS: u64 = 366 * 24 * 3600;
     let resets_at = candidate.window.and_then(|window| {
         number(window.get("reset_at"))
             .and_then(timestamp)
             .or_else(|| {
-                number(window.get("reset_after_seconds"))
-                    .map(|seconds| now + Duration::milliseconds((seconds * 1000.0) as i64))
+                number(window.get("reset_after_seconds")).and_then(|seconds| {
+                    let millis = (seconds.clamp(0.0, MAX_RESET_AFTER_SECONDS) * 1000.0) as i64;
+                    now.checked_add_signed(Duration::milliseconds(millis))
+                })
             })
     });
     let period_seconds = candidate
         .window
         .and_then(|window| number(window.get("limit_window_seconds")))
-        .map(|value| value.max(0.0) as u64)
-        .unwrap_or(default_period);
+        .map(|value| (value.max(0.0) as u64).min(MAX_PERIOD_SECONDS))
+        .unwrap_or(default_period.min(MAX_PERIOD_SECONDS));
     Some(QuotaWindow {
         id: id.to_owned(),
         label: label.to_owned(),
@@ -435,6 +441,31 @@ mod tests {
         assert_eq!(mapped.quotas[0].used_percent, 10.0);
         assert_eq!(mapped.quotas[1].used_percent, 20.0);
         assert_eq!(mapped.quotas[0].period_seconds, SESSION_PERIOD_SECONDS);
+    }
+
+    #[test]
+    fn absurd_server_durations_are_clamped_not_fatal() {
+        let now = Utc.timestamp_opt(1_800_000_000, 0).unwrap();
+        let mapped = map_usage(
+            &response(json!({
+                "rate_limit": {
+                    "primary_window": {
+                        "used_percent": 5,
+                        "reset_after_seconds": 1e30,
+                        "limit_window_seconds": 1e30
+                    },
+                    "secondary_window": null
+                }
+            })),
+            None,
+            now,
+        )
+        .unwrap();
+
+        let window = &mapped.quotas[0];
+        assert!(window.resets_at.is_some());
+        assert!(window.resets_at.unwrap() <= now + chrono::Duration::days(367));
+        assert_eq!(window.period_seconds, 366 * 24 * 3600);
     }
 
     #[test]

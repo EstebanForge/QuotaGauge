@@ -395,7 +395,9 @@ impl ClaudeProvider {
 
         let token = credential.access_token().ok_or(ClaudeError::NotLoggedIn)?;
         let (mut status, mut body, mut retry_after) = self.client.fetch_usage(token, config)?;
-        if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
+        // Only a 401 proves the access token died; a persistent 403 (proxy, scope) would
+        // otherwise burn a token rotation on every poll.
+        if status == StatusCode::UNAUTHORIZED {
             let previous_fingerprint = credential.fingerprint();
             refresh_credential(
                 &self.client,
@@ -414,9 +416,12 @@ impl ClaudeProvider {
             return Err(ClaudeError::CredentialsChanged);
         }
         if status == StatusCode::TOO_MANY_REQUESTS {
-            let retry = retry_after.unwrap_or(5 * 60);
+            let retry = retry_after.unwrap_or(5 * 60).min(24 * 60 * 60);
+            let cooldown = now
+                .checked_add_signed(Duration::seconds(retry as i64))
+                .unwrap_or(now);
             if let Ok(mut until) = self.rate_limited_until.lock() {
-                *until = Some(now + Duration::seconds(retry as i64));
+                *until = Some(cooldown);
             }
             if let Some(mut snapshot) = self.last_good.lock().ok().and_then(|value| value.clone()) {
                 snapshot.warnings.push(format!(

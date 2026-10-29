@@ -134,6 +134,7 @@ impl From<OpenRouterError> for ProviderError {
             OpenRouterError::ConnectionFailed => ProviderErrorKind::Network,
             OpenRouterError::RequestFailed(429) => ProviderErrorKind::RateLimited,
             OpenRouterError::RequestFailed(401 | 403) => ProviderErrorKind::Authentication,
+            OpenRouterError::RequestFailed(500..=599) => ProviderErrorKind::Network,
             OpenRouterError::RequestFailed(_) | OpenRouterError::InvalidResponse => {
                 ProviderErrorKind::InvalidResponse
             }

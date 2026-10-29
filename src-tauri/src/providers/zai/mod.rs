@@ -96,6 +96,7 @@ impl From<ZaiError> for ProviderError {
             ZaiError::RequestFailed(429) => ProviderErrorKind::RateLimited,
             ZaiError::RequestFailed(401 | 403) => ProviderErrorKind::Authentication,
             ZaiError::NoCodingPlan => ProviderErrorKind::Permission,
+            ZaiError::RequestFailed(500..=599) => ProviderErrorKind::Network,
             ZaiError::RequestFailed(_) | ZaiError::InvalidResponse => {
                 ProviderErrorKind::InvalidResponse
             }

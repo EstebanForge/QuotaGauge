@@ -93,6 +93,7 @@ impl From<MiniMaxError> for ProviderError {
             MiniMaxError::RequestFailed(429) => ProviderErrorKind::RateLimited,
             MiniMaxError::RequestFailed(401 | 403) => ProviderErrorKind::Authentication,
             MiniMaxError::NoTokenPlan => ProviderErrorKind::Permission,
+            MiniMaxError::RequestFailed(500..=599) => ProviderErrorKind::Network,
             MiniMaxError::RequestFailed(_) | MiniMaxError::InvalidResponse => {
                 ProviderErrorKind::InvalidResponse
             }

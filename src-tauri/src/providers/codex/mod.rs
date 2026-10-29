@@ -312,6 +312,7 @@ fn provider_error(error: CodexError) -> crate::providers::ProviderError {
         | CodexError::AccountChanged => Kind::Authentication,
         CodexError::ApiKeyOnly => Kind::Permission,
         CodexError::AuthWrite => Kind::CredentialStorage,
+        CodexError::RequestFailed(401 | 403) => Kind::Authentication,
         CodexError::RequestFailed(429) => Kind::RateLimited,
         CodexError::RequestFailed(_) | CodexError::ConnectionFailed => Kind::Network,
         CodexError::InvalidResponse => Kind::InvalidResponse,

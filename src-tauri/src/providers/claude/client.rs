@@ -28,6 +28,7 @@ impl ClaudeClient {
     fn with_timeout(timeout: std::time::Duration) -> Result<Self, ClaudeError> {
         Ok(Self {
             client: Client::builder()
+                .connect_timeout(crate::providers::http::CONNECT_TIMEOUT)
                 .timeout(timeout)
                 .build()
                 .map_err(|_| ClaudeError::ConnectionFailed)?,
@@ -64,7 +65,13 @@ impl ClaudeClient {
             .get("retry-after")
             .and_then(|value| value.to_str().ok())
             .and_then(|value| parse_retry_after(value, Utc::now()));
-        let body = response.json().map_err(|_| ClaudeError::InvalidResponse)?;
+        // A non-success body can be an HTML error page; only success responses must parse.
+        let text = response.text().map_err(|_| ClaudeError::InvalidResponse)?;
+        let body = if status.is_success() {
+            serde_json::from_str(&text).map_err(|_| ClaudeError::InvalidResponse)?
+        } else {
+            serde_json::from_str(&text).unwrap_or(Value::Null)
+        };
         Ok((status, body, retry_after))
     }
 
@@ -98,7 +105,12 @@ impl ClaudeClient {
             status.as_u16(),
             started.elapsed().as_millis()
         );
-        let body = response.json().map_err(|_| ClaudeError::InvalidResponse)?;
+        let text = response.text().map_err(|_| ClaudeError::InvalidResponse)?;
+        let body = if status.is_success() {
+            serde_json::from_str(&text).map_err(|_| ClaudeError::InvalidResponse)?
+        } else {
+            serde_json::from_str(&text).unwrap_or(Value::Null)
+        };
         Ok((status, body))
     }
 
@@ -155,13 +167,16 @@ impl ClaudeClient {
 }
 
 fn parse_retry_after(value: &str, now: DateTime<Utc>) -> Option<u64> {
+    // Rate-limit cooldowns beyond a day are indistinguishable from broken; huge values
+    // also panic when added to the current time.
+    const MAX_RETRY_SECONDS: u64 = 24 * 60 * 60;
     let value = value.trim();
     if let Ok(seconds) = value.parse::<u64>() {
-        return Some(seconds);
+        return Some(seconds.min(MAX_RETRY_SECONDS));
     }
     let date = DateTime::parse_from_rfc2822(value).ok()?.to_utc();
     let milliseconds = date.signed_duration_since(now).num_milliseconds().max(0) as u64;
-    Some(milliseconds.div_ceil(1000))
+    Some(milliseconds.div_ceil(1000).min(MAX_RETRY_SECONDS))
 }
 
 #[cfg(test)]
@@ -252,9 +267,25 @@ mod tests {
     }
 
     #[test]
-    fn retry_after_accepts_seconds_and_http_dates() {
+    fn non_success_status_keeps_flowing_with_a_null_body() {
+        // A 401 with an HTML page must reach the caller as a status, not an
+        // InvalidResponse, so the caller can refresh the token.
+        let base = test_http::serve_once(401, &[], "<html>Unauthorized</html>");
+        let (status, body, retry_after) = ClaudeClient::new()
+            .unwrap()
+            .fetch_usage("secret-token", &config(&base))
+            .unwrap();
+
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert!(body.is_null());
+        assert_eq!(retry_after, None);
+    }
+
+    #[test]
+    fn retry_after_is_clamped_to_one_day() {
         let now = Utc.with_ymd_and_hms(2015, 10, 21, 7, 27, 0).unwrap();
         assert_eq!(parse_retry_after("120", now), Some(120));
+        assert_eq!(parse_retry_after("99999999999999999", now), Some(86_400));
         assert_eq!(
             parse_retry_after("Wed, 21 Oct 2015 07:28:00 GMT", now),
             Some(60)

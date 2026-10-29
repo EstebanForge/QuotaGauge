@@ -5,7 +5,7 @@ use reqwest::StatusCode;
 use serde_json::Value;
 
 const USER_AGENT: &str = concat!("QuotaGauge/", env!("CARGO_PKG_VERSION"));
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
+pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
 
 #[derive(Debug)]
 pub struct EndpointResponse {

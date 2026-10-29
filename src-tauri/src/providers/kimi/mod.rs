@@ -99,6 +99,7 @@ impl From<KimiError> for ProviderError {
             KimiError::RequestFailed(429) => ProviderErrorKind::RateLimited,
             KimiError::RequestFailed(401) => ProviderErrorKind::Authentication,
             KimiError::RequestFailed(403) => ProviderErrorKind::Permission,
+            KimiError::RequestFailed(500..=599) => ProviderErrorKind::Network,
             KimiError::RequestFailed(_) | KimiError::InvalidResponse => {
                 ProviderErrorKind::InvalidResponse
             }
