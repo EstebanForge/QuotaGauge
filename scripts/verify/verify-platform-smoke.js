@@ -17,7 +17,7 @@ const windowsSignShim = read('.github/scripts/quotagauge-sign-windows.cmd');
 const windowsSigningConfig = JSON.parse(read('src-tauri/tauri.windows-signing.conf.json'));
 const releaseTagVerification = read('.github/scripts/verify-release-tag.sh');
 const installation = read('docs/installation.md');
-const releasing = read('docs/releasing.md');
+const maintainers = read('AGENTS.md');
 
 const requireContracts = (source, content, contracts) => {
   for (const contract of contracts) {
@@ -222,8 +222,7 @@ for (const name of [
 
 requireExactKeyLines('release', release, exactSigningBindings);
 
-requireContracts('release documentation', releasing, [
-  'TAURI_SIGNING_PRIVATE_KEY',
+requireContracts('release documentation', maintainers, [
   'Desktop bundles',
   'tauri/custom-protocol',
   'verbatim',

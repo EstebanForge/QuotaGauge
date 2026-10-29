@@ -65,7 +65,9 @@ artifact dir; the binary must be built with `--features tauri/custom-protocol` (
   - `legacy.rs` + `providers/api_key.rs` — one-time import of OpenQuota data (`io.github.deviffyy.openquota`).
 - `scripts/verify/` — source-inspection contract verifiers (see gotchas). `scripts/e2e/`,
   `scripts/macos-cross/` — smoke harness, .app bundler.
-- `docs/` — installation.md, releasing.md, providers/*.md (per-provider user docs).
+- `docs/` — installation.md, providers/*.md (per-provider user docs). The full release process
+  lives in this file (bump mechanics, Desktop bundles dispatch, local macOS leg, updater
+  signature verification); there is no separate releasing guide.
 - `src-tauri/gen/` — generated. Never hand-edit.
 
 Data flow: providers -> UsageService refresh (events `usage-state`, `open-screen`,
@@ -114,6 +116,16 @@ Data flow: providers -> UsageService refresh (events `usage-state`, `open-screen
   binary (the same crate the plugin uses) against `plugins.updater.pubkey` in `tauri.conf.json` —
   for all three platforms BEFORE upload, then re-verify the published manifest bytes from the
   release URL. Signature-nonempty + HTTP 200 is not verification.
+- Release flow: push the bump commit to main, then dispatch the only active workflow, `Desktop
+bundles` (dispatch-only, id 397210994), for the Linux (deb/rpm/AppImage) and Windows (NSIS)
+  legs; the macOS arm64 leg is `./scripts/macos-cross/release-macos.sh` locally. Create the GitHub
+  release as a draft named after the bare version (no `v` prefix), upload `latest.json` under
+  exactly that filename (`gh release upload` has no rename syntax), publish, then re-download the
+  published updater assets and re-verify every signature. Draft assets 404 via the REST asset
+  endpoint, so pre-publish verification uses the local files only. The `minisign-verify` scratch
+  binary must base64-decode-or-pass-through the pubkey and `.sig` files (both wrap minisign text),
+  then `PublicKey::verify(whole_file_bytes, sig, true)`; validate it once against the previous
+  release's published AppImage + `.sig` pair.
 - `cargo test` accepts ONE positional filter — additional filters go after `--`. The rtk output
   wrapper misreports cargo test summaries; write the run to a file and grep it instead.
 - `generate_context!` embeds `dist/` at compile time: rebuild the frontend (`npm run build`)
