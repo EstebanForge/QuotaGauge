@@ -392,6 +392,9 @@ fn format_tokens(tokens: u64) -> String {
 }
 
 fn mark_icon() -> Image<'static> {
+    // The tray mark is a bundled build artifact; a decode failure means a broken
+    // build, not a runtime condition to handle.
+    #[allow(clippy::expect_used)]
     Image::from_bytes(include_bytes!("../icons/32x32.png"))
         .expect("bundled QuotaGauge tray mark must be a valid PNG")
 }

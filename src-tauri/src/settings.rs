@@ -896,9 +896,9 @@ fn set_account_custom_name(payload: &mut Value, name: Option<&str>) {
     if !payload.is_object() {
         *payload = Value::Object(Map::new());
     }
-    let object = payload
-        .as_object_mut()
-        .expect("account payload was initialized as an object");
+    let Some(object) = payload.as_object_mut() else {
+        return;
+    };
     let name = name.map(str::trim).filter(|name| !name.is_empty());
     if let Some(name) = name {
         object.insert("customName".into(), Value::String(name.to_owned()));

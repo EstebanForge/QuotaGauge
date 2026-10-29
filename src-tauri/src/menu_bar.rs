@@ -97,7 +97,7 @@ fn render_text_strip(groups: &[TextGroup]) -> Option<RenderedStrip> {
     let content_width = groups.iter().map(|group| group.width).sum::<f32>()
         + GROUP_GAP * groups.len().saturating_sub(1) as f32;
     let width = (content_width + OUTER_PADDING * 2.0).ceil().max(1.0) as u32;
-    let mut pixmap = Pixmap::new(width, TEXT_HEIGHT).expect("menu bar strip dimensions are valid");
+    let mut pixmap = Pixmap::new(width, TEXT_HEIGHT)?;
     let mut x = OUTER_PADDING;
 
     for layout in groups {
@@ -130,6 +130,8 @@ fn render_text_strip(groups: &[TextGroup]) -> Option<RenderedStrip> {
 
 fn bundled_font() -> &'static Font {
     static FONT: OnceLock<Font> = OnceLock::new();
+    // The font is a bundled build artifact; failure means a broken build.
+    #[allow(clippy::expect_used)]
     FONT.get_or_init(|| {
         Font::from_bytes(FONT_SOURCE, FontSettings::default())
             .expect("bundled menu bar font must be valid")
@@ -414,7 +416,9 @@ fn parse_svg_path(source: &str) -> Result<Path, String> {
 
 fn render_bar_rgba(fractions: &[f64]) -> Vec<u8> {
     let size = ICON_POINTS;
-    let mut pixmap = Pixmap::new(ICON_SIZE, ICON_SIZE).expect("menu bar icon dimensions are valid");
+    let Some(mut pixmap) = Pixmap::new(ICON_SIZE, ICON_SIZE) else {
+        return Vec::new();
+    };
     let count = fractions.len().min(MAX_BARS);
     if count == 0 {
         return pixmap.take_demultiplied();

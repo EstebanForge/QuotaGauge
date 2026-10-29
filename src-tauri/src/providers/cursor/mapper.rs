@@ -108,7 +108,9 @@ pub fn map_live_usage(
     if facts.limit.is_none() && facts.total_percent_used.is_none() {
         return Err(CursorError::TotalUsageLimitMissing);
     }
-    let plan_usage = plan_usage.expect("checked above");
+    let Some(plan_usage) = plan_usage else {
+        return Err(CursorError::TotalUsageLimitMissing);
+    };
     let used_cents = plan_usage
         .get("totalSpend")
         .and_then(number)

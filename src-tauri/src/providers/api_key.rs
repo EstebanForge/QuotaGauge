@@ -392,11 +392,13 @@ impl ApiKeyStore {
         let external = self.external_key().map(|(_, status)| status);
         let saved = match self.saved_key() {
             Ok(value) => value.is_some(),
-            Err(error) if external.is_some() => {
-                report_external_fallback(&self.provider_id, &error);
-                return Ok(external.expect("external source checked above"));
-            }
-            Err(error) => return Err(error),
+            Err(error) => match external {
+                Some(status) => {
+                    report_external_fallback(&self.provider_id, &error);
+                    return Ok(status);
+                }
+                None => return Err(error),
+            },
         };
         Ok(if saved {
             if external.is_some() {

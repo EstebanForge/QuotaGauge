@@ -181,17 +181,25 @@ impl OpenRouterProvider {
         let mut quotas = Vec::new();
         let mut values = Vec::new();
         let mut plan = None;
+        let mut warnings = Vec::new();
 
         if let EndpointOutcome::Success(data) = &credits {
             let mapped = map_credits(data);
             quotas.extend(mapped.quota);
             values.extend(mapped.balance);
+        } else if !credits.is_auth_failure() {
+            warnings.push(
+                "The OpenRouter credits endpoint did not answer; balance data is missing.".into(),
+            );
         }
         if let EndpointOutcome::Success(data) = &key {
             let mapped = map_key(data);
             plan = mapped.plan;
             quotas.extend(mapped.quota);
             values.extend(mapped.values);
+        } else if !key.is_auth_failure() {
+            warnings
+                .push("The OpenRouter key endpoint did not answer; usage data is missing.".into());
         }
         if !quotas.is_empty() || !values.is_empty() {
             return Ok(ProviderSnapshot {
@@ -201,7 +209,7 @@ impl OpenRouterProvider {
                 value_metrics: values,
                 status_metrics: Vec::new(),
                 notices: Vec::new(),
-                warnings: Vec::new(),
+                warnings,
                 refreshed_at: Utc::now(),
             });
         }

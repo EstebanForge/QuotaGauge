@@ -182,21 +182,21 @@ impl ProviderService {
                 drop(flight_state);
                 return self.provider_state(provider_id);
             } else if force {
-                let generation = flight_state
-                    .attempt_generation
-                    .expect("active refresh generation must exist")
-                    .saturating_add(1);
+                let Some(active) = flight_state.attempt_generation else {
+                    drop(flight_state);
+                    return self.provider_state(provider_id);
+                };
+                let generation = active.saturating_add(1);
                 flight_state.requested_generation =
                     flight_state.requested_generation.max(generation);
                 crate::app_debug!("refresh", "queued forced follow-up for {provider_id}");
                 (flight_state.requested_generation, false)
             } else {
-                (
-                    flight_state
-                        .attempt_generation
-                        .expect("active refresh generation must exist"),
-                    false,
-                )
+                let Some(active) = flight_state.attempt_generation else {
+                    drop(flight_state);
+                    return self.provider_state(provider_id);
+                };
+                (active, false)
             }
         };
 
@@ -442,10 +442,19 @@ impl ProviderService {
     where
         F: FnMut(&UsageViewState) + Send,
     {
-        self.refresh_enabled_with_progress(provider_ids, force, on_progress)
+        let state = self
+            .refresh_enabled_with_progress(provider_ids, force, on_progress)
             .await;
-        if let Ok(mut completed_at) = self.last_full_refresh_at.write() {
-            *completed_at = Some(Utc::now());
+        // Stamp only when the batch actually produced live data; a round where
+        // every provider failed or was skipped must not push the label forward.
+        let any_live = state
+            .providers
+            .values()
+            .any(|provider| provider.error.is_none());
+        if any_live {
+            if let Ok(mut completed_at) = self.last_full_refresh_at.write() {
+                *completed_at = Some(Utc::now());
+            }
         }
         self.state()
     }

@@ -1,3 +1,6 @@
+// The project rule is no unwrap/expect outside tests; make the compiler enforce it.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
+
 mod child_process;
 mod commands;
 mod connectivity;
@@ -499,5 +502,8 @@ pub fn run() {
         ])
         .on_window_event(handle_window_event)
         .run(tauri::generate_context!())
-        .expect("error while running QuotaGauge");
+        .unwrap_or_else(|error| {
+            eprintln!("error while running QuotaGauge: {error}");
+            std::process::exit(1);
+        });
 }

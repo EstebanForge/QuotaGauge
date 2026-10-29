@@ -43,7 +43,9 @@ pub(crate) fn render_gauge(display_fraction: f64, remaining_fraction: f64) -> Im
 
 fn render_rgba(display_fraction: f64, remaining_fraction: f64) -> Vec<u8> {
     let paths = gauge_paths();
-    let mut pixmap = Pixmap::new(ICON_SIZE, ICON_SIZE).expect("tray icon dimensions are valid");
+    let Some(mut pixmap) = Pixmap::new(ICON_SIZE, ICON_SIZE) else {
+        return Vec::new();
+    };
     let transform = Transform::from_scale(
         ICON_SIZE as f32 / SOURCE_SIZE,
         ICON_SIZE as f32 / SOURCE_SIZE,
@@ -55,7 +57,9 @@ fn render_rgba(display_fraction: f64, remaining_fraction: f64) -> Vec<u8> {
     if display_fraction >= 1.0 {
         draw_paths(&mut pixmap, &paths.fill, quota_color, transform);
     } else if display_fraction > 0.0 {
-        let mask = sweep_mask(display_fraction);
+        let Some(mask) = sweep_mask(display_fraction) else {
+            return pixmap.take_demultiplied();
+        };
         draw_paths_masked(
             &mut pixmap,
             &paths.fill,
@@ -93,11 +97,11 @@ fn draw_paths_masked(
     }
 }
 
-fn sweep_mask(fraction: f64) -> Mask {
+fn sweep_mask(fraction: f64) -> Option<Mask> {
     let fraction = sanitized_fraction(fraction) as f32;
-    let mut mask = Mask::new(ICON_SIZE, ICON_SIZE).expect("tray mask dimensions are valid");
+    let mut mask = Mask::new(ICON_SIZE, ICON_SIZE)?;
     if fraction <= 0.0 {
-        return mask;
+        return Some(mask);
     }
     // a full-circle sweep would reveal the 180deg arc within its first half;
     // span the reveal over the arc itself so fraction 1.0 exactly fills it
@@ -121,7 +125,7 @@ fn sweep_mask(fraction: f64) -> Mask {
     if let Some(path) = builder.finish() {
         mask.fill_path(&path, FillRule::Winding, true, Transform::identity());
     }
-    mask
+    Some(mask)
 }
 
 fn sanitized_fraction(fraction: f64) -> f64 {
@@ -261,6 +265,7 @@ mod tests {
     fn angular_mask_advances_continuously_between_nearby_percentages() {
         let mask_weight = |fraction| {
             sweep_mask(fraction)
+                .unwrap()
                 .data()
                 .iter()
                 .map(|alpha| u64::from(*alpha))

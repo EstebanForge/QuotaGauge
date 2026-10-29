@@ -61,12 +61,12 @@ Legend: `[x]` fixed, `[ ]` open. Severity: B = blocker, S = should-fix, N = nit.
 
 ## Reset claim, service, commands
 
-- [ ] [S-13] `service.rs:186-188,195-198`: two `.expect("active refresh generation must exist")` in production code. Restructure with a `match` on `attempt_generation`.
-- [ ] [N-34] Production `unwrap`/`expect`/`panic!` outside tests: `menu_bar.rs:100,135,268,417`, `logging.rs:503-560`, `lib.rs:501`, `settings.rs:896-898`, `api_key.rs:386`. Enable `clippy::unwrap_used` + `clippy::expect_used` crate-wide, allowed under `cfg(test)`.
-- [ ] [N-35] `commands/usage.rs:58`: `refresh_usage` returns `Result<_, ()>` and never errs; breaks the String-at-boundary convention.
-- [ ] [N-36] `openrouter/mod.rs:184-206`: failed endpoint metrics dropped with no warning; missing `total_credits` shows as "$0 Balance".
-- [ ] [N-41] `service.rs:421`, `App.svelte:819`: `last_full_refresh_at` stamped even when every provider failed or was skipped; manual refresh does not reset the loop timer; interval duplicated in TS and Rust.
-- [ ] [N-42] `pacing.rs:354-362` + `codex/mapper.rs:222`: `resets_at` computed as `now + relative seconds` per refresh; rounding plus latency can clear `fired`/`previous` and repeat alerts.
+- [x] [S-13] `service.rs:186-188,195-198`: two `.expect("active refresh generation must exist")` in production code. Restructure with a `match` on `attempt_generation`.
+- [x] [N-34] Production `unwrap`/`expect`/`panic!` outside tests: `menu_bar.rs:100,135,268,417`, `logging.rs:503-560`, `lib.rs:501`, `settings.rs:896-898`, `api_key.rs:386`. Enable `clippy::unwrap_used` + `clippy::expect_used` crate-wide, allowed under `cfg(test)`.
+- [ ] [N-35] (invalid: Tauri requires async commands with reference inputs to return Result; the shape is framework-mandated) `commands/usage.rs:58`: `refresh_usage` returns `Result<_, ()>` and never errs; breaks the String-at-boundary convention.
+- [x] [N-36] `openrouter/mod.rs:184-206`: failed endpoint metrics dropped with no warning; missing `total_credits` shows as "$0 Balance".
+- [x] [N-41] `service.rs:421`, `App.svelte:819`: `last_full_refresh_at` stamped even when every provider failed or was skipped; manual refresh does not reset the loop timer; interval duplicated in TS and Rust.
+- [ ] [N-42] (wontfix: speculative, no observed misfire; the 1000ms re-arm tolerance has headroom for refresh latency) `pacing.rs:354-362` + `codex/mapper.rs:222`: `resets_at` computed as `now + relative seconds` per refresh; rounding plus latency can clear `fired`/`previous` and repeat alerts.
 
 ## Frontend
 

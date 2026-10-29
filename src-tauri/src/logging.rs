@@ -501,11 +501,15 @@ pub fn redact_log_message(message: &str) -> String {
         .into_owned()
 }
 
+// Literal patterns are compile-time invariants.
+#[allow(clippy::unwrap_used)]
 fn jwt_regex() -> &'static Regex {
     static VALUE: OnceLock<Regex> = OnceLock::new();
     VALUE.get_or_init(|| Regex::new(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+").unwrap())
 }
 
+// Literal patterns are compile-time invariants.
+#[allow(clippy::unwrap_used)]
 fn api_key_regex() -> &'static Regex {
     static VALUE: OnceLock<Regex> = OnceLock::new();
     // gho_/ghp_ are GitHub tokens (copilot), xai- is Grok; key material varies
@@ -516,16 +520,22 @@ fn api_key_regex() -> &'static Regex {
     })
 }
 
+// Literal patterns are compile-time invariants.
+#[allow(clippy::unwrap_used)]
 fn devin_token_regex() -> &'static Regex {
     static VALUE: OnceLock<Regex> = OnceLock::new();
     VALUE.get_or_init(|| Regex::new(r#"devin-session-token\$[^\s"',}\]]+"#).unwrap())
 }
 
+// Literal patterns are compile-time invariants.
+#[allow(clippy::unwrap_used)]
 fn bearer_regex() -> &'static Regex {
     static VALUE: OnceLock<Regex> = OnceLock::new();
     VALUE.get_or_init(|| Regex::new(r"(?i)(bearer\s+)([A-Za-z0-9._~+/=-]+)").unwrap())
 }
 
+// Literal patterns are compile-time invariants.
+#[allow(clippy::unwrap_used)]
 fn named_secret_regex() -> &'static Regex {
     static VALUE: OnceLock<Regex> = OnceLock::new();
     VALUE.get_or_init(|| {
@@ -536,11 +546,15 @@ fn named_secret_regex() -> &'static Regex {
     })
 }
 
+// Literal patterns are compile-time invariants.
+#[allow(clippy::unwrap_used)]
 fn account_regex() -> &'static Regex {
     static VALUE: OnceLock<Regex> = OnceLock::new();
     VALUE.get_or_init(|| Regex::new(r"(?i)(account=)([^,\s]+)").unwrap())
 }
 
+// Literal patterns are compile-time invariants.
+#[allow(clippy::unwrap_used)]
 fn unix_path_regex() -> &'static Regex {
     static VALUE: OnceLock<Regex> = OnceLock::new();
     VALUE.get_or_init(|| {
@@ -549,16 +563,22 @@ fn unix_path_regex() -> &'static Regex {
     })
 }
 
+// Literal patterns are compile-time invariants.
+#[allow(clippy::unwrap_used)]
 fn windows_path_regex() -> &'static Regex {
     static VALUE: OnceLock<Regex> = OnceLock::new();
     VALUE.get_or_init(|| Regex::new(r#"(?i)[A-Z]:(?:\\|/)[^\s"')]+"#).unwrap())
 }
 
+// Literal patterns are compile-time invariants.
+#[allow(clippy::unwrap_used)]
 fn url_authority_regex() -> &'static Regex {
     static VALUE: OnceLock<Regex> = OnceLock::new();
     VALUE.get_or_init(|| Regex::new(r"(https?://)[^/@\s]+:[^/@\s]+@").unwrap())
 }
 
+// Literal patterns are compile-time invariants.
+#[allow(clippy::unwrap_used)]
 fn json_sensitive_regex() -> &'static Regex {
     static VALUE: OnceLock<Regex> = OnceLock::new();
     VALUE.get_or_init(|| {

@@ -24,10 +24,14 @@ pub fn map_credits(data: &serde_json::Map<String, Value>) -> CreditsMetrics {
         return CreditsMetrics::default();
     };
     let used = total_usage.max(0.0);
-    let total = number(data.get("total_credits")).unwrap_or(0.0).max(0.0);
+    let total = number(data.get("total_credits")).map(|value| value.max(0.0));
     CreditsMetrics {
-        quota: (total > 0.0).then(|| dollars_quota("credits", "Credits", used, total)),
-        balance: Some(dollars_value("balance", "Balance", (total - used).max(0.0))),
+        // Without a known limit there is no percent window and, critically, no
+        // fabricated "$0 Balance"; spend alone is shown by the key endpoint.
+        quota: total
+            .filter(|total| *total > 0.0)
+            .map(|total| dollars_quota("credits", "Credits", used, total)),
+        balance: total.map(|total| dollars_value("balance", "Balance", (total - used).max(0.0))),
     }
 }
 
