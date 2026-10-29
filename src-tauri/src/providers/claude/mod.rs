@@ -147,6 +147,8 @@ pub struct ClaudeProvider {
 
 /// Anthropic rate-limits the reset-grants read hard, so it runs at most hourly per credential.
 const RESET_GRANTS_CHECK_INTERVAL: chrono::Duration = Duration::seconds(60 * 60);
+// A failed lookup retries this soon instead of hiding the row for a full hour.
+const RESET_GRANTS_FAILURE_RETRY: chrono::Duration = Duration::seconds(5 * 60);
 
 struct ResetGrantsCheck {
     credential_fingerprint: [u8; 32],
@@ -477,13 +479,27 @@ impl ClaudeProvider {
             .filter(|(status, _)| status.is_success())
             .and_then(|(_, body)| mapper::parse_reset_grants(&body));
         if fetched.is_none() {
-            crate::app_warn!("claude", "reset grants lookup failed; retrying in an hour");
+            crate::app_warn!("claude", "reset grants lookup failed; retrying soon");
         }
         if let Ok(mut cache) = self.reset_grants_cache.lock() {
+            // Hold the previous status on error so the "Rate Limit Resets" row
+            // survives one transient failure; only the retry cadence shortens.
+            let status = fetched.clone().or_else(|| {
+                cache
+                    .as_ref()
+                    .filter(|check| check.credential_fingerprint == fingerprint)
+                    .and_then(|check| check.status.clone())
+            });
+            let checked_at = if fetched.is_some() {
+                now
+            } else {
+                now.checked_sub_signed(RESET_GRANTS_CHECK_INTERVAL - RESET_GRANTS_FAILURE_RETRY)
+                    .unwrap_or(now)
+            };
             *cache = Some(ResetGrantsCheck {
                 credential_fingerprint: fingerprint,
-                checked_at: now,
-                status: fetched.clone(),
+                checked_at,
+                status,
             });
         }
         fetched

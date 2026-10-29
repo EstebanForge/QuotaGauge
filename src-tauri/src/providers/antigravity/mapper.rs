@@ -19,7 +19,9 @@ const MODEL_BLACKLIST: [&str; 9] = [
 pub struct ModelConfig {
     label: String,
     model_id: Option<String>,
-    remaining_fraction: f64,
+    // None when the host omitted quotaInfo; such a model must not vote on the
+    // pool minimum, or a missing field reads as 100% used.
+    remaining_fraction: Option<f64>,
     resets_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
@@ -130,6 +132,12 @@ pub fn parse_quota_summaries(values: &[Value]) -> Option<Vec<QuotaWindow>> {
         .collect();
     if let Some(argon) = argon {
         insert_argon(&mut quotas, argon);
+    }
+    // A body that answered with groups but no known bucket (signed out, renamed
+    // buckets) must read as "no data" so the caller falls back to the other
+    // sources instead of reporting an empty-but-healthy quota list.
+    if quotas.is_empty() {
+        return None;
     }
     Some(quotas)
 }
@@ -452,6 +460,9 @@ pub fn build_legacy_quotas(configs: Vec<ModelConfig>) -> Vec<QuotaWindow> {
         {
             continue;
         }
+        let Some(fraction) = config.remaining_fraction else {
+            continue;
+        };
         let pool = if config.label.to_ascii_lowercase().contains("gemini") {
             &mut gemini
         } else {
@@ -459,9 +470,9 @@ pub fn build_legacy_quotas(configs: Vec<ModelConfig>) -> Vec<QuotaWindow> {
         };
         if pool
             .as_ref()
-            .is_none_or(|(remaining, _)| config.remaining_fraction < *remaining)
+            .is_none_or(|(remaining, _)| fraction < *remaining)
         {
-            *pool = Some((config.remaining_fraction, config.resets_at));
+            *pool = Some((fraction, config.resets_at));
         }
     }
     [
@@ -495,8 +506,7 @@ fn model_config(label: &str, model_id: Option<String>, quota: Option<&Value>) ->
         model_id,
         remaining_fraction: quota
             .and_then(|value| value.get("remainingFraction"))
-            .and_then(number)
-            .unwrap_or(0.0),
+            .and_then(number),
         resets_at: quota
             .and_then(|value| value.get("resetTime"))
             .and_then(Value::as_str)

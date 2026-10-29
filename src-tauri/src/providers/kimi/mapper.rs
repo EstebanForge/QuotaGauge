@@ -59,14 +59,18 @@ fn map_quotas(body: &Value) -> Result<Vec<QuotaWindow>, KimiError> {
     // shows the same pair). The weekly window and the legacy count-based "usage" section are
     // gone from Kimi and are ignored here.
     let mut quotas = Vec::new();
-    let session = ratio_pool_quota(
+    let session = match ratio_pool_quota(
         body,
         "limit_5h",
         "session",
         "Session",
         DEFAULT_WINDOW_PERIOD_SECONDS,
-    )
-    .or_else(|| session_quota(body).ok().flatten());
+    ) {
+        Some(window) => Some(window),
+        // The legacy section is only a fallback, but a corrupt one must surface
+        // instead of silently vanishing behind a valid monthly quota.
+        None => session_quota(body)?,
+    };
     if let Some(session) = session {
         quotas.push(session);
     }

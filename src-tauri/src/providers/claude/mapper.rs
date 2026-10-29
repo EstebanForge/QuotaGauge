@@ -239,6 +239,8 @@ fn number(value: &Value) -> Option<f64> {
     value
         .as_f64()
         .or_else(|| value.as_str().and_then(|text| text.parse().ok()))
+        // String-parsed values can be "NaN" or "inf"; neither is a real quota.
+        .filter(|number| number.is_finite())
 }
 
 fn reset_date(value: &Value) -> Option<DateTime<Utc>> {
@@ -253,6 +255,10 @@ fn reset_date(value: &Value) -> Option<DateTime<Utc>> {
             });
     }
     let raw = number(value)?;
+    // Zero is a missing timestamp, not midnight on 1970-01-01.
+    if raw <= 0.0 {
+        return None;
+    }
     let seconds = if raw.abs() < 10_000_000_000.0 {
         raw
     } else {

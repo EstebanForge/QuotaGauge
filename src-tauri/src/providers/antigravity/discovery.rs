@@ -228,16 +228,35 @@ fn env_csrf_token(pid: &str) -> Option<String> {
 }
 
 #[cfg(target_os = "macos")]
-fn env_csrf_token(_pid: &str) -> Option<String> {
+fn env_csrf_token(pid: &str) -> Option<String> {
+    if pid.is_empty() {
+        return None;
+    }
+    // -E prints each process's environment; scope the token to the discovered
+    // language-server pid instead of the first match anywhere on the system.
     let output = output_with_timeout(
-        background_command("/bin/ps").args(["-ax", "-E", "-o", "command="]),
+        background_command("/bin/ps").args(["-ax", "-E", "-o", "pid=,command="]),
         DISCOVERY_TIMEOUT,
     )
     .ok()?;
     if !output.status.success() {
         return None;
     }
-    extract_env_token(&String::from_utf8(output.stdout).ok()?)
+    let text = String::from_utf8(output.stdout).ok()?;
+    for line in text.lines() {
+        let line = line.trim_start();
+        let Some(rest) = line.strip_prefix(pid) else {
+            continue;
+        };
+        // The pid must be followed by whitespace so pid 12 does not match 123.
+        if !rest.starts_with(|character: char| character.is_whitespace()) {
+            continue;
+        }
+        if let Some(token) = extract_env_token(rest) {
+            return Some(token);
+        }
+    }
+    None
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]

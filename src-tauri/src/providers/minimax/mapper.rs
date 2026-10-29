@@ -48,7 +48,9 @@ pub fn map_usage(body: &Value) -> Result<MiniMaxMappedUsage, MiniMaxError> {
         .find(|model| model.get("model_name").and_then(Value::as_str) == Some("general"))
         .ok_or(MiniMaxError::InvalidResponse)?;
 
-    let weekly = quota_from_model(general, Window::Weekly)?;
+    // Plans without a weekly boost simply have no weekly window; a missing or
+    // malformed weekly section must not fail the whole refresh.
+    let weekly = quota_from_model(general, Window::Weekly).unwrap_or(None);
     let session = quota_from_model(general, Window::Interval)?;
     Ok(MiniMaxMappedUsage {
         plan: Some("Token Plan".into()),
@@ -99,8 +101,13 @@ fn quota_from_model(model: &Value, window: Window) -> Result<Option<QuotaWindow>
     let remaining = number(model.get(remaining_key))
         .filter(|value| (0.0..=allowance_percent).contains(value))
         .ok_or(MiniMaxError::InvalidResponse)?;
-    let used_percent =
-        ((allowance_percent - remaining) / allowance_percent * 100.0).clamp(0.0, 100.0);
+    // A zero weekly boost leaves no allowance; without the guard the division
+    // is 0/0 and serializes as NaN.
+    let used_percent = if allowance_percent <= 0.0 {
+        100.0
+    } else {
+        ((allowance_percent - remaining) / allowance_percent * 100.0).clamp(0.0, 100.0)
+    };
 
     let end = number(model.get(end_key));
     let start = number(model.get(start_key));

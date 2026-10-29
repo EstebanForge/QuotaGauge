@@ -336,16 +336,27 @@ fn editor_oauth_token(text: &str) -> Option<String> {
 fn yaml_value(text: &str, key: &str) -> Option<String> {
     let prefix = format!("{key}:");
     let mut in_github = false;
+    // Keys nested deeper than the block's first key belong to subsections such
+    // as users.<name>; their oauth_token is not the active account's.
+    let mut block_indent: Option<usize> = None;
     for line in text.lines() {
-        if line
+        if line.trim().is_empty() {
+            continue;
+        }
+        let indent = line
             .chars()
-            .next()
-            .is_some_and(|character| !character.is_whitespace())
-        {
+            .take_while(|character| character.is_whitespace())
+            .count();
+        if indent == 0 {
             in_github = line.trim() == "github.com:";
+            block_indent = None;
             continue;
         }
         if !in_github {
+            continue;
+        }
+        let block_indent = *block_indent.get_or_insert(indent);
+        if indent != block_indent {
             continue;
         }
         let trimmed = line.trim();

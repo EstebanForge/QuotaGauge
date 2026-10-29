@@ -18,7 +18,9 @@ pub enum ResetClaimOutcome {
 
 pub struct CodexResetClaimService {
     client: CodexClient,
-    matched_credit_ids: Mutex<HashMap<String, String>>,
+    // The account index that owned the credit must be cached with the id, or a
+    // retry would ask the wrong account first and give up on its no_credit.
+    matched_credit_ids: Mutex<HashMap<String, (String, usize)>>,
 }
 
 impl CodexResetClaimService {
@@ -42,13 +44,13 @@ impl CodexResetClaimService {
             }
         };
 
-        let cached_credit_id = self
+        let cached_match = self
             .matched_credit_ids
             .lock()
             .ok()
             .and_then(|cache| cache.get(redeem_request_id).cloned());
-        let (credit_id, preferred_index) = if let Some(credit_id) = cached_credit_id {
-            (credit_id, None)
+        let (credit_id, preferred_index) = if let Some((credit_id, index)) = cached_match {
+            (credit_id, Some(index))
         } else {
             let mut matched = None;
             for (index, candidate) in candidates.iter().enumerate() {
@@ -76,20 +78,21 @@ impl CodexResetClaimService {
                     );
                     return ResetClaimOutcome::Failed;
                 }
-                let Some(credit_id) = credit_id_for_expiry(&response.body, expiry) else {
-                    return ResetClaimOutcome::NoCredit;
-                };
-                matched = Some((credit_id, index));
-                break;
+                // The credit may live on another account; a miss on this one is
+                // not proof there is nothing to redeem.
+                if let Some(credit_id) = credit_id_for_expiry(&response.body, expiry) {
+                    matched = Some((credit_id, index));
+                    break;
+                }
             }
             let Some((credit_id, index)) = matched else {
-                return ResetClaimOutcome::Failed;
+                return ResetClaimOutcome::NoCredit;
             };
             if let Ok(mut cache) = self.matched_credit_ids.lock() {
                 if cache.len() >= 256 {
                     cache.clear();
                 }
-                cache.insert(redeem_request_id.to_owned(), credit_id.clone());
+                cache.insert(redeem_request_id.to_owned(), (credit_id.clone(), index));
             }
             (credit_id, Some(index))
         };

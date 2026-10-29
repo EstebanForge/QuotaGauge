@@ -18,7 +18,13 @@ pub(super) enum LocalKimiCredential {
 }
 
 pub(super) fn load_from_home(home: &Path) -> Option<LocalKimiCredential> {
-    cli_credential(home).or_else(|| pi_credential(home))
+    // A stale CLI file must not hide a fresh pi token; freshness wins across sources.
+    match (cli_credential(home), pi_credential(home)) {
+        (Some(LocalKimiCredential::Fresh(access)), _)
+        | (_, Some(LocalKimiCredential::Fresh(access))) => Some(LocalKimiCredential::Fresh(access)),
+        (credential, None) => credential,
+        (_, expired) => expired,
+    }
 }
 
 pub(super) fn env_home() -> Option<PathBuf> {

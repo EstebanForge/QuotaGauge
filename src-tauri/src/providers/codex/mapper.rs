@@ -46,7 +46,7 @@ pub fn map_usage(
     quotas.extend(map_spark_windows(&response.body, now));
 
     let mut value_metrics = Vec::new();
-    if let Some(metric) = map_reset_credits(&response.body, reset_credits) {
+    if let Some(metric) = map_reset_credits(&response.body, reset_credits, now) {
         value_metrics.push(metric);
     }
     if let Some(balance) = read_credits_remaining(response) {
@@ -248,7 +248,11 @@ fn map_window(
     })
 }
 
-fn map_reset_credits(body: &Value, dedicated: Option<&UsageResponse>) -> Option<ValueMetric> {
+fn map_reset_credits(
+    body: &Value,
+    dedicated: Option<&UsageResponse>,
+    now: DateTime<Utc>,
+) -> Option<ValueMetric> {
     let source = reset_credits_source(body, dedicated)?;
     let count = number(source.get("available_count"))?;
     if count < 0.0 {
@@ -266,6 +270,8 @@ fn map_reset_credits(body: &Value, dedicated: Option<&UsageResponse>) -> Option<
                 .is_none_or(|status| status == "available")
         })
         .filter_map(|credit| parse_expiry(credit.get("expires_at")))
+        // Elapsed credits cannot be redeemed; listing them hides the next real reset.
+        .filter(|expires_at| *expires_at > now)
         .collect::<Vec<_>>();
     expiries_at.sort();
     Some(ValueMetric {
@@ -352,6 +358,7 @@ fn header_number(response: &UsageResponse, name: &str) -> Option<f64> {
         .headers
         .get(name)
         .and_then(|value| value.parse().ok())
+        .filter(|number: &f64| number.is_finite())
 }
 
 fn number(value: Option<&Value>) -> Option<f64> {
@@ -716,7 +723,13 @@ mod tests {
                 {"status": "consumed", "expires_at": "2026-02-20T16:10:00Z"}
             ]
         }));
-        let mapped = map_usage(&usage, Some(&dedicated), Utc::now()).unwrap();
+        // Fixed clock before every expiry: elapsed-credit filtering must not eat the fixture.
+        let mapped = map_usage(
+            &usage,
+            Some(&dedicated),
+            Utc.with_ymd_and_hms(2026, 2, 1, 0, 0, 0).unwrap(),
+        )
+        .unwrap();
         assert_eq!(mapped.value_metrics[0].id, "rateLimitResets");
         assert_eq!(mapped.value_metrics[0].values[0].number, 2.0);
         assert_eq!(mapped.value_metrics[0].expiries_at.len(), 2);
