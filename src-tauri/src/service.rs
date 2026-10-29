@@ -318,21 +318,39 @@ impl ProviderService {
                 };
                 flight.completed_tx.send_replace(completed_generation);
 
-                match worker.await {
-                    Ok(_) => crate::app_debug!(
-                        &tag,
-                        "timed-out refresh worker finished; discarded late result"
-                    ),
-                    Err(_) => crate::app_debug!(
-                        &tag,
-                        "timed-out refresh worker stopped; discarded late failure"
-                    ),
-                }
-
-                if let Ok(mut flight_state) = flight.state.lock() {
-                    flight_state.runner_active = false;
-                    flight_state.requested_generation = flight_state.completed_generation;
-                }
+                // Do not block the loop on the late worker: it usually finishes and
+                // releases the flight, but a hung blocking call (keychain prompt) must
+                // not lock the provider out for the session, so a hard ceiling
+                // force-releases the flight and leaves the stuck thread behind.
+                let release_flight = flight.clone();
+                let release_tag = tag.clone();
+                tauri::async_runtime::spawn(async move {
+                    let outcome =
+                        tokio::time::timeout(crate::policy::STUCK_WORKER_CEILING, worker).await;
+                    match outcome {
+                        Ok(Ok(_)) => crate::app_debug!(
+                            &release_tag,
+                            "timed-out refresh worker finished; discarded late result"
+                        ),
+                        Ok(Err(_)) => crate::app_debug!(
+                            &release_tag,
+                            "timed-out refresh worker stopped; discarded late failure"
+                        ),
+                        Err(_) => crate::app_error!(
+                            &release_tag,
+                            "refresh worker never released; force-releasing the flight after {:?}",
+                            crate::policy::STUCK_WORKER_CEILING
+                        ),
+                    }
+                    if let Ok(mut flight_state) = release_flight.state.lock() {
+                        // A newer runner may own the flight by now; only release a
+                        // flight that is still draining.
+                        if flight_state.attempt_generation.is_none() {
+                            flight_state.runner_active = false;
+                            flight_state.requested_generation = flight_state.completed_generation;
+                        }
+                    }
+                });
                 false
             } else {
                 let run_follow_up = if let Ok(mut flight_state) = flight.state.lock() {

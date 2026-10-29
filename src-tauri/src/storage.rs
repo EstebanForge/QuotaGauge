@@ -71,6 +71,9 @@ impl Storage {
 
     fn open_connection(path: &Path) -> Result<Connection, StorageError> {
         let connection = Connection::open(path)?;
+        // Snapshot writes and settings saves can collide across the async runtime;
+        // wait briefly instead of failing with SQLITE_BUSY.
+        connection.execute_batch("PRAGMA busy_timeout = 5000;")?;
         // Spending and local-usage tables were removed with that feature; old databases keep
         // their rows forever unless dropped here.
         connection.execute_batch(

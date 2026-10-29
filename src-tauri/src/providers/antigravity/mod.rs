@@ -114,13 +114,20 @@ pub enum AntigravityError {
 pub struct AntigravityProvider {
     client: AntigravityClient,
     access_token_cache: AccessTokenCache,
+    // A machine without Argon would otherwise spawn agy on every refresh just to
+    // re-learn "no Argon"; remember the miss for a few minutes instead.
+    argon_miss_cache: std::sync::Mutex<Option<std::time::Instant>>,
 }
+
+/// How long a "no Argon from any agy candidate" result stays authoritative.
+const ARGON_MISS_TTL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
 impl AntigravityProvider {
     pub fn new(cache_path: PathBuf) -> Result<Self, AntigravityError> {
         Ok(Self {
             client: AntigravityClient::new()?,
             access_token_cache: AccessTokenCache::new(cache_path),
+            argon_miss_cache: std::sync::Mutex::new(None),
         })
     }
 
@@ -333,6 +340,16 @@ impl AntigravityProvider {
         if quotas.iter().any(|quota| quota.id == "argonWeekly") {
             return;
         }
+        if self
+            .argon_miss_cache
+            .lock()
+            .ok()
+            .and_then(|miss| *miss)
+            .is_some_and(|at| at.elapsed() < ARGON_MISS_TTL)
+        {
+            crate::app_debug!("antigravity", "Argon miss still cached; skipping agy probe");
+            return;
+        }
         let cli_path_env =
             std::env::var_os(AGY_CLI_PATH_ENV).map(|path| path.to_string_lossy().into_owned());
         let home = home_directory();
@@ -362,6 +379,9 @@ impl AntigravityProvider {
             }
         }
         crate::app_debug!("antigravity", "no agy candidate supplied Argon");
+        if let Ok(mut miss) = self.argon_miss_cache.lock() {
+            *miss = Some(std::time::Instant::now());
+        }
     }
 
     /// The daily host omits the Gemini session pool; `fetchAvailableModels` still carries the live

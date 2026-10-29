@@ -23,6 +23,7 @@ pub fn output_with_timeout(command: &mut Command, timeout: Duration) -> io::Resu
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    detach_process_group(command);
     let mut child = command.spawn()?;
     let stdout = child
         .stdout
@@ -48,22 +49,20 @@ pub fn output_with_timeout(command: &mut Command, timeout: Duration) -> io::Resu
                         .min(Duration::from_millis(10)),
                 );
             }
+            Err(error) => {
+                terminate_tree(&mut child);
+                let _ = join_reader(stdout_reader);
+                let _ = join_reader(stderr_reader);
+                return Err(error);
+            }
             Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                terminate_tree(&mut child);
                 let _ = join_reader(stdout_reader);
                 let _ = join_reader(stderr_reader);
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,
                     "background command timed out",
                 ));
-            }
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = join_reader(stdout_reader);
-                let _ = join_reader(stderr_reader);
-                return Err(error);
             }
         }
     };
@@ -85,6 +84,38 @@ fn join_reader(reader: thread::JoinHandle<io::Result<Vec<u8>>>) -> io::Result<Ve
     reader
         .join()
         .map_err(|_| io::Error::other("background output reader panicked"))?
+}
+
+/// On Unix the child leads its own process group, so a timeout can kill the
+/// whole tree; killing only the direct child lets a grandchild hold the pipe
+/// open and defeats the deadline (an rc file that backgrounds a daemon does this).
+#[cfg(unix)]
+fn detach_process_group(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+
+    command.process_group(0);
+}
+
+#[cfg(not(unix))]
+fn detach_process_group(_command: &mut Command) {}
+
+#[cfg(unix)]
+fn terminate_tree(child: &mut std::process::Child) {
+    let pid = child.id() as libc::pid_t;
+    // The child is its own group leader after detach_process_group.
+    let signaled = unsafe { libc::killpg(pid, libc::SIGKILL) } == 0;
+    if !signaled {
+        let _ = child.kill();
+    }
+    let _ = child.wait();
+}
+
+#[cfg(not(unix))]
+fn terminate_tree(child: &mut std::process::Child) {
+    // A full job-object tree kill on Windows needs extra setup; the direct child
+    // kill covers every Windows caller today, which all run short-lived CLIs.
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 #[cfg(target_os = "windows")]
@@ -152,6 +183,23 @@ mod unix_tests {
         let started = Instant::now();
         let error = output_with_timeout(
             background_command("sleep").arg("5"),
+            Duration::from_millis(100),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn background_command_deadline_also_kills_grandchildren() {
+        // A grandchild holding the stdout pipe must not extend the deadline past
+        // the timeout (regression: join blocked forever on the open pipe).
+        let started = Instant::now();
+        let error = output_with_timeout(
+            background_command("sh")
+                .arg("-c")
+                .arg("sleep 30 & sleep 30"),
             Duration::from_millis(100),
         )
         .unwrap_err();

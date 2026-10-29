@@ -39,6 +39,9 @@ tiny-skia = { version = "0.12", default-features = false, features = ["simd", "s
 tokio = { version = "1", features = ["sync", "time"] }
 zeroize = "1.8"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-single-instance = "2"
 
