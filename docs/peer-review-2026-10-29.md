@@ -27,8 +27,8 @@ Legend: `[x]` fixed, `[ ]` open. Severity: B = blocker, S = should-fix, N = nit.
 
 ## Connectivity gate
 
-- [ ] [S-14] `connectivity.rs` + `refresh_loop.rs:19`: the gate is a session latch, boot-only. After sleep+wake the same Wi-Fi-not-ready failure recurs and the provider enters the 60s backoff. Reset the latch when a Network-kind failure is observed.
-- [ ] [S-15] Single-host probe (`www.gstatic.com`): blocked networks (mainland China, strict DNS filters) burn the 30s budget on every launch. Add a second probe target. (Plain-HTTP choice itself is deliberate; not in scope.)
+- [x] [S-14] `connectivity.rs` + `refresh_loop.rs:19`: the gate is a session latch, boot-only. After sleep+wake the same Wi-Fi-not-ready failure recurs and the provider enters the 60s backoff. Reset the latch when a Network-kind failure is observed.
+- [x] [S-15] Single-host probe (`www.gstatic.com`): blocked networks (mainland China, strict DNS filters) burn the 30s budget on every launch. Add a second probe target. (Plain-HTTP choice itself is deliberate; not in scope.)
 
 ## Process and timeout handling
 
@@ -80,5 +80,5 @@ Legend: `[x]` fixed, `[ ]` open. Severity: B = blocker, S = should-fix, N = nit.
 - [ ] [N-t1] Duplicated HTTP client setup: `claude/client.rs:28-35` bypasses `providers/http.rs::build_client` (no connect timeout, hardcoded spoofed UA). Codex and Copilot build their own too.
 - [ ] [N-t2] Weak/flaky tests: `claude/accounts.rs:657` 100ms budget can pass by timeout; `claude/mod.rs:869-881` blocking `accept()` with no timeout can hang; `zai/mod.rs:383` fixed port `127.0.0.1:1`; `antigravity/mod.rs:783` test name asserts the opposite; `grok/client.rs:162-183` test-only retry production lacks; `test_http.rs:35-36` single 4096-byte read can RST split POSTs; kimi mapper test hides the swallowed error in S-4's neighbor item; `codex/auth.rs:410-423` tests only one predicate.
 - [x] [N-t3] Docs/config drift: AGENTS.md says `build:linux` bundles `deb,appimage`, actual is `deb,appimage,rpm`; `codex/auth.rs:195-205` save lacks `sync_all` (claude has it); Dependabot at 0 and CI disabled so rot is unmonitored; no `cargo audit`/`npm audit` step.
-- [ ] [N-t4] Connectivity gate tests: `probe_endpoint_is_the_google_empty_reply_check` asserts constants against themselves; `late_joiner_aborts_once_another_caller_settles` fixed 500ms sleep can flake on loaded CI; `.unwrap_or(false)` on the probe join swallows panics silently.
+- [x] [N-t4] Connectivity gate tests: `probe_endpoint_is_the_google_empty_reply_check` asserts constants against themselves; `late_joiner_aborts_once_another_caller_settles` fixed 500ms sleep can flake on loaded CI; `.unwrap_or(false)` on the probe join swallows panics silently.
 - [ ] [N-csp] `tauri.conf.json:34` CSP has `style-src 'unsafe-inline'`.

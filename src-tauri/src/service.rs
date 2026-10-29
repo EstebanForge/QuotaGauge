@@ -295,8 +295,16 @@ impl ProviderService {
                 if let Ok(mut failures) = self.last_failed_refresh.lock() {
                     failures.remove(&provider_id);
                 }
-            } else if let Ok(mut failures) = self.last_failed_refresh.lock() {
-                failures.insert(provider_id.clone(), Instant::now());
+            } else {
+                if let Ok(mut failures) = self.last_failed_refresh.lock() {
+                    failures.insert(provider_id.clone(), Instant::now());
+                }
+                // A network-kind failure after the gate settled (sleep/wake onto a
+                // cold network) must re-arm it so the next cycle re-probes instead
+                // of failing straight into the backoff again.
+                if state.error_kind == Some(ProviderErrorKind::Network) {
+                    crate::connectivity::gate_reset();
+                }
             }
 
             let run_follow_up = if let Some(worker) = late_worker {

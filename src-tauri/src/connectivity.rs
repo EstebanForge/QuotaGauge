@@ -12,8 +12,12 @@ use crate::policy::{
 
 // Over plain HTTP a captive portal answers 200 with its own page; only a real 204 proves
 // internet reachability. HTTPS cannot be used here: a portal breaks the handshake instead
-// of returning 200, making the check unable to distinguish captive from offline.
-const PROBE_URL: &str = "http://www.gstatic.com/generate_204";
+// of returning 200, making the check unable to distinguish captive from offline. Two
+// targets so a network that blocks one vendor (DNS filters, regional blocks) still settles.
+const PROBE_URLS: [&str; 2] = [
+    "http://www.gstatic.com/generate_204",
+    "http://cp.cloudflare.com/",
+];
 const PROBE_STATUS: reqwest::StatusCode = reqwest::StatusCode::NO_CONTENT;
 
 static GATE: OnceLock<ConnectivityGate> = OnceLock::new();
@@ -32,6 +36,14 @@ pub async fn ensure_network_ready() {
         .await;
 }
 
+/// Re-arms the gate after a network-kind failure (e.g. wake from sleep onto a
+/// cold network), so the next refresh waits for connectivity again.
+pub fn gate_reset() {
+    if let Some(gate) = GATE.get() {
+        gate.reset();
+    }
+}
+
 struct ConnectivityGate {
     settled: AtomicBool,
 }
@@ -41,6 +53,10 @@ impl ConnectivityGate {
         Self {
             settled: AtomicBool::new(false),
         }
+    }
+
+    fn reset(&self) {
+        self.settled.store(false, Ordering::Relaxed);
     }
 
     async fn ensure_ready(
@@ -56,9 +72,13 @@ impl ConnectivityGate {
                 return;
             }
             let probe = probe.clone();
-            let reachable = tauri::async_runtime::spawn_blocking(move || probe())
-                .await
-                .unwrap_or(false);
+            let reachable = match tauri::async_runtime::spawn_blocking(move || probe()).await {
+                Ok(reachable) => reachable,
+                Err(error) => {
+                    crate::app_debug!("network", "connectivity probe failed to run ({error})");
+                    false
+                }
+            };
             if reachable {
                 crate::app_debug!("network", "connectivity confirmed");
                 break;
@@ -91,11 +111,13 @@ fn probe_client() -> Option<Client> {
 
 fn probe_once() -> bool {
     match probe_client() {
-        Some(client) => client
-            .get(PROBE_URL)
-            .send()
-            .map(|response| response.status() == PROBE_STATUS)
-            .unwrap_or(false),
+        Some(client) => PROBE_URLS.iter().any(|url| {
+            client
+                .get(*url)
+                .send()
+                .map(|response| response.status() == PROBE_STATUS)
+                .unwrap_or(false)
+        }),
         None => false,
     }
 }
@@ -108,7 +130,7 @@ mod tests {
     };
     use std::time::{Duration, Instant};
 
-    use super::{ConnectivityGate, PROBE_STATUS, PROBE_URL};
+    use super::{ConnectivityGate, PROBE_STATUS, PROBE_URLS};
 
     const TEST_BUDGET: Duration = Duration::from_secs(5);
 
@@ -123,8 +145,11 @@ mod tests {
     }
 
     #[test]
-    fn probe_endpoint_is_the_google_empty_reply_check() {
-        assert_eq!(PROBE_URL, "http://www.gstatic.com/generate_204");
+    fn probe_targets_are_plain_http_empty_reply_checks() {
+        for url in PROBE_URLS {
+            assert!(url.starts_with("http://"), "{url} must be plain HTTP");
+            assert!(!url.starts_with("https://"));
+        }
         assert_eq!(PROBE_STATUS, reqwest::StatusCode::NO_CONTENT);
     }
 
@@ -187,6 +212,23 @@ mod tests {
     }
 
     #[test]
+    fn gate_reset_rearms_the_latch_for_the_next_wait() {
+        let gate = ConnectivityGate::new();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let probe = counting_probe(calls.clone(), true);
+
+        tauri::async_runtime::block_on(async {
+            gate.ensure_ready(TEST_BUDGET, Duration::from_millis(1), probe.clone())
+                .await;
+            gate.reset();
+            gate.ensure_ready(TEST_BUDGET, Duration::from_millis(1), probe)
+                .await;
+        });
+
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
     fn late_joiner_aborts_once_another_caller_settles() {
         let gate = Arc::new(ConnectivityGate::new());
         let slow_probe: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(|| {
@@ -208,7 +250,8 @@ mod tests {
         gate.settled.store(true, Ordering::Relaxed);
         waiter.join().expect("waiter thread panicked");
 
-        // Without the in-loop settled check this would run for the full 5s budget.
-        assert!(started.elapsed() < Duration::from_secs(1));
+        // Without the in-loop settled check this would run for the full 5s budget;
+        // the bound stays well under the budget so a loaded CI runner cannot false-pass.
+        assert!(started.elapsed() < Duration::from_millis(2_500));
     }
 }
