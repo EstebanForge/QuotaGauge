@@ -17,7 +17,21 @@ npm install
 npm run tauri dev
 ```
 
-## Commands
+## Commands (`just` recipes)
+
+```sh
+just dev                  # tauri dev
+just check                # svelte-check
+just lint                 # eslint + prettier --check
+just test                 # vitest run
+just test-rust            # cargo test in src-tauri
+just verify               # full gate: versions + contracts + frontend + rust
+just build                # vite build -> dist/
+just build-linux          # tauri build --bundles deb,appimage,rpm
+just ci                   # verify + build locally
+```
+
+Or via direct npm commands:
 
 ```sh
 npm run verify            # full gate: versions + contracts + frontend + rust
@@ -27,8 +41,7 @@ npm run test              # vitest run
 npm run test:watch
 npm run build             # vite build -> dist/
 npm run build:linux       # tauri build --bundles deb,appimage,rpm
-npm run build:installer   # tauri build --bundles nsis (Windows)
-npm run tauri -- build --bundles dmg   # macOS
+npm run build:installer   # tauri build --bundles nsis (Windows)\nnpm run tauri -- build --bundles dmg   # macOS
 ```
 
 Rust gates (what `verify:rust` runs, useful singly):
