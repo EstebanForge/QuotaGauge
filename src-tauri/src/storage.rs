@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     fs,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Mutex, MutexGuard},
 };
 
@@ -23,9 +23,12 @@ pub enum StorageError {
     InvalidCache(#[from] serde_json::Error),
     #[error("QuotaGauge database lock is unavailable")]
     Poisoned,
+    #[error("Corrupt QuotaGauge database could not be quarantined")]
+    Quarantine(#[source] std::io::Error),
 }
 
 pub struct Storage {
+    path: PathBuf,
     connection: Mutex<Connection>,
 }
 
@@ -41,6 +44,32 @@ impl Storage {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(StorageError::CreateDirectory)?;
         }
+        match Self::open_connection(path) {
+            Ok(connection) => Ok(Self {
+                path: path.to_path_buf(),
+                connection: Mutex::new(connection),
+            }),
+            Err(error) => {
+                // An unopenable database (corrupt header, partial copy) must not brick
+                // every launch; quarantine the file and start fresh.
+                crate::app_error!(
+                    "storage",
+                    "database unopenable ({error}); quarantining and starting fresh"
+                );
+                let quarantine = path.with_extension(format!(
+                    "db.corrupt-{}",
+                    chrono::Utc::now().format("%Y%m%d%H%M%S")
+                ));
+                fs::rename(path, &quarantine).map_err(StorageError::Quarantine)?;
+                Ok(Self {
+                    path: path.to_path_buf(),
+                    connection: Mutex::new(Self::open_connection(path)?),
+                })
+            }
+        }
+    }
+
+    fn open_connection(path: &Path) -> Result<Connection, StorageError> {
         let connection = Connection::open(path)?;
         // Spending and local-usage tables were removed with that feature; old databases keep
         // their rows forever unless dropped here.
@@ -82,9 +111,7 @@ impl Storage {
                 [],
             )?;
         }
-        Ok(Self {
-            connection: Mutex::new(connection),
-        })
+        Ok(connection)
     }
 
     #[cfg(test)]
@@ -177,9 +204,29 @@ impl Storage {
                 row.get(0)
             })
             .optional()?;
-        payload
-            .map(|json| serde_json::from_str(&json).map_err(StorageError::from))
-            .transpose()
+        let Some(json) = payload else {
+            return Ok(None);
+        };
+        match serde_json::from_str(&json) {
+            Ok(settings) => Ok(Some(settings)),
+            Err(error) => {
+                // A downgrade or a torn write must not brick startup; keep the raw
+                // payload next to the database and fall back to defaults.
+                crate::app_error!(
+                    "settings",
+                    "stored settings undecodable ({error}); backing up and falling back to defaults"
+                );
+                let backup = self.path.with_extension("db.settings-backup.json");
+                if let Err(backup_error) = fs::write(&backup, &json) {
+                    crate::app_warn!(
+                        "settings",
+                        "settings backup could not be written ({backup_error})"
+                    );
+                }
+                connection.execute("DELETE FROM app_settings WHERE id = 1", [])?;
+                Ok(None)
+            }
+        }
     }
 
     pub fn save_settings(&self, settings: &AppSettings) -> Result<(), StorageError> {
@@ -376,6 +423,49 @@ mod tests {
     use super::{ProviderAccountUpdate, Storage};
     use crate::models::{AppSettings, ProviderSnapshot, QuotaFormat, QuotaWindow};
     use crate::providers::CacheIdentity;
+
+    #[test]
+    fn undecodable_settings_fall_back_to_defaults_and_back_up_the_payload() {
+        let directory = tempdir().unwrap();
+        let database = directory.path().join("quotagauge.db");
+        let storage = Storage::open(&database).unwrap();
+        {
+            let connection = storage.connection().unwrap();
+            connection
+                .execute(
+                    "INSERT INTO app_settings(id, payload) VALUES (1, '{\"theme\":\"future-variant\"}')",
+                    [],
+                )
+                .unwrap();
+        }
+
+        let loaded = storage.load_settings().unwrap();
+
+        assert!(loaded.is_none());
+        let backup = std::fs::read_to_string(database.with_extension("db.settings-backup.json"))
+            .expect("raw payload must be preserved for forensics");
+        assert!(backup.contains("future-variant"));
+        assert!(storage.load_settings().unwrap().is_none());
+    }
+
+    #[test]
+    fn unopenable_database_is_quarantined_and_recreated() {
+        let directory = tempdir().unwrap();
+        let database = directory.path().join("quotagauge.db");
+        std::fs::write(&database, b"this is not a sqlite database").unwrap();
+
+        let storage = Storage::open(&database).unwrap();
+
+        assert!(database.exists());
+        assert!(storage.load_settings().unwrap().is_none());
+        let quarantined = std::fs::read_dir(directory.path())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("quotagauge.db.corrupt-"))
+            .count();
+        assert_eq!(quarantined, 1);
+    }
 
     #[test]
     fn corrupt_cache_payloads_read_as_absent_instead_of_erroring() {

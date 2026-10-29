@@ -20,9 +20,9 @@ Legend: `[x]` fixed, `[ ]` open. Severity: B = blocker, S = should-fix, N = nit.
 
 ## Startup and persistence
 
-- [ ] [S-37] `storage.rs:173-183`, `settings.rs:102`, `lib.rs:364-371`: undecodable settings row or unopenable DB propagates out of setup; app fails to start on every launch (e.g. after a downgrade that added an enum variant). Heal like the snapshot loaders: log, back up, fall back to defaults. Only `LogLevel` has `#[serde(other)]`.
-- [ ] [S-38] `legacy.rs:51`: legacy import copies only `openquota.db`, not `-wal`/`-shm`, in WAL mode. Partial copy plus `NotNeeded` on next launch opens a broken DB. Copy atomically (temp + rename), checkpoint or back up through SQLite.
-- [ ] [S-39] `xdg_autostart.rs:11-13`: `Exec=` uses `current_exe()`. Inside an AppImage that is `/tmp/.mount_XXXX`, gone after exit; launch-at-login silently dies after every self-update. Write `$APPIMAGE` when set. `quote_exec` also does not escape `%` as `%%`.
+- [x] [S-37] `storage.rs:173-183`, `settings.rs:102`, `lib.rs:364-371`: undecodable settings row or unopenable DB propagates out of setup; app fails to start on every launch (e.g. after a downgrade that added an enum variant). Heal like the snapshot loaders: log, back up, fall back to defaults. Only `LogLevel` has `#[serde(other)]`.
+- [x] [S-38] `legacy.rs:51`: legacy import copies only `openquota.db`, not `-wal`/`-shm`, in WAL mode. Partial copy plus `NotNeeded` on next launch opens a broken DB. Copy atomically (temp + rename), checkpoint or back up through SQLite.
+- [x] [S-39] `xdg_autostart.rs:11-13`: `Exec=` uses `current_exe()`. Inside an AppImage that is `/tmp/.mount_XXXX`, gone after exit; launch-at-login silently dies after every self-update. Write `$APPIMAGE` when set. `quote_exec` also does not escape `%` as `%%`.
 - [ ] [N-40] No `PRAGMA user_version`; `schema_version` forced to 7 on load so a downgrade is silently accepted; `settings.rs:163` returns defaults on poisoned lock (every provider reads as disabled).
 
 ## Connectivity gate

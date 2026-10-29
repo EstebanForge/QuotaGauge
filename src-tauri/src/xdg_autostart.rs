@@ -8,8 +8,12 @@ pub fn set_enabled(enabled: bool) -> Result<(), String> {
         std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from),
         std::env::var_os("HOME").map(PathBuf::from),
     )?;
-    let executable =
-        std::env::current_exe().map_err(|_| "QuotaGauge executable path could not be resolved.")?;
+    // Inside an AppImage, current_exe() is the temporary mount point that no longer
+    // exists after exit; the launcher path is the only durable executable reference.
+    let executable = std::env::var_os("APPIMAGE")
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_exe().ok())
+        .ok_or("QuotaGauge executable path could not be resolved.")?;
     set_enabled_at(&path, &executable, enabled)
 }
 
@@ -76,7 +80,8 @@ fn quote_exec(value: &str) -> String {
     let escaped = value
         .chars()
         .flat_map(|character| {
-            if matches!(character, '\\' | '"' | '`' | '$') {
+            // The Desktop Entry spec reserves % as a field code; emit it literally as %%.
+            if matches!(character, '\\' | '"' | '`' | '$' | '%') {
                 vec!['\\', character]
             } else {
                 vec![character]

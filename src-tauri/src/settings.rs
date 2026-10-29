@@ -991,6 +991,7 @@ mod tests {
         default_settings, normalize, normalize_with_persisted_accounts, SettingsService,
         MAX_PINS_PER_PROVIDER,
     };
+    use crate::models::AppSettings;
 
     struct CatalogProvider(ProviderDefinition);
 
@@ -2106,7 +2107,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_saved_settings_are_not_overwritten_with_defaults() {
+    fn undecodable_saved_settings_heal_to_defaults_and_preserve_the_payload() {
         let directory = tempdir().unwrap();
         let database_path = directory.path().join("quotagauge.db");
         let connection = rusqlite::Connection::open(&database_path).unwrap();
@@ -2127,14 +2128,23 @@ mod tests {
         drop(connection);
         let storage = Arc::new(Storage::open(&database_path).unwrap());
 
-        assert!(SettingsService::new_deferred(storage.clone(), catalog()).is_err());
+        // Startup must not fail on an undecodable row (e.g. after a downgrade); the
+        // service heals to defaults and persists a fresh valid row.
+        let (_service, _plan) = SettingsService::new_deferred(storage.clone(), catalog()).unwrap();
         let connection = rusqlite::Connection::open(&database_path).unwrap();
         let payload: String = connection
             .query_row("SELECT payload FROM app_settings WHERE id = 1", [], |row| {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(payload, "{not-valid-json");
+        assert!(
+            serde_json::from_str::<AppSettings>(&payload).is_ok(),
+            "the repopulated row must be valid settings"
+        );
+        let backup =
+            std::fs::read_to_string(database_path.with_extension("db.settings-backup.json"))
+                .expect("the raw payload must be preserved for forensics");
+        assert_eq!(backup, "{not-valid-json");
     }
 
     #[test]

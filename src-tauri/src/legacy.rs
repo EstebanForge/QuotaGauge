@@ -48,9 +48,52 @@ pub fn import_legacy_database(
     if !legacy_path.is_file() {
         return Ok(LegacyDbImport::LegacyMissing);
     }
-    let bytes = fs::copy(&legacy_path, database_path)
+    let bytes = copy_with_wal_sidecars(&legacy_path, database_path)
         .map_err(|error| format!("copying {} failed: {error}", legacy_path.display()))?;
     Ok(LegacyDbImport::Imported { bytes })
+}
+
+/// The source database runs in WAL mode, so the -wal/-shm sidecar files are part of
+/// the database state; copying the main file alone imports a torn, half-checkpointed
+/// database. The main file goes through a temp name so a failed import never leaves a
+/// partial quotagauge.db behind (its existence would suppress any retry).
+fn copy_with_wal_sidecars(source: &Path, target: &Path) -> std::io::Result<u64> {
+    let temporary = target.with_extension("db.import-tmp");
+    let bytes = fs::copy(source, &temporary)?;
+    let mut sidecars = Vec::new();
+    for sidecar in ["-wal", "-shm"] {
+        let source_sidecar = appended_path(source, sidecar);
+        if source_sidecar.is_file() {
+            let temporary_sidecar = appended_path(&temporary, sidecar);
+            fs::copy(&source_sidecar, &temporary_sidecar)?;
+            sidecars.push((temporary_sidecar, appended_path(target, sidecar)));
+        }
+    }
+    match fs::rename(&temporary, target) {
+        Ok(()) => {
+            for (from, to) in sidecars {
+                let _ = fs::rename(from, to);
+            }
+            Ok(bytes)
+        }
+        Err(error) => {
+            let _ = fs::remove_file(&temporary);
+            for (from, _) in sidecars {
+                let _ = fs::remove_file(from);
+            }
+            Err(error)
+        }
+    }
+}
+
+fn appended_path(path: &Path, suffix: &str) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_os_string())
+        .unwrap_or_default();
+    let mut joined = file_name;
+    joined.push(suffix);
+    path.with_file_name(joined)
 }
 
 /// Runs the legacy import and records the outcome; startup continues with a
@@ -85,6 +128,30 @@ mod tests {
             import_legacy_database(&new_dir, &new_dir.join("missing").join("quotagauge.db"));
 
         assert!(outcome.is_err());
+    }
+
+    #[test]
+    fn import_carries_wal_sidecars_for_a_consistent_database() {
+        let base = tempfile::tempdir().unwrap();
+        let source = base.path().join("openquota.db");
+        let target = base.path().join("quotagauge.db");
+        fs::write(&source, b"main").unwrap();
+        fs::write(appended_path(&source, "-wal"), b"wal").unwrap();
+        fs::write(appended_path(&source, "-shm"), b"shm").unwrap();
+
+        let bytes = copy_with_wal_sidecars(&source, &target).unwrap();
+
+        assert_eq!(bytes, 4);
+        assert_eq!(fs::read_to_string(&target).unwrap(), "main");
+        assert_eq!(
+            fs::read_to_string(appended_path(&target, "-wal")).unwrap(),
+            "wal"
+        );
+        assert_eq!(
+            fs::read_to_string(appended_path(&target, "-shm")).unwrap(),
+            "shm"
+        );
+        assert!(!target.with_extension("db.import-tmp").exists());
     }
 
     fn new_dir(base: &Path, identifier: &str) -> PathBuf {
