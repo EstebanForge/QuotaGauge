@@ -599,7 +599,22 @@ fn refresh_credential(
         .as_deref()
         .filter(|value| !value.is_empty())
         .ok_or(ClaudeError::TokenExpired)?;
-    let refreshed = client.refresh_token(refresh_token, config)?;
+    let refreshed = match client.refresh_token(refresh_token, config) {
+        Ok(refreshed) => refreshed,
+        Err(ClaudeError::SessionExpired)
+            if auth::adopt_concurrent_rotation(credential, credential_scope) =>
+        {
+            crate::app_info!(
+                "auth:claude",
+                "vendor CLI rotated the token concurrently; adopted the fresh credentials"
+            );
+            *credential_generation = credential_generation
+                .replacing(credential)
+                .ok_or(ClaudeError::CredentialsChanged)?;
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
     match credential.update_and_save(
         refreshed.access_token,
         refreshed.refresh_token,

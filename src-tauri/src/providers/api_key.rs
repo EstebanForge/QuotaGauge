@@ -79,6 +79,13 @@ impl SecretBackend for ServiceSecretBackend {
 /// item, so an ad-hoc signed build triggers one access prompt per launch
 /// instead of one per provider. On a map miss it folds in that account's
 /// per-account item and removes it.
+enum CombinedLoadError {
+    /// Keychain read failed; the stored keys are unknown, so no mutation is safe.
+    Backend(String),
+    /// The item decoded but is not valid JSON; replacing it loses nothing readable.
+    Corrupt,
+}
+
 struct CombinedSecretBackend {
     inner: Arc<dyn SecretBackend>,
     lock: Mutex<()>,
@@ -105,12 +112,31 @@ impl CombinedSecretBackend {
         self.lock.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn load(&self) -> Result<BTreeMap<String, String>, String> {
-        let Some(bytes) = self.inner.read(COMBINED_ACCOUNT)? else {
+    fn load(&self) -> Result<BTreeMap<String, String>, CombinedLoadError> {
+        let Some(bytes) = self
+            .inner
+            .read(COMBINED_ACCOUNT)
+            .map_err(CombinedLoadError::Backend)?
+        else {
             return Ok(BTreeMap::new());
         };
-        serde_json::from_slice(bytes.as_slice())
-            .map_err(|_| "The combined API key item could not be read.".to_owned())
+        serde_json::from_slice(bytes.as_slice()).map_err(|_| CombinedLoadError::Corrupt)
+    }
+
+    /// Only a corrupt map may be replaced; a backend read failure must abort the
+    /// mutation, otherwise saving one key would wipe every other saved key.
+    fn load_for_mutation(&self, account: &str) -> Result<BTreeMap<String, String>, String> {
+        match self.load() {
+            Ok(map) => Ok(map),
+            Err(CombinedLoadError::Corrupt) => {
+                crate::app_warn!(
+                    &format!("auth:{account}"),
+                    "corrupt combined credential item replaced"
+                );
+                Ok(BTreeMap::new())
+            }
+            Err(CombinedLoadError::Backend(error)) => Err(error),
+        }
     }
 
     fn store(&self, map: &BTreeMap<String, String>) -> Result<(), String> {
@@ -131,7 +157,10 @@ impl SecretBackend for CombinedSecretBackend {
     fn read(&self, account: &str) -> Result<Option<SecretBytes>, String> {
         self.guard(account)?;
         let _guard = self.lock();
-        let mut map = self.load()?;
+        let mut map = self.load().map_err(|error| match error {
+            CombinedLoadError::Backend(error) => error,
+            CombinedLoadError::Corrupt => "The combined API key item could not be read.".to_owned(),
+        })?;
         if let Some(value) = map.get(account) {
             return Ok(Some(SecretBytes::new(value.clone().into_bytes())));
         }
@@ -165,16 +194,7 @@ impl SecretBackend for CombinedSecretBackend {
         let text = std::str::from_utf8(value)
             .map_err(|_| "The API key has an unsupported encoding.".to_owned())?;
         let _guard = self.lock();
-        let mut map = match self.load() {
-            Ok(map) => map,
-            Err(error) => {
-                crate::app_warn!(
-                    &format!("auth:{account}"),
-                    "unreadable combined credential item replaced ({error})"
-                );
-                BTreeMap::new()
-            }
-        };
+        let mut map = self.load_for_mutation(account)?;
         map.insert(account.to_owned(), text.to_owned());
         self.store(&map)
     }
@@ -185,16 +205,7 @@ impl SecretBackend for CombinedSecretBackend {
         // resurrect a deleted key through the fold path.
         self.inner.delete(account)?;
         let _guard = self.lock();
-        let mut map = match self.load() {
-            Ok(map) => map,
-            Err(error) => {
-                crate::app_warn!(
-                    &format!("auth:{account}"),
-                    "unreadable combined credential item cleared ({error})"
-                );
-                BTreeMap::new()
-            }
-        };
+        let mut map = self.load_for_mutation(account)?;
         map.remove(account);
         if map.is_empty() {
             self.inner.delete(COMBINED_ACCOUNT)
@@ -930,6 +941,57 @@ mod tests {
 
         backend.delete("zai").unwrap();
         assert!(inner.read(super::COMBINED_ACCOUNT).unwrap().is_none());
+    }
+
+    struct InnerWithFailingRead {
+        inner: MemorySecrets,
+    }
+
+    impl SecretBackend for InnerWithFailingRead {
+        fn read(&self, _account: &str) -> Result<Option<SecretBytes>, String> {
+            Err("The credential store is locked.".into())
+        }
+
+        fn write(&self, account: &str, value: &[u8]) -> Result<(), String> {
+            self.inner.write(account, value)
+        }
+
+        fn delete(&self, account: &str) -> Result<(), String> {
+            self.inner.delete(account)
+        }
+    }
+
+    #[test]
+    fn a_backend_read_failure_aborts_the_write_and_keeps_saved_keys() {
+        let failing = Arc::new(InnerWithFailingRead {
+            inner: MemorySecrets::default(),
+        });
+        let mut seeded = std::collections::BTreeMap::new();
+        seeded.insert("zai".to_owned(), "key-zai".to_owned());
+        failing
+            .inner
+            .write(
+                super::COMBINED_ACCOUNT,
+                &serde_json::to_vec(&seeded).unwrap(),
+            )
+            .unwrap();
+        let backend = combined(failing.clone());
+
+        let result = backend.write("openrouter", b"key-or");
+
+        assert!(result.is_err());
+        let stored = failing
+            .inner
+            .read(super::COMBINED_ACCOUNT)
+            .unwrap()
+            .unwrap();
+        let saved =
+            serde_json::from_slice::<std::collections::BTreeMap<String, String>>(stored.as_slice())
+                .unwrap();
+        assert_eq!(
+            saved.keys().cloned().collect::<Vec<_>>(),
+            ["zai".to_owned()]
+        );
     }
 
     #[test]

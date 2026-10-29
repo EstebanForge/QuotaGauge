@@ -123,7 +123,15 @@ impl GrokProvider {
         let mut warnings = Vec::new();
         if self.auth.needs_refresh(state, now) {
             if let Err(error) = self.refresh_access_token(state, now, &mut warnings) {
-                if self.auth.is_expired(state, now) {
+                // Expired proves a dead session only when the refresh itself failed on
+                // auth; a network failure against an expired local token is not proof.
+                let refresh_proves_expired = matches!(
+                    error,
+                    GrokError::Expired
+                        | GrokError::InvalidAuth
+                        | GrokError::RequestFailed(400..=403)
+                );
+                if self.auth.is_expired(state, now) && refresh_proves_expired {
                     return Err(GrokError::Expired);
                 }
                 crate::app_warn!(
@@ -172,7 +180,19 @@ impl GrokProvider {
             .ok_or(GrokError::Expired)?
             .to_owned();
         let client_id = self.auth.client_id(state);
-        let refreshed = self.client.refresh_token(&refresh_token, &client_id)?;
+        let refreshed = match self.client.refresh_token(&refresh_token, &client_id) {
+            Ok(refreshed) => refreshed,
+            // A 400/401/403 here can mean the vendor CLI rotated the token concurrently;
+            // adopt the fresh same-account state instead of declaring the session dead.
+            Err(GrokError::Expired) if self.adopt_concurrent_rotation(state, now) => {
+                crate::app_info!(
+                    "auth:grok",
+                    "vendor CLI rotated the token concurrently; adopted the fresh credentials"
+                );
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
         self.auth.update_from_refresh(
             state,
             refreshed.access_token,
@@ -192,6 +212,23 @@ impl GrokProvider {
             );
         }
         Ok(())
+    }
+
+    /// Adopt a concurrently rotated token for the same account entry, if one exists.
+    fn adopt_concurrent_rotation(&self, state: &mut GrokAuthState, now: DateTime<Utc>) -> bool {
+        let Ok(candidates) = self.auth.load_candidates() else {
+            return false;
+        };
+        let Some(fresh) = candidates.into_iter().find(|candidate| {
+            candidate.entry_key == state.entry_key && candidate.token != state.token
+        }) else {
+            return false;
+        };
+        if self.auth.needs_refresh(&fresh, now) {
+            return false;
+        }
+        *state = fresh;
+        true
     }
 }
 

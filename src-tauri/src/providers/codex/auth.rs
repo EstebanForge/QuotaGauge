@@ -200,6 +200,10 @@ fn save_file_document(path: &Path, document: &Value) -> Result<(), CodexError> {
         .write_all(b"\n")
         .map_err(|_| CodexError::AuthWrite)?;
     temporary.flush().map_err(|_| CodexError::AuthWrite)?;
+    temporary
+        .as_file()
+        .sync_all()
+        .map_err(|_| CodexError::AuthWrite)?;
     temporary.persist(path).map_err(|_| CodexError::AuthWrite)?;
     Ok(())
 }

@@ -35,6 +35,9 @@ pub struct ClaudeOAuth {
 #[serde(rename_all = "camelCase", default)]
 struct ClaudeCredentialsFile {
     claude_ai_oauth: Option<ClaudeOAuth>,
+    // Sibling keys (mcpOAuth, ...) belong to the vendor CLI and must survive our rewrite.
+    #[serde(flatten)]
+    extra: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -249,6 +252,27 @@ fn update_text(fingerprint: &mut Sha256, value: &str) {
 fn write_private_file_atomic(path: &Path, bytes: &[u8]) -> Result<(), ClaudeError> {
     let parent = path.parent().ok_or(ClaudeError::AuthWrite)?;
     fs::create_dir_all(parent).map_err(|_| ClaudeError::AuthWrite)?;
+    if path
+        .symlink_metadata()
+        .map(|metadata| metadata.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        // Rename would replace the symlink itself and break the vendor's link; write through it.
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(path)
+            .map_err(|_| ClaudeError::AuthWrite)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(fs::Permissions::from_mode(0o600))
+                .map_err(|_| ClaudeError::AuthWrite)?;
+        }
+        file.write_all(bytes).map_err(|_| ClaudeError::AuthWrite)?;
+        file.sync_all().map_err(|_| ClaudeError::AuthWrite)?;
+        return Ok(());
+    }
     let mut temporary = NamedTempFile::new_in(parent).map_err(|_| ClaudeError::AuthWrite)?;
     #[cfg(unix)]
     {
@@ -322,6 +346,27 @@ fn has_desktop_app_material_at(home: &Path) -> bool {
 
 pub(super) fn load_candidates(scope: &ClaudeCredentialScope) -> Vec<ClaudeCredential> {
     load_candidates_with_environment(scope, env_text("CLAUDE_CODE_OAUTH_TOKEN"))
+}
+
+/// The vendor CLI may rotate the token between our load and our refresh call; an
+/// invalid_grant then only proves our copy is stale, not that the session died. If a
+/// reload finds a different, usable credential at the same source, adopt it so the
+/// caller can retry with the fresh token instead of showing a false sign-in prompt.
+pub(super) fn adopt_concurrent_rotation(
+    credential: &mut ClaudeCredential,
+    scope: &ClaudeCredentialScope,
+) -> bool {
+    let Some(fresh) = load_candidates(scope)
+        .into_iter()
+        .find(|candidate| candidate.source == credential.source)
+    else {
+        return false;
+    };
+    if fresh.oauth.access_token == credential.oauth.access_token {
+        return false;
+    }
+    *credential = fresh;
+    true
 }
 
 fn load_candidates_with_environment(
@@ -570,6 +615,35 @@ fn home_directory() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn credentials_file_preserves_sibling_vendor_keys() {
+        // mcpOAuth and any future sibling belong to the vendor CLI; our rewrite
+        // must round-trip them.
+        let json = r#"{"claudeAiOauth":{"accessToken":"a","refreshToken":"r","expiresAt":1},"mcpOAuth":{"token":"keep"}}"#;
+        let document: super::ClaudeCredentialsFile = serde_json::from_str(json).unwrap();
+        let round_tripped: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&document).unwrap()).unwrap();
+        assert_eq!(round_tripped["mcpOAuth"]["token"], "keep");
+        assert!(round_tripped["claudeAiOauth"]["accessToken"].is_string());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_file_write_keeps_an_existing_symlink() {
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("real-credentials.json");
+        std::fs::write(&target, b"{}").unwrap();
+        let link = directory.path().join("credentials.json");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        super::write_private_file_atomic(&link, b"{\"updated\":true}").unwrap();
+
+        assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "{\"updated\":true}"
+        );
+    }
     use std::fs;
 
     use chrono::Utc;

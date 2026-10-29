@@ -258,12 +258,27 @@ impl CodexProvider {
         now: chrono::DateTime<Utc>,
         warnings: &mut Vec<String>,
     ) -> Result<(), CodexError> {
-        let refresh_token = auth
-            .refresh_token
-            .as_deref()
-            .filter(|value| !value.is_empty())
-            .ok_or(CodexError::TokenExpired)?;
-        let refreshed = self.client.refresh_token(refresh_token)?;
+        // refresh_token_reused means the vendor CLI rotated the token concurrently;
+        // reload from disk and retry once before giving up with a false sign-in prompt.
+        let mut reloaded_after_conflict = false;
+        let refreshed = loop {
+            let refresh_token = auth
+                .refresh_token
+                .as_deref()
+                .filter(|value| !value.is_empty())
+                .ok_or(CodexError::TokenExpired)?;
+            match self.client.refresh_token(refresh_token) {
+                Ok(refreshed) => break refreshed,
+                Err(CodexError::TokenConflict) if !reloaded_after_conflict => {
+                    reloaded_after_conflict = true;
+                    let Ok(live) = auth.reload() else {
+                        return Err(CodexError::TokenConflict);
+                    };
+                    *auth = live;
+                }
+                Err(error) => return Err(error),
+            }
+        };
         if let Err(error) = auth.update_and_save_if_current(
             refreshed.access_token,
             refreshed.refresh_token,
