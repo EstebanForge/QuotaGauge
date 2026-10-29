@@ -472,13 +472,14 @@ pub fn request_notification_permission(
 #[tauri::command]
 pub fn open_notification_settings() -> Result<(), String> {
     #[cfg(target_os = "windows")]
-    let result = child_process::background_command("explorer.exe")
-        .arg("ms-settings:notifications")
-        .spawn();
+    let result = child_process::spawn_detached(
+        child_process::background_command("explorer.exe").arg("ms-settings:notifications"),
+    );
     #[cfg(target_os = "macos")]
-    let result = child_process::background_command("open")
-        .arg("x-apple.systempreferences:com.apple.Notifications-Settings.extension")
-        .spawn();
+    let result = child_process::spawn_detached(
+        child_process::background_command("open")
+            .arg("x-apple.systempreferences:com.apple.Notifications-Settings.extension"),
+    );
     #[cfg(target_os = "linux")]
     let result = [
         ("gnome-control-center", "notifications"),
@@ -487,10 +488,7 @@ pub fn open_notification_settings() -> Result<(), String> {
     ]
     .into_iter()
     .find_map(|(program, argument)| {
-        child_process::background_command(program)
-            .arg(argument)
-            .spawn()
-            .ok()
+        child_process::spawn_detached(child_process::background_command(program).arg(argument)).ok()
     })
     .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "settings unavailable"));
 

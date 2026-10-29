@@ -17,6 +17,21 @@ pub fn background_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     command
 }
 
+/// Spawns a short-lived OS helper and reaps it on a background thread, so it
+/// does not linger as a zombie until the app exits.
+pub fn spawn_detached(command: &mut Command) -> io::Result<()> {
+    detach_process_group(command);
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
 /// Captures a background command while enforcing a real child-process deadline.
 pub fn output_with_timeout(command: &mut Command, timeout: Duration) -> io::Result<Output> {
     command

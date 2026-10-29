@@ -33,6 +33,7 @@ export function createWindowController(options: WindowControllerOptions) {
   let resizeFrame = 0;
   let resizeGeneration = 0;
   let resizeAvailable = true;
+  let resizeFailures = 0;
   let contentMorphActive = false;
   let contentMorphTimer: ReturnType<typeof setTimeout> | undefined;
   let resizeInFlight = false;
@@ -110,6 +111,9 @@ export function createWindowController(options: WindowControllerOptions) {
 
   async function fit() {
     if (shouldDefer()) return;
+    // A cancel (drag, morph) that lands while the awaits below are in flight
+    // must abort this fit, not be overwritten by its resize.
+    const startGeneration = resizeGeneration;
     const screen = options.screen();
     const page = document.querySelector<HTMLElement>(`.screen-page[data-screen="${screen}"]`);
     const content = document.querySelector<HTMLElement>('.content');
@@ -157,6 +161,8 @@ export function createWindowController(options: WindowControllerOptions) {
     );
     const target = screenPanelHeight(screen, contentTarget, dashboardTarget);
 
+    if (resizeGeneration !== startGeneration) return;
+
     if (options.reducedMotion() || contentMorphActive) {
       ++resizeGeneration;
       window.cancelAnimationFrame(resizeFrame);
@@ -194,10 +200,15 @@ export function createWindowController(options: WindowControllerOptions) {
         const nextHeight = pendingResizeHeight;
         pendingResizeHeight = null;
         await fitPanelToContent(nextHeight);
+        resizeFailures = 0;
       }
     } catch {
       pendingResizeHeight = null;
-      resizeAvailable = false;
+      // One transient failure must not disable auto-fit for the session.
+      resizeFailures += 1;
+      if (resizeFailures >= 3) {
+        resizeAvailable = false;
+      }
       options.onError('QuotaGauge window could not adapt to its content.');
     } finally {
       resizeInFlight = false;

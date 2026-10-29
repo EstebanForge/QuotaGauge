@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick } from 'svelte';
+  import { onMount, tick, untrack } from 'svelte';
   import { getVersion } from '@tauri-apps/api/app';
   import {
     dismissMainWindow,
@@ -115,7 +115,10 @@
 
   $effect(() => {
     if (!automaticUpdatesReady || !settingsState?.settings.autoCheckUpdates) return;
-    const delay = automaticUpdateDelay(settingsState.settings.lastUpdateCheckAt);
+    // Read the clock without subscribing: settings identity changes on every
+    // save (including drag-reorder drafts) and must not re-arm the timer.
+    const lastCheckAt = untrack(() => settingsState?.settings.lastUpdateCheckAt);
+    const delay = automaticUpdateDelay(lastCheckAt);
     let interval: ReturnType<typeof setInterval> | undefined;
     const timer = setTimeout(() => {
       void checkForUpdates();
@@ -175,8 +178,8 @@
     else if (screen !== 'dashboard') navigate('dashboard');
     else closeMainWindow();
   }
-  function saveSettings(next: AppSettings) {
-    settingsError = null;
+  function saveSettings(next: AppSettings, options?: { preserveError?: boolean }) {
+    if (!options?.preserveError) settingsError = null;
     return settingsController.save(next);
   }
 
@@ -508,7 +511,10 @@
       manual,
       (checkedAt) => {
         if (!settingsState) return;
-        saveSettings({ ...settingsState.settings, lastUpdateCheckAt: checkedAt });
+        saveSettings(
+          { ...settingsState.settings, lastUpdateCheckAt: checkedAt },
+          { preserveError: true },
+        );
       },
       (message: string) => share.show(message),
     );
@@ -573,6 +579,9 @@
       if (event.defaultPrevented || event.isComposing) return;
       if (event.key === 'Escape') {
         event.preventDefault();
+        // An open sheet owns Escape; if focus has left the sheet (backdrop
+        // click), closing the underlying screen would strand the sheet.
+        if (document.querySelector('.confirmation-backdrop, .rename-backdrop')) return;
         if (showAbout) {
           void closeAbout();
           return;
@@ -610,7 +619,19 @@
     const listeners = createListenerRegistry(() => {
       settingsError ??= 'QuotaGauge event bridge is unavailable.';
     });
-    listeners.add(onUsageState((state) => (viewState = state)));
+    // A usage-state event that arrives while bootstrap is in flight is newer
+    // than the snapshot bootstrap resolves with; applying the snapshot over it
+    // would rewind the panel.
+    let bootstrapInFlight = true;
+    const markBootstrapSettled = () => {
+      bootstrapInFlight = false;
+    };
+    listeners.add(
+      onUsageState((state) => {
+        if (bootstrapInFlight) markBootstrapSettled();
+        viewState = state;
+      }),
+    );
     listeners.add(
       onSettingsState((state) => {
         settingsController.acceptExternalState(state);
@@ -633,11 +654,14 @@
     void getBootstrapState()
       .then((state) => {
         catalog = new ProviderCatalogIndex(state.catalog);
-        viewState = state.usage;
+        if (bootstrapInFlight) {
+          viewState = state.usage;
+        }
         settingsController.setState(state.settings);
         automaticUpdatesReady = true;
       })
-      .catch(() => (settingsError = 'QuotaGauge backend is unavailable.'));
+      .catch(() => (settingsError = 'QuotaGauge backend is unavailable.'))
+      .finally(markBootstrapSettled);
     return () => {
       document.removeEventListener('keydown', handleKeydown);
       window.clearInterval(clock);
@@ -648,6 +672,7 @@
       mutationObserver.disconnect();
       resizeObserver?.disconnect();
       listeners.dispose();
+      share.dispose();
     };
   });
 </script>

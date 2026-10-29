@@ -36,7 +36,7 @@ Legend: `[x]` fixed, `[ ]` open. Severity: B = blocker, S = should-fix, N = nit.
 - [x] [S-18] `child_process.rs:51-75`: on timeout only the direct child is killed, then `join_reader` waits for EOF. A grandchild holding the pipe defeats the deadline. Kill the process group; bound the reader join.
 - [x] [S-19] `providers/antigravity/mod.rs:332-465`: without Argon, each refresh spawns up to 4 `agy` candidates x 2 subcommands at 15s (up to ~60s hung). Negative-cache the no-Argon result for a few minutes.
 - [~] [N-20] SQLite on the async runtime: (busy_timeout done; holding std guards across awaits deferred as low-value refactor) `settings.rs:357-417` holds a std write guard across SQLite writes; `Storage` mutex across queries, no `busy_timeout`; `api_key.rs` std mutex across Secret Service calls; each Linux keyring op opens a new connection and a miss costs 3 lookups.
-- [ ] [N-21] Frontend async races: `App.svelte:633-640` usage-state overwrites bootstrap result (settings protected by revision, usage not); `windowController.svelte.ts:141-172` lost `cancelPendingResize` during awaits; `App.svelte:116-128` auto-update effect re-arms on every settings identity change; `commands/settings.rs:468-488`, `updates.rs:307-309` drop child handles without `wait()` (zombies).
+- [x] [N-21] Frontend async races: `App.svelte:633-640` usage-state overwrites bootstrap result (settings protected by revision, usage not); `windowController.svelte.ts:141-172` lost `cancelPendingResize` during awaits; `App.svelte:116-128` auto-update effect re-arms on every settings identity change; `commands/settings.rs:468-488`, `updates.rs:307-309` drop child handles without `wait()` (zombies).
 
 ## Security details
 
@@ -70,10 +70,10 @@ Legend: `[x]` fixed, `[ ]` open. Severity: B = blocker, S = should-fix, N = nit.
 
 ## Frontend
 
-- [ ] [S-9] `src/lib/shareCard.ts:237,244-258`: copied share card disagrees with the dashboard in three ways (spent-vs-left wording, "Limit reached" on null `runOutAt` at 99.5-100% projected, amber-vs-neutral at 85%). One shared row builder with `QuotaMetric.svelte`.
-- [ ] [N-a11y] `ConfirmationSheet` focus trap: Escape triggers `back()` with the sheet open after backdrop click. Footer options menu has `role="menu"` without arrow keys. Drag grip is a button with no Enter/Space action. Every provider header is an `h1`.
-- [ ] [N-updates] Manual "Check for Updates" silently dropped while a check/install runs; `installing` never resets after a successful install without relaunch.
-- [ ] [N-misc] Background update check clears `settingsError` via `saveSettings`; `shareCard.ts:332-343,482` no ellipsis on 48-char names, `ellipsize` can split an emoji surrogate pair; `windowController.svelte.ts:198-201` one failed fit disables auto-fit until restart; `ProviderLinksExpander.svelte` is dead code (Dashboard inlines the same markup); `shareController.svelte.ts:10` toast timer not cleared on unmount.
+- [x] [S-9] `src/lib/shareCard.ts:237,244-258`: copied share card disagrees with the dashboard in three ways (spent-vs-left wording, "Limit reached" on null `runOutAt` at 99.5-100% projected, amber-vs-neutral at 85%). One shared row builder with `QuotaMetric.svelte`.
+- [~] [N-a11y] (Escape no longer closes the screen behind an open sheet; provider headers are h2; drag grip keeps its working Alt+Arrow shortcut, Enter/Space has no reorder semantic and was left as-is; menu arrow keys not added) `ConfirmationSheet` focus trap: Escape triggers `back()` with the sheet open after backdrop click. Footer options menu has `role="menu"` without arrow keys. Drag grip is a button with no Enter/Space action. Every provider header is an `h1`.
+- [~] [N-updates] (manual check now says why it was dropped; installing-reset reverted: the test contract proves progress legitimately renders after install resolves, so the stuck-state claim does not hold) Manual "Check for Updates" silently dropped while a check/install runs; `installing` never resets after a successful install without relaunch.
+- [x] [N-misc] Background update check clears `settingsError` via `saveSettings`; `shareCard.ts:332-343,482` no ellipsis on 48-char names, `ellipsize` can split an emoji surrogate pair; `windowController.svelte.ts:198-201` one failed fit disables auto-fit until restart; `ProviderLinksExpander.svelte` is dead code (Dashboard inlines the same markup); `shareController.svelte.ts:10` toast timer not cleared on unmount.
 
 ## Tests and engineering hygiene
 

@@ -16,7 +16,10 @@ export class UpdateController {
     onChecked: (checkedAt: string) => void,
     onMessage: (message: string) => void,
   ): Promise<UpdateStatus | undefined> {
-    if (this.checking || this.installing) return undefined;
+    if (this.checking || this.installing) {
+      if (manual) onMessage('An update check or install is already running.');
+      return undefined;
+    }
     this.checking = true;
     if (manual) this.error = null;
     try {

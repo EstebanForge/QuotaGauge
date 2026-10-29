@@ -15,7 +15,7 @@ describe('native UI language contract', () => {
   it('uses the platform system font and reference type sizes', () => {
     expect(css).toMatch(/font-family:\s*system-ui,/);
     expect(css).not.toMatch(/font-family:\s*Inter/);
-    expect(css).toMatch(/\.provider-header h1\s*{[^}]*font-size: 14px;[^}]*font-weight: 600;/s);
+    expect(css).toMatch(/\.provider-header h2\s*{[^}]*font-size: 14px;[^}]*font-weight: 600;/s);
     expect(css).toMatch(/\.provider-list-main b\s*{[^}]*font-size: 14px;[^}]*font-weight: 600;/s);
     expect(css).toMatch(/\.setting-row\s*{[^}]*font-size: 13px;/s);
   });

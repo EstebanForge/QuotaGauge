@@ -205,13 +205,16 @@ function quotaShareRow(quota: QuotaWindow, settings: AppSettings, now: number): 
     reading = `${displayed.toFixed(0)} ${quota.unit?.trim() || 'requests'} ${settings.usageDisplay}`;
   }
   if (quota.format === 'dollars' && quota.usedValue !== null) {
-    const displayed =
-      settings.usageDisplay === 'left' && quota.limitValue !== null
-        ? Math.max(0, quota.limitValue - quota.usedValue)
-        : quota.usedValue;
-    reading = `$${displayed.toFixed(2)} ${settings.usageDisplay === 'left' ? 'left' : 'spent'}`;
-    if (quota.limitValue !== null && quota.limitValue > 0) {
-      fillPercent = (displayed / quota.limitValue) * 100;
+    // Without a known limit, "left" is meaningless; the dashboard says "spent"
+    // and the copied card must agree.
+    const hasLimit = quota.limitValue !== null && quota.limitValue > 0;
+    const leftDisplay = settings.usageDisplay === 'left' && hasLimit;
+    const displayed = leftDisplay
+      ? Math.max(0, (quota.limitValue ?? 0) - quota.usedValue)
+      : quota.usedValue;
+    reading = `$${displayed.toFixed(2)} ${leftDisplay ? 'left' : 'spent'}`;
+    if (hasLimit) {
+      fillPercent = (displayed / (quota.limitValue ?? 1)) * 100;
     }
   }
 
@@ -221,16 +224,20 @@ function quotaShareRow(quota: QuotaWindow, settings: AppSettings, now: number): 
       ? 'critical'
       : pace.severity === 'close'
         ? 'warning'
-        : used >= 90
-          ? 'critical'
-          : used >= 80
-            ? 'warning'
-            : 'normal';
+        : pace.severity === 'healthy'
+          ? 'normal'
+          : used >= 90
+            ? 'critical'
+            : used >= 80
+              ? 'warning'
+              : 'normal';
   const paceLabel =
     pace.severity === 'spent'
       ? 'Limit reached'
       : pace.severity === 'runningOut'
-        ? formatLimit(pace.runOutAt, now, settings.resetDisplay, settings.timeFormat)
+        ? pace.runOutAt === null
+          ? null
+          : formatLimit(pace.runOutAt, now, settings.resetDisplay, settings.timeFormat)
         : pace.severity === 'close' && pace.projectedUsedPercent !== null
           ? `~${Math.max(1, Math.round(100 - pace.projectedUsedPercent))}% spare`
           : pace.severity === 'healthy' &&
@@ -453,11 +460,12 @@ function fitTextRight(
 
 function ellipsize(context: CanvasRenderingContext2D, value: string, maxWidth: number) {
   if (context.measureText(value).width <= maxWidth) return value;
-  let result = value;
-  while (result.length > 1 && context.measureText(`${result}…`).width > maxWidth) {
-    result = result.slice(0, -1);
+  // Slice by code point so an emoji surrogate pair is never split.
+  let characters = Array.from(value);
+  while (characters.length > 1 && context.measureText(`${characters.join('')}…`).width > maxWidth) {
+    characters = characters.slice(0, -1);
   }
-  return `${result}…`;
+  return `${characters.join('')}…`;
 }
 
 function clamp(value: number, minimum: number, maximum: number) {

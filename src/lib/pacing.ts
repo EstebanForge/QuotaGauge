@@ -128,7 +128,7 @@ function formatDuration(milliseconds: number) {
   const days = Math.floor(minutes / 1_440);
   const hours = Math.floor((minutes % 1_440) / 60);
   const remainder = minutes % 60;
-  if (days > 0) return `${days}d ${hours}h`;
+  if (days > 0) return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
   if (hours > 0) return remainder > 0 ? `${hours}h ${remainder}m` : `${hours}h`;
   return `${remainder}m`;
 }

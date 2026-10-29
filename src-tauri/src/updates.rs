@@ -306,10 +306,7 @@ pub fn open_update_page() -> Result<(), String> {
     #[cfg(target_os = "linux")]
     let (program, arguments) = ("xdg-open", vec![RELEASE_URL]);
 
-    background_command(program)
-        .args(arguments)
-        .spawn()
-        .map(|_| ())
+    crate::child_process::spawn_detached(background_command(program).args(arguments))
         .map_err(|_| "The QuotaGauge download page could not be opened.".to_owned())
 }
 

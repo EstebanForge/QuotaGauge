@@ -364,7 +364,7 @@
           aria-describedby="reorder-instructions"
           aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"><Icon name="grip-dots" size={13} /></span
         >
-        <h1>{providerDisplayName(provider.id)}</h1>
+        <h2>{providerDisplayName(provider.id)}</h2>
         {#if snapshot.plan}<span class="plan">{snapshot.plan}</span>{/if}
         {#if state?.snapshot && state.stale}<span
             class="status-badge"
@@ -616,7 +616,7 @@
       padding: 0 4px 4px 2px;
     }
 
-    .provider-header h1 {
+    .provider-header h2 {
       margin: 0;
       font-size: 14px;
       font-weight: 650;
@@ -872,7 +872,7 @@
       cursor: grabbing;
     }
 
-    .provider-header h1 {
+    .provider-header h2 {
       font-size: 14px;
       font-weight: 600;
       letter-spacing: 0;

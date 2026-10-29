@@ -15,11 +15,18 @@ export function createShareController() {
     message = null;
   }
 
+  function dispose() {
+    if (timer) clearTimeout(timer);
+    timer = undefined;
+    message = null;
+  }
+
   return {
     get message() {
       return message;
     },
     show,
     dismiss,
+    dispose,
   };
 }
