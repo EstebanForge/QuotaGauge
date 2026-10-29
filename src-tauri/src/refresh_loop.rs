@@ -16,6 +16,7 @@ pub fn spawn(
 ) {
     tauri::async_runtime::spawn(async move {
         loop {
+            crate::connectivity::ensure_network_ready().await;
             let provider_ids = settings.enabled_provider_ids();
             if !provider_ids.is_empty() {
                 let progress_app = app.clone();

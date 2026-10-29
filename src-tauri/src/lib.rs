@@ -1,5 +1,6 @@
 mod child_process;
 mod commands;
+mod connectivity;
 mod desktop_integration;
 mod hashing;
 mod legacy;
@@ -238,6 +239,7 @@ fn spawn_startup_credential_detection(
         if outcome.newly_enabled_provider_ids.is_empty() {
             return;
         }
+        crate::connectivity::ensure_network_ready().await;
         let progress_app = app.clone();
         service
             .refresh_enabled_with_progress(
