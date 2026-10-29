@@ -79,9 +79,14 @@ impl AntigravityClient {
         remote_timeout: std::time::Duration,
     ) -> Result<Self, AntigravityError> {
         Ok(Self {
+            // Localhost-only client: never follow redirects (the CSRF header could
+            // ride to another host) and ignore proxy env vars (the header could leak).
             local: Client::builder()
                 .danger_accept_invalid_certs(true)
+                .connect_timeout(crate::providers::http::CONNECT_TIMEOUT)
                 .timeout(std::time::Duration::from_secs(5))
+                .redirect(reqwest::redirect::Policy::none())
+                .no_proxy()
                 .build()
                 .map_err(|_| AntigravityError::Unavailable)?,
             remote: Client::builder()

@@ -76,7 +76,14 @@ async fn save_app_settings_inner(
 ) -> Result<(SettingsViewState, Vec<String>, CredentialDetectionPlan), String> {
     let command_guard = settings_service.lock_command_mutation().await;
     let previous = settings_service.get();
-    let next_shortcut = settings.global_shortcut.clone();
+    // Normalize before any side effect: the stored value is trimmed, so the OS
+    // registration must use the same trimmed string or they disagree.
+    let next_shortcut = settings
+        .global_shortcut
+        .as_deref()
+        .map(str::trim)
+        .filter(|shortcut| !shortcut.is_empty())
+        .map(str::to_owned);
     let autostart_changed = previous.launch_at_login != settings.launch_at_login;
     // The command guard keeps revisions stable against other commands, so checking the
     // settings revision here lets the routine conflict path fail before any OS side

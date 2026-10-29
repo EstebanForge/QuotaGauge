@@ -13,23 +13,29 @@ const MAX_AUTH_FILE_BYTES: u64 = 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub(crate) struct OpenCodePaths {
-    data_directory: PathBuf,
+    data_directory: Option<PathBuf>,
 }
 
 impl OpenCodePaths {
     pub(crate) fn new() -> Self {
         Self {
-            data_directory: data_directory(|name| std::env::var(name).ok(), &home_directory()),
+            data_directory: home_directory()
+                .map(|home| data_directory(|name| std::env::var(name).ok(), &home)),
         }
     }
 
     #[cfg(test)]
     pub(crate) fn for_data_directory(data_directory: PathBuf) -> Self {
-        Self { data_directory }
+        Self {
+            data_directory: Some(data_directory),
+        }
     }
 
     pub(crate) fn go_api_key(&self) -> Result<Option<Zeroizing<String>>, OpenCodeError> {
-        let path = self.data_directory.join("auth.json");
+        let Some(directory) = self.data_directory.as_ref() else {
+            return Ok(None);
+        };
+        let path = directory.join("auth.json");
         let file = match fs::File::open(path) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -82,11 +88,8 @@ fn data_directory(environment: impl Fn(&str) -> Option<String>, home_directory: 
     home_directory.join(".local").join("share").join("opencode")
 }
 
-fn home_directory() -> PathBuf {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
-        .unwrap_or_default()
+fn home_directory() -> Option<PathBuf> {
+    crate::paths::home_directory()
 }
 
 fn expand_home(value: &str, home_directory: &Path) -> PathBuf {

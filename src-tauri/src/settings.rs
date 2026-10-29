@@ -730,8 +730,11 @@ fn normalize_with_persisted_accounts(
     settings.dismissed_update_version = settings
         .dismissed_update_version
         .take()
-        .map(|version| version.trim().to_owned())
+        .map(|version| version.trim().chars().take(32).collect::<String>())
         .filter(|version| !version.is_empty());
+    // The webview is trusted today, but persisted rows feed OS registration and
+    // re-saves, so keep unbounded growth impossible.
+    settings.known_provider_ids.truncate(64);
     settings.global_shortcut = settings
         .global_shortcut
         .take()

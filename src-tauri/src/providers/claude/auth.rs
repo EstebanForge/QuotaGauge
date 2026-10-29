@@ -310,7 +310,9 @@ pub(super) fn has_local_credentials(scope: &ClaudeCredentialScope) -> bool {
 pub fn has_desktop_app_data() -> bool {
     #[cfg(target_os = "macos")]
     {
-        has_desktop_app_material_at(&home_directory())
+        home_directory()
+            .as_deref()
+            .is_some_and(has_desktop_app_material_at)
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -373,12 +375,11 @@ fn load_candidates_with_environment(
     scope: &ClaudeCredentialScope,
     environment_token: Option<String>,
 ) -> Vec<ClaudeCredential> {
-    let file = {
-        let path = credential_path(scope);
+    let file = credential_path(scope).and_then(|path| {
         fs::read(&path)
             .ok()
             .and_then(|bytes| parse_candidate(&bytes, CredentialSource::File(path), false))
-    };
+    });
     let load_keychain = || {
         let mut candidate = None;
         for (service, account) in keychain_candidates(scope) {
@@ -533,18 +534,19 @@ pub(super) fn credentials_have_access_token(bytes: &[u8]) -> bool {
         .is_some_and(|token| !token.trim().is_empty())
 }
 
-fn credential_path(scope: &ClaudeCredentialScope) -> PathBuf {
+fn credential_path(scope: &ClaudeCredentialScope) -> Option<PathBuf> {
     match scope {
         ClaudeCredentialScope::Standard => claude_home(),
-        ClaudeCredentialScope::ConfigDir { path, .. } => path.clone(),
+        ClaudeCredentialScope::ConfigDir { path, .. } => Some(path.clone()),
     }
-    .join(".credentials.json")
+    .map(|path| path.join(".credentials.json"))
 }
 
-pub fn claude_home() -> PathBuf {
+pub fn claude_home() -> Option<PathBuf> {
     env_text("CLAUDE_CONFIG_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| home_directory().join(".claude"))
+        .or_else(home_directory)
+        .map(|home| home.join(".claude"))
 }
 
 fn keychain_candidates(scope: &ClaudeCredentialScope) -> Vec<(String, String)> {
@@ -606,11 +608,8 @@ fn env_flag(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn home_directory() -> PathBuf {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
-        .unwrap_or_default()
+fn home_directory() -> Option<PathBuf> {
+    crate::paths::home_directory()
 }
 
 #[cfg(test)]

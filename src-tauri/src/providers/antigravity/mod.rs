@@ -353,9 +353,8 @@ impl AntigravityProvider {
         let cli_path_env =
             std::env::var_os(AGY_CLI_PATH_ENV).map(|path| path.to_string_lossy().into_owned());
         let home = home_directory();
-        let home = (!home.as_os_str().is_empty()).then_some(&home);
-        let candidates =
-            agy_cli_candidates(cli_path_env.as_deref(), home.map(|path| path.as_path()));
+        let home = home.as_deref();
+        let candidates = agy_cli_candidates(cli_path_env.as_deref(), home);
         crate::app_debug!(
             "antigravity",
             "Argon missing from the quota snapshot; trying agy ({} {}, candidates={})",
@@ -406,11 +405,8 @@ impl AntigravityProvider {
     }
 }
 
-fn home_directory() -> PathBuf {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
-        .unwrap_or_default()
+fn home_directory() -> Option<std::path::PathBuf> {
+    crate::paths::home_directory()
 }
 
 /// CodexBar-contract resolution: `ANTIGRAVITY_CLI_PATH` is authoritative, so an empty or

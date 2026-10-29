@@ -10,6 +10,7 @@ mod menu_bar;
 mod models;
 mod notifications;
 mod pacing;
+mod paths;
 mod policy;
 mod popup;
 mod provider_environment;

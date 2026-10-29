@@ -44,19 +44,19 @@ pub struct GrokAuthState {
 
 #[derive(Debug, Clone)]
 pub struct GrokAuthStore {
-    path: PathBuf,
+    path: Option<PathBuf>,
 }
 
 impl GrokAuthStore {
     pub fn new() -> Self {
         Self {
-            path: home_directory().join(".grok").join("auth.json"),
+            path: home_directory().map(|home| home.join(".grok").join("auth.json")),
         }
     }
 
     #[cfg(test)]
     pub fn for_path(path: PathBuf) -> Self {
-        Self { path }
+        Self { path: Some(path) }
     }
 
     pub fn has_local_credentials(&self) -> bool {
@@ -65,10 +65,13 @@ impl GrokAuthStore {
     }
 
     pub fn load_candidates(&self) -> Result<Vec<GrokAuthState>, GrokError> {
-        if !self.path.is_file() {
+        let Some(path) = self.path.as_ref() else {
+            return Err(GrokError::NotLoggedIn);
+        };
+        if !path.is_file() {
             return Err(GrokError::NotLoggedIn);
         }
-        let text = fs::read_to_string(&self.path).map_err(|_| GrokError::InvalidAuth)?;
+        let text = fs::read_to_string(path).map_err(|_| GrokError::InvalidAuth)?;
         let document = parse_auth_document(&text).ok_or(GrokError::InvalidAuth)?;
         let entries = document.as_object().ok_or(GrokError::InvalidAuth)?;
         let candidates = entries
@@ -149,8 +152,11 @@ impl GrokAuthStore {
     /// Re-reads the current document before replacing it so another account and unknown fields are
     /// retained. A present but unreadable file is never rebuilt from stale in-memory state.
     pub fn save(&self, state: &mut GrokAuthState) -> Result<(), GrokError> {
-        let mut document = if self.path.exists() {
-            let text = fs::read_to_string(&self.path).map_err(|_| GrokError::InvalidAuth)?;
+        let Some(path) = self.path.as_ref() else {
+            return Err(GrokError::AuthWrite);
+        };
+        let mut document = if path.exists() {
+            let text = fs::read_to_string(path).map_err(|_| GrokError::InvalidAuth)?;
             parse_auth_document(&text).ok_or(GrokError::InvalidAuth)?
         } else {
             state.document.clone()
@@ -178,7 +184,7 @@ impl GrokAuthStore {
         set_optional_string(&mut entry, "expires_at", state.entry.expires_at.as_deref());
         entries.insert(state.entry_key.clone(), Value::Object(entry));
 
-        write_private_json_atomic(&self.path, &document)?;
+        write_private_json_atomic(path, &document)?;
         state.document = document;
         Ok(())
     }
@@ -257,11 +263,8 @@ fn trimmed_owned(value: String) -> Option<String> {
     (!value.is_empty()).then(|| value.to_owned())
 }
 
-fn home_directory() -> PathBuf {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
-        .unwrap_or_default()
+fn home_directory() -> Option<PathBuf> {
+    crate::paths::home_directory()
 }
 
 #[cfg(test)]

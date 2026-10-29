@@ -99,7 +99,14 @@ pub(super) fn discover(storage: &Storage) -> Result<ClaudeAccountDiscovery, Stor
             accounts: Vec::new(),
         });
     }
-    let home = home_directory();
+    let Some(home) = home_directory() else {
+        // Without a known home there is no safe place to look; never resolve
+        // vendor paths against the process working directory.
+        return Ok(ClaudeAccountDiscovery {
+            default_account: None,
+            accounts: Vec::new(),
+        });
+    };
     let config = env_text("CLAUDE_CONFIG_DIR");
     let xdg = env_text("XDG_CONFIG_HOME");
     reconcile_accounts(
@@ -109,7 +116,7 @@ pub(super) fn discover(storage: &Storage) -> Result<ClaudeAccountDiscovery, Stor
 }
 
 pub(super) fn identity_for_scope(scope: &ClaudeCredentialScope) -> Option<String> {
-    let home = home_directory();
+    let home = home_directory()?;
     let identity = match scope {
         ClaudeCredentialScope::Standard => {
             match observe_default(&home, env_text("CLAUDE_CONFIG_DIR").as_deref()) {
@@ -528,11 +535,8 @@ fn env_text(name: &str) -> Option<String> {
     crate::provider_environment::value(name)
 }
 
-fn home_directory() -> PathBuf {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
-        .unwrap_or_default()
+fn home_directory() -> Option<PathBuf> {
+    crate::paths::home_directory()
 }
 
 #[cfg(test)]

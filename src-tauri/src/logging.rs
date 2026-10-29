@@ -220,9 +220,7 @@ fn default_log_directory() -> PathBuf {
 
 #[cfg(not(target_os = "windows"))]
 fn home_directory() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
+    crate::paths::home_directory()
 }
 
 pub struct LogFile {
@@ -300,12 +298,15 @@ impl LogFile {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)?;
         }
-        self.file = Some(
-            OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&self.path)?,
-        );
+        let mut open_options = OpenOptions::new();
+        open_options.create(true).append(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            // Log lines can contain account details; keep them owner-only.
+            open_options.mode(0o600);
+        }
+        self.file = Some(open_options.open(&self.path)?);
         self.size = fs::metadata(&self.path)
             .map(|value| value.len())
             .unwrap_or(0);
@@ -353,13 +354,15 @@ fn archive_path(path: &Path) -> PathBuf {
 
 pub fn redact_value(value: &str) -> String {
     let characters = value.chars().collect::<Vec<_>>();
-    if characters.len() <= 12 {
+    // Tokens up to 16 characters get fully hidden; longer ones keep only two
+    // characters per side so the exposed share stays small.
+    if characters.len() <= 16 {
         return "[REDACTED]".to_owned();
     }
     format!(
         "{}...{}",
-        characters[..4].iter().collect::<String>(),
-        characters[characters.len() - 4..]
+        characters[..2].iter().collect::<String>(),
+        characters[characters.len() - 2..]
             .iter()
             .collect::<String>()
     )
@@ -505,7 +508,12 @@ fn jwt_regex() -> &'static Regex {
 
 fn api_key_regex() -> &'static Regex {
     static VALUE: OnceLock<Regex> = OnceLock::new();
-    VALUE.get_or_init(|| Regex::new(r"(?:sk-|pk-|api_|key_|secret_)[A-Za-z0-9_-]{12,}").unwrap())
+    // gho_/ghp_ are GitHub tokens (copilot), xai- is Grok; key material varies
+    // enough per vendor that the prefix list must stay open-ended.
+    VALUE.get_or_init(|| {
+        Regex::new(r"(?:sk-|pk-|api_|key_|secret_|gho_|ghp_|ghu_|ghs_|ghr_|xai-)[A-Za-z0-9_-]{12,}")
+            .unwrap()
+    })
 }
 
 fn devin_token_regex() -> &'static Regex {
@@ -632,7 +640,7 @@ mod tests {
     fn redacts_short_and_long_values() {
         assert_eq!(redact_value("short"), "[REDACTED]");
         assert_eq!(redact_value("abcdefghijkl"), "[REDACTED]");
-        assert_eq!(redact_value("sk-1234567890abcdef"), "sk-1...cdef");
+        assert_eq!(redact_value("sk-1234567890abcdef"), "sk...ef");
     }
 
     #[test]
@@ -640,7 +648,7 @@ mod tests {
         let redacted =
             redact_url("https://user:password@example.com/v1?api_key=sk-1234567890abcdef&limit=10");
         assert!(!redacted.contains("password"));
-        assert!(redacted.contains("api_key=sk-1...cdef"));
+        assert!(redacted.contains("api_key=sk...ef"));
         assert!(redacted.contains("limit=10"));
     }
 

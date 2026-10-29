@@ -89,6 +89,19 @@ fn supports_in_app_install_for(is_linux: bool, appimage_present: bool) -> bool {
 }
 
 fn classify_updater_error(error: &UpdaterError, operation: &'static str) -> UpdateFailure {
+    // Typed checks first: a signature error whose text mentions "403" or "429"
+    // must never be mislabeled as retryable.
+    if matches!(
+        error,
+        UpdaterError::Minisign(_) | UpdaterError::SignatureUtf8(_)
+    ) {
+        return UpdateFailure::new(
+            "signature_invalid",
+            "The downloaded update failed its security check.",
+            "Do not install this download. Open the release page or try again later.",
+            false,
+        );
+    }
     let detail = error.to_string();
     let normalized = detail.to_ascii_lowercase();
     if normalized.contains("403") || normalized.contains("forbidden") {
@@ -105,17 +118,6 @@ fn classify_updater_error(error: &UpdaterError, operation: &'static str) -> Upda
             "GitHub temporarily limited update requests.",
             "Wait a few minutes, then try again.",
             true,
-        );
-    }
-    if matches!(
-        error,
-        UpdaterError::Minisign(_) | UpdaterError::SignatureUtf8(_)
-    ) {
-        return UpdateFailure::new(
-            "signature_invalid",
-            "The downloaded update failed its security check.",
-            "Do not install this download. Open the release page or try again later.",
-            false,
         );
     }
     if matches!(error, UpdaterError::Reqwest(_) | UpdaterError::Network(_)) {
@@ -308,7 +310,7 @@ pub fn open_update_page() -> Result<(), String> {
         .args(arguments)
         .spawn()
         .map(|_| ())
-        .map_err(|error| format!("The QuotaGauge download page could not be opened: {error}"))
+        .map_err(|_| "The QuotaGauge download page could not be opened.".to_owned())
 }
 
 #[cfg(test)]

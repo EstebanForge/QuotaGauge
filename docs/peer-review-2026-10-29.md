@@ -40,11 +40,11 @@ Legend: `[x]` fixed, `[ ]` open. Severity: B = blocker, S = should-fix, N = nit.
 
 ## Security details
 
-- [ ] [S-25] `providers/antigravity/client.rs:82-137`: local client uses `danger_accept_invalid_certs(true)`, follows redirects, honors proxy env vars. The CSRF header could ride a redirect or go to an HTTP proxy. `redirect(Policy::none())`, `no_proxy()`, add `connect_timeout`.
-- [ ] [N-26] `logging.rs:508`: redaction misses `gho_`/`ghp_` (Copilot), `xai-` (Grok), Z.ai keys. `redact_value` exposes 8 of 13 chars on short tokens. Log file and DB created 0644; make them 0600.
-- [ ] [N-27] `updates.rs:311` returns raw `io::Error` text to the webview; `updates.rs:94-120` classifies by substring (`"403"`, `"429"`) before the typed minisign check.
-- [ ] [N-28] `commands/settings.rs:79-93` vs `settings.rs:735-739`: shortcut registered from untrimmed IPC value but the trimmed one is stored. `SettingsScreen.svelte:119-121` can record Space as `Ctrl+ `.
-- [ ] [N-29] `known_provider_ids` and `dismissed_update_version` have no length limits. `home_directory()` copied in five places; four use `unwrap_or_default()` and read/write `./.claude/...` relative to cwd when `HOME` is unset. Share one helper that fails closed.
+- [x] [S-25] `providers/antigravity/client.rs:82-137`: local client uses `danger_accept_invalid_certs(true)`, follows redirects, honors proxy env vars. The CSRF header could ride a redirect or go to an HTTP proxy. `redirect(Policy::none())`, `no_proxy()`, add `connect_timeout`.
+- [x] [N-26] `logging.rs:508`: redaction misses `gho_`/`ghp_` (Copilot), `xai-` (Grok), Z.ai keys. `redact_value` exposes 8 of 13 chars on short tokens. Log file and DB created 0644; make them 0600.
+- [x] [N-27] `updates.rs:311` returns raw `io::Error` text to the webview; `updates.rs:94-120` classifies by substring (`"403"`, `"429"`) before the typed minisign check.
+- [x] [N-28] `commands/settings.rs:79-93` vs `settings.rs:735-739`: shortcut registered from untrimmed IPC value but the trimmed one is stored. `SettingsScreen.svelte:119-121` can record Space as `Ctrl+ `.
+- [x] [N-29] `known_provider_ids` and `dismissed_update_version` have no length limits. `home_directory()` copied in five places; four use `unwrap_or_default()` and read/write `./.claude/...` relative to cwd when `HOME` is unset. Share one helper that fails closed.
 
 ## Provider mapper and logic fixes
 

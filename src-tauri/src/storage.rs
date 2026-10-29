@@ -71,6 +71,12 @@ impl Storage {
 
     fn open_connection(path: &Path) -> Result<Connection, StorageError> {
         let connection = Connection::open(path)?;
+        // Snapshot payloads can carry account metadata; keep the file owner-only.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+        }
         // Snapshot writes and settings saves can collide across the async runtime;
         // wait briefly instead of failing with SQLITE_BUSY.
         connection.execute_batch("PRAGMA busy_timeout = 5000;")?;

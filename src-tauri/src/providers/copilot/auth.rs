@@ -138,10 +138,12 @@ impl AuthPaths {
         if let Some(xdg) = environment_path("XDG_CONFIG_HOME") {
             push_unique(&mut editor_directories, xdg.join("github-copilot"));
         }
-        push_unique(
-            &mut editor_directories,
-            home.join(".config").join("github-copilot"),
-        );
+        if let Some(home) = &home {
+            push_unique(
+                &mut editor_directories,
+                home.join(".config").join("github-copilot"),
+            );
+        }
 
         let mut editor_configs = Vec::new();
         for directory in editor_directories {
@@ -163,10 +165,12 @@ impl AuthPaths {
                     app_data.join("GitHub CLI").join("hosts.yml"),
                 );
             }
-            push_unique(
-                &mut gh_configs,
-                home.join(".config").join("gh").join("hosts.yml"),
-            );
+            if let Some(home) = &home {
+                push_unique(
+                    &mut gh_configs,
+                    home.join(".config").join("gh").join("hosts.yml"),
+                );
+            }
         }
 
         Self {
@@ -430,11 +434,8 @@ fn environment_path(name: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-fn home_directory() -> PathBuf {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
-        .unwrap_or_default()
+fn home_directory() -> Option<PathBuf> {
+    crate::paths::home_directory()
 }
 
 fn push_unique(paths: &mut Vec<PathBuf>, path: PathBuf) {
