@@ -223,13 +223,12 @@ for (const name of [
 requireExactKeyLines('release', release, exactSigningBindings);
 
 requireContracts('release documentation', releasing, [
-  'ENABLE_WINDOWS_NATIVE_SIGNING',
-  'ENABLE_MACOS_NATIVE_SIGNING',
   'TAURI_SIGNING_PRIVATE_KEY',
-  'TAURI_SIGNING_PRIVATE_KEY_PASSWORD',
-  'unsigned Windows installer',
-  'ad-hoc-signed, unnotarized',
-  'does not weaken updater verification',
+  'Desktop bundles',
+  'tauri/custom-protocol',
+  'verbatim',
+  'minisign-verify',
+  'not verification',
 ]);
 
 requireContracts('download documentation', installation, [

@@ -1,18 +1,19 @@
 # Releasing QuotaGauge
 
-QuotaGauge treats updater signatures and native operating-system signatures as separate trust
-layers. Updater artifacts must always be signed with `TAURI_SIGNING_PRIVATE_KEY`. Native Windows
-and macOS signing are independent opt-ins because they require externally provisioned certificates.
-If the updater key is encrypted, also configure `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. The updater
-key is project-generated and does not require a paid certificate authority or signing account.
+Releases are built per platform by the paths below and published as one GitHub release. CI, Release,
+and macos-app workflows stay disabled while the repo is private; the only active workflow is
+dispatch-only `Desktop bundles`, which builds the Linux and Windows legs. The macOS arm64 leg is
+built and signed locally. Updater trust is a separate layer from native signing: every updater
+artifact is signed with `TAURI_SIGNING_PRIVATE_KEY` (or the local updater key file) and verified
+against the public key in `src-tauri/tauri.conf.json` before publication.
 
 ## Pre-release gates
 
-Run both gates before tagging; unit tests cannot see the setup hook, and a definition invariant
+Run both gates before tagging. Unit tests cannot see the setup hook, and a definition invariant
 violation aborts startup before any window appears (0.6.3 shipped exactly that).
 
 ```sh
-npm run verify                                    # versions, contracts, frontend, rust
+npm run verify
 scripts/e2e/smoke.sh src-tauri/target/debug/quotagauge /tmp/qg-smoke
 ```
 
@@ -20,57 +21,36 @@ Build the smoke binary with embedded assets first (`cd src-tauri && cargo build 
 tauri/custom-protocol`); without the feature the webview loads the vite devUrl and the smoke
 silently tests the wrong thing.
 
-## Default release policy
+## Version bump
 
-Leave both native-signing repository variables unset or set them to `false`:
+Bump all three version fields together; `scripts/verify/verify-versions.js` enforces equality.
+`npm version <v> --no-git-tag-version` also repairs package-lock.json; edit `tauri.conf.json` and
+`Cargo.toml` by hand with a single-line change (a full JSON rewrite re-indents the dmg block), then
+`cargo update -p quotagauge` syncs Cargo.lock. Commit `chore: bump version to <v>` and push main.
 
-- `ENABLE_WINDOWS_NATIVE_SIGNING`
-- `ENABLE_MACOS_NATIVE_SIGNING`
+## Platform legs
 
-The release workflow then builds an unsigned Windows installer and an ad-hoc-signed, unnotarized
-macOS application. Package installation and startup smoke tests still run, but Authenticode,
-Gatekeeper, and notarization checks are skipped. The workflow emits warnings, and the download
-documentation describes the unavailable native trust layers.
+Dispatch `Desktop bundles` from main (`gh workflow run 397210994 --ref main`) for the Linux
+(deb, rpm, AppImage) and Windows (NSIS) bundles; download the six artifacts when it finishes. Run
+`./scripts/macos-cross/release-macos.sh` locally for the macOS arm64 tarball and updater
+signature. Machine-specific signing detail (Apple Development p12, rcodesign flags, updater key
+location) lives in AGENTS.md.
 
-This default does not weaken updater verification. Tauri updater signatures are still generated,
-uploaded, and verified with the bundled public key before publication.
+## Assemble, verify, publish
 
-## Enabling Windows native signing
+Verify every updater asset cryptographically before upload. Build the scratch verifier in
+`/tmp/qg-verify` (crate `minisign-verify` 0.2): the pubkey in tauri.conf.json and the `.sig` files
+are base64 wrapping the minisign text, so decode-or-pass-through both, then
+`PublicKey::verify(whole_file_bytes, signature, true)`. Validate the verifier once against the
+previous release's published AppImage plus `.sig`.
 
-Set `ENABLE_WINDOWS_NATIVE_SIGNING` to `true` only after configuring all of the following:
+Create the release as a draft named after the bare version. Assemble latest.json from the previous
+manifest, keeping the three platform keys and putting each `.sig` file's content into `signature`
+verbatim (double base64-encoding it breaks every updater install; this happened in 0.6.2). Upload
+latest.json under exactly that filename, then the tarballs, installers, and `.sig` files.
 
-| Kind             | Name                     |
-| ---------------- | ------------------------ |
-| Actions secret   | `ES_USERNAME`            |
-| Actions secret   | `ES_PASSWORD`            |
-| Actions secret   | `ES_CREDENTIAL_ID`       |
-| Actions secret   | `ES_TOTP_SECRET`         |
-| Actions variable | `WINDOWS_SIGNER_SUBJECT` |
-
-This enables the reviewed SSL.com CodeSignTool configuration. The workflow then requires a valid,
-timestamped Authenticode signature on both the installer and installed executable. Missing or
-incorrect values stop the release rather than silently producing an unsigned Windows artifact.
-
-## Enabling macOS native signing
-
-Set `ENABLE_MACOS_NATIVE_SIGNING` to `true` only after configuring all of the following Actions
-secrets:
-
-- `APPLE_CERTIFICATE`
-- `APPLE_CERTIFICATE_PASSWORD`
-- `APPLE_ID`
-- `APPLE_PASSWORD`
-- `APPLE_TEAM_ID`
-
-`APPLE_PASSWORD` is an app-specific password used for notarization, not the account's normal login
-password.
-
-The direct-download DMG uses a Developer ID Application certificate, not an App Store Distribution
-certificate. When enabled, the workflow requires the expected team identity, hardened runtime,
-secure timestamp, Gatekeeper approval, and a valid notarization staple. Missing or incorrect values
-stop the release rather than falling back to ad-hoc signing.
-
-Both opt-ins accept only the exact strings `true` and `false`. An invalid value stops validation so a
-typo cannot silently change release trust policy. A `verify_only` run publishes an already-built
-draft and therefore does not require private signing credentials. The two policy variables must
-still match the draft's native-signing state; a mismatch stops publication.
+Publish, then re-download the published updater assets from the release URLs and re-verify all
+signatures against the tauri.conf.json pubkey. Draft-release assets cannot be downloaded through
+the REST asset endpoint before publish, so pre-publish verification uses the local files and
+post-publish verification uses the published bytes. Confirm the macOS tarball sha256 matches the
+local build. Signature-nonempty plus HTTP 200 is not verification.

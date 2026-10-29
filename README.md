@@ -60,7 +60,7 @@ Everything runs locally. No account, no cloud backend, no analytics, no telemetr
 
 ## Development
 
-You need Node.js 22 or later and a stable Rust toolchain. [Development](docs/development.md) has the setup, the quality checks, and the build commands.
+You need Node.js 22 or later and a stable Rust toolchain. [AGENTS.md](AGENTS.md) has the setup, the quality checks, and the build commands.
 
 ## Contributing
 

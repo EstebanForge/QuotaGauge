@@ -65,7 +65,7 @@ artifact dir; the binary must be built with `--features tauri/custom-protocol` (
   - `legacy.rs` + `providers/api_key.rs` — one-time import of OpenQuota data (`io.github.deviffyy.openquota`).
 - `scripts/verify/` — source-inspection contract verifiers (see gotchas). `scripts/e2e/`,
   `scripts/macos-cross/` — smoke harness, .app bundler.
-- `docs/` — installation.md, development.md, releasing.md, providers/*.md (per-provider user docs).
+- `docs/` — installation.md, releasing.md, providers/*.md (per-provider user docs).
 - `src-tauri/gen/` — generated. Never hand-edit.
 
 Data flow: providers -> UsageService refresh (events `usage-state`, `open-screen`,
