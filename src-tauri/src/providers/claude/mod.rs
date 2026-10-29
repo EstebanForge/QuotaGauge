@@ -726,7 +726,7 @@ mod tests {
         net::TcpListener,
         sync::{mpsc, Arc},
         thread,
-        time::Duration as StdDuration,
+        time::{Duration as StdDuration, Instant as StdInstant},
     };
 
     use chrono::{Duration, Utc};
@@ -903,7 +903,26 @@ mod tests {
         let (first_request_tx, first_request_rx) = mpsc::sync_channel(0);
         let (first_response_tx, first_response_rx) = mpsc::sync_channel(0);
         let server = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
+            // A provider failure before the request must hang the suite, not the
+            // test: accept and read with a deadline so the join always completes.
+            listener.set_nonblocking(true).unwrap();
+            let deadline = StdInstant::now() + StdDuration::from_secs(5);
+            let (mut stream, _) = loop {
+                match listener.accept() {
+                    Ok(connection) => break connection,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(
+                            StdInstant::now() < deadline,
+                            "timed out waiting for the usage request"
+                        );
+                        thread::sleep(StdDuration::from_millis(10));
+                    }
+                    Err(error) => panic!("accept failed: {error}"),
+                }
+            };
+            stream
+                .set_read_timeout(Some(StdDuration::from_secs(5)))
+                .unwrap();
             let mut bytes = [0_u8; 4096];
             let length = stream.read(&mut bytes).unwrap();
             let request = String::from_utf8_lossy(&bytes[..length]);

@@ -33,10 +33,7 @@ impl CopilotClient {
         api_base_url: &str,
         timeout: Duration,
     ) -> Result<Self, CopilotError> {
-        let client = Client::builder()
-            .connect_timeout(Duration::from_secs(8))
-            .timeout(timeout)
-            .build()
+        let client = crate::providers::http::build_client(timeout)
             .map_err(|_| CopilotError::ConnectionFailed)?;
         Url::parse(usage_url).map_err(|_| CopilotError::InvalidResponse)?;
         Url::parse(orgs_url).map_err(|_| CopilotError::InvalidResponse)?;

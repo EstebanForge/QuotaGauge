@@ -26,7 +26,7 @@ npm run check             # svelte-check
 npm run test              # vitest run
 npm run test:watch
 npm run build             # vite build -> dist/
-npm run build:linux       # tauri build --bundles deb,appimage
+npm run build:linux       # tauri build --bundles deb,appimage,rpm
 npm run build:installer   # tauri build --bundles nsis (Windows)
 npm run tauri -- build --bundles dmg   # macOS
 ```

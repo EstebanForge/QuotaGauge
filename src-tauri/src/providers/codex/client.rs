@@ -53,11 +53,7 @@ impl CodexClient {
         refresh_url: &str,
         timeout: Duration,
     ) -> Result<Self, CodexError> {
-        let client = Client::builder()
-            .connect_timeout(Duration::from_secs(8))
-            .timeout(timeout)
-            .user_agent(concat!("QuotaGauge/", env!("CARGO_PKG_VERSION")))
-            .build()
+        let client = crate::providers::http::build_client(timeout)
             .map_err(|_| CodexError::ConnectionFailed)?;
         Ok(Self {
             client,
