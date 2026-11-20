@@ -10,7 +10,10 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
 
-use crate::providers::credential_store::{decode_go_keyring_value, read_generic_password};
+use crate::providers::credential_store::{
+    decode_go_keyring_value, delete_owned_password, generic_password_item_exists,
+    read_generic_password, read_owned_password, write_owned_password,
+};
 
 use super::AntigravityError;
 
@@ -128,12 +131,104 @@ pub fn load_token() -> Result<Option<AntigravityToken>, AntigravityError> {
         .map(PathBuf::from);
     match home {
         Some(home) if !home.as_os_str().is_empty() => load_token_from_home(&home),
-        _ => load_token_from_store(),
+        _ => load_foreign_token(),
+    }
+}
+
+// The foreign `gemini` item belongs to the agy CLI stack (the Gemini desktop app rotates it), and
+// macOS resets its access grant on rotation, so a secret read can raise a keychain prompt per
+// refresh. Mirroring the refresh grant into an app-owned item keeps later reads silent; the mirror
+// is only trusted while the foreign item still exists, so an agy sign-out stays visible.
+const FOREIGN_SERVICE: &str = "gemini";
+const FOREIGN_ACCOUNT: &str = "antigravity";
+const OWNED_SERVICE: &str = "xyz.actitud.quotagauge.antigravity";
+const OWNED_ACCOUNT: &str = "refresh-token";
+const OWNED_MIRROR_VERSION: u8 = 1;
+
+#[derive(Serialize, Deserialize)]
+struct OwnedMirrorPayload {
+    version: u8,
+    refresh_token: String,
+}
+
+type OwnedStoreRead<'a> = &'a dyn Fn(&str, &str) -> Result<Option<Vec<u8>>, String>;
+type OwnedStoreWrite<'a> = &'a dyn Fn(&str, &str, &[u8]) -> Result<(), String>;
+
+pub struct StoreDeps<'a> {
+    pub owned_read: OwnedStoreRead<'a>,
+    pub owned_write: OwnedStoreWrite<'a>,
+    pub owned_delete: &'a dyn Fn(&str, &str) -> Result<(), String>,
+    pub foreign_exists: &'a dyn Fn() -> Option<bool>,
+    pub foreign_load: &'a dyn Fn() -> Result<Option<AntigravityToken>, AntigravityError>,
+}
+
+fn owned_store_deps() -> StoreDeps<'static> {
+    StoreDeps {
+        owned_read: &read_owned_password,
+        owned_write: &write_owned_password,
+        owned_delete: &delete_owned_password,
+        foreign_exists: &|| generic_password_item_exists(FOREIGN_SERVICE, FOREIGN_ACCOUNT),
+        foreign_load: &load_foreign_token,
+    }
+}
+
+fn parse_mirror_payload(bytes: &[u8]) -> Option<String> {
+    let payload = serde_json::from_slice::<OwnedMirrorPayload>(bytes).ok()?;
+    (payload.version == OWNED_MIRROR_VERSION && !payload.refresh_token.trim().is_empty())
+        .then_some(payload.refresh_token)
+}
+
+fn serialize_mirror_payload(refresh_token: &str) -> Vec<u8> {
+    serde_json::to_vec(&OwnedMirrorPayload {
+        version: OWNED_MIRROR_VERSION,
+        refresh_token: refresh_token.to_owned(),
+    })
+    .unwrap_or_default()
+}
+
+fn mirror_owned_item(owned_write: OwnedStoreWrite<'_>, credentials: &AntigravityToken) {
+    let Some(refresh_token) = credentials
+        .refresh_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+    else {
+        return;
+    };
+    if (owned_write)(
+        OWNED_SERVICE,
+        OWNED_ACCOUNT,
+        &serialize_mirror_payload(refresh_token),
+    )
+    .is_err()
+    {
+        crate::app_warn!("auth:antigravity", "credential mirror could not be saved");
+    }
+}
+
+fn delete_owned_mirror(owned_delete: &dyn Fn(&str, &str) -> Result<(), String>) {
+    if (owned_delete)(OWNED_SERVICE, OWNED_ACCOUNT).is_err() {
+        crate::app_warn!("auth:antigravity", "credential mirror could not be removed");
+    }
+}
+
+/// Drop the mirror after Google reports the refresh grant revoked, so the next cycle re-reads the
+/// live sources instead of failing on a dead credential forever.
+pub fn discard_owned_mirror() {
+    if delete_owned_password(OWNED_SERVICE, OWNED_ACCOUNT).is_err() {
+        crate::app_warn!("auth:antigravity", "credential mirror could not be removed");
     }
 }
 
 fn load_token_from_home(home: &Path) -> Result<Option<AntigravityToken>, AntigravityError> {
-    // Local files avoid recurring keychain prompts; keychain remains the final fallback.
+    load_token_from_home_with(home, &owned_store_deps())
+}
+
+fn load_token_from_home_with(
+    home: &Path,
+    deps: &StoreDeps<'_>,
+) -> Result<Option<AntigravityToken>, AntigravityError> {
+    // Local files avoid recurring keychain prompts; the foreign keychain item is the last resort.
     for relative_path in [
         ".gemini/antigravity-cli/antigravity-oauth-token",
         ".gemini/antigravity-acp/acp_token.json",
@@ -145,7 +240,33 @@ fn load_token_from_home(home: &Path) -> Result<Option<AntigravityToken>, Antigra
             }
         }
     }
-    load_token_from_store()
+    // Attribute-only existence check: the foreign secret itself may prompt.
+    if (deps.foreign_exists)() == Some(false) {
+        delete_owned_mirror(deps.owned_delete);
+        return Ok(None);
+    }
+    if let Some(refresh_token) = (deps.owned_read)(OWNED_SERVICE, OWNED_ACCOUNT)
+        .ok()
+        .flatten()
+        .and_then(|bytes| parse_mirror_payload(&bytes))
+    {
+        return Ok(Some(AntigravityToken {
+            access_token: None,
+            refresh_token: Some(refresh_token),
+            expiry: None,
+        }));
+    }
+    match (deps.foreign_load)() {
+        Ok(Some(credentials)) => {
+            mirror_owned_item(deps.owned_write, &credentials);
+            Ok(Some(credentials))
+        }
+        Ok(None) => {
+            delete_owned_mirror(deps.owned_delete);
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 // Files must be JSON credentials; bare strings stay keychain-only.
@@ -160,8 +281,8 @@ fn extract_file_token(bytes: &[u8]) -> Option<AntigravityToken> {
     extract_token(bytes)
 }
 
-fn load_token_from_store() -> Result<Option<AntigravityToken>, AntigravityError> {
-    let Some(raw) = read_generic_password("gemini", "antigravity")
+fn load_foreign_token() -> Result<Option<AntigravityToken>, AntigravityError> {
+    let Some(raw) = read_generic_password(FOREIGN_SERVICE, FOREIGN_ACCOUNT)
         .map_err(|_| AntigravityError::CredentialStoreUnreadable)?
     else {
         return Ok(None);
@@ -319,7 +440,7 @@ fn write_private_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{cell::Cell, fs};
 
     use base64::{engine::general_purpose::STANDARD, Engine};
     use chrono::{TimeZone, Utc};
@@ -452,6 +573,175 @@ mod tests {
             extract_token(b"raw-token").unwrap().access_token.as_deref(),
             Some("raw-token")
         );
+    }
+
+    #[test]
+    fn owned_mirror_payload_round_trips() {
+        let payload = super::serialize_mirror_payload("refresh-a");
+        assert_eq!(
+            super::parse_mirror_payload(&payload).as_deref(),
+            Some("refresh-a")
+        );
+    }
+
+    #[test]
+    fn mirror_rejects_unknown_versions_and_blank_tokens() {
+        assert!(super::parse_mirror_payload(br#"{"version":2,"refresh_token":"a"}"#).is_none());
+        assert!(super::parse_mirror_payload(br#"{"version":1,"refresh_token":"  "}"#).is_none());
+        assert!(super::parse_mirror_payload(b"{broken").is_none());
+        assert!(super::parse_mirror_payload(b"plain-token").is_none());
+    }
+
+    #[test]
+    fn owned_mirror_serves_without_touching_the_foreign_item() {
+        let directory = tempdir().unwrap();
+        let foreign_loads = Cell::new(0);
+        let payload = super::serialize_mirror_payload("mirror-refresh");
+        let read_owned = move |_: &str, _: &str| -> Result<Option<Vec<u8>>, String> {
+            Ok(Some(payload.clone()))
+        };
+        let credentials = super::load_token_from_home_with(
+            directory.path(),
+            &super::StoreDeps {
+                owned_read: &read_owned,
+                owned_write: &|_, _, _| Ok(()),
+                owned_delete: &|_, _| Ok(()),
+                foreign_exists: &|| Some(true),
+                foreign_load: &|| {
+                    foreign_loads.set(foreign_loads.get() + 1);
+                    Ok(None)
+                },
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(credentials.refresh_token.as_deref(), Some("mirror-refresh"));
+        assert_eq!(foreign_loads.get(), 0);
+    }
+
+    #[test]
+    fn logged_out_foreign_item_discards_the_mirror() {
+        let directory = tempdir().unwrap();
+        let deletions = Cell::new(0);
+        let foreign_loads = Cell::new(0);
+        let result = super::load_token_from_home_with(
+            directory.path(),
+            &super::StoreDeps {
+                owned_read: &|_, _| Ok(None),
+                owned_write: &|_, _, _| Ok(()),
+                owned_delete: &|_, _| {
+                    deletions.set(deletions.get() + 1);
+                    Ok(())
+                },
+                foreign_exists: &|| Some(false),
+                foreign_load: &|| {
+                    foreign_loads.set(foreign_loads.get() + 1);
+                    Ok(None)
+                },
+            },
+        )
+        .unwrap();
+        assert!(result.is_none());
+        assert_eq!(deletions.get(), 1);
+        assert_eq!(foreign_loads.get(), 0);
+    }
+
+    #[test]
+    fn foreign_credentials_are_mirrored_into_the_owned_item() {
+        for gate in [Some(true), None] {
+            let directory = tempdir().unwrap();
+            let stored = std::cell::RefCell::new(None);
+            {
+                let slot = &stored;
+                let write_owned =
+                    move |service: &str, account: &str, value: &[u8]| -> Result<(), String> {
+                        *slot.borrow_mut() =
+                            Some((service.to_owned(), account.to_owned(), value.to_vec()));
+                        Ok(())
+                    };
+                let foreign_exists = move || gate;
+                let credentials = super::load_token_from_home_with(
+                    directory.path(),
+                    &super::StoreDeps {
+                        owned_read: &|_, _| Ok(None),
+                        owned_write: &write_owned,
+                        owned_delete: &|_, _| Ok(()),
+                        foreign_exists: &foreign_exists,
+                        foreign_load: &|| {
+                            Ok(Some(AntigravityToken {
+                                access_token: Some("foreign-access".into()),
+                                refresh_token: Some("foreign-refresh".into()),
+                                expiry: None,
+                            }))
+                        },
+                    },
+                )
+                .unwrap()
+                .unwrap();
+                assert_eq!(
+                    credentials.refresh_token.as_deref(),
+                    Some("foreign-refresh")
+                );
+            }
+            let (service, account, value) = stored.into_inner().unwrap();
+            assert_eq!(service, super::OWNED_SERVICE);
+            assert_eq!(account, super::OWNED_ACCOUNT);
+            assert_eq!(
+                super::parse_mirror_payload(&value).as_deref(),
+                Some("foreign-refresh")
+            );
+        }
+    }
+
+    #[test]
+    fn mirror_skips_foreign_tokens_without_a_refresh_grant() {
+        let directory = tempdir().unwrap();
+        let written = Cell::new(false);
+        let credentials = super::load_token_from_home_with(
+            directory.path(),
+            &super::StoreDeps {
+                owned_read: &|_, _| Ok(None),
+                owned_write: &|_, _, _| {
+                    written.set(true);
+                    Ok(())
+                },
+                owned_delete: &|_, _| Ok(()),
+                foreign_exists: &|| Some(true),
+                foreign_load: &|| {
+                    Ok(Some(AntigravityToken {
+                        access_token: Some("foreign-access".into()),
+                        refresh_token: None,
+                        expiry: None,
+                    }))
+                },
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(credentials.access_token.as_deref(), Some("foreign-access"));
+        assert!(!written.get());
+    }
+
+    #[test]
+    fn foreign_logout_race_discards_the_mirror() {
+        let directory = tempdir().unwrap();
+        let deletions = Cell::new(0);
+        let result = super::load_token_from_home_with(
+            directory.path(),
+            &super::StoreDeps {
+                owned_read: &|_, _| Ok(None),
+                owned_write: &|_, _, _| Ok(()),
+                owned_delete: &|_, _| {
+                    deletions.set(deletions.get() + 1);
+                    Ok(())
+                },
+                foreign_exists: &|| Some(true),
+                foreign_load: &|| Ok(None),
+            },
+        )
+        .unwrap();
+        assert!(result.is_none());
+        assert_eq!(deletions.get(), 1);
     }
 
     #[test]

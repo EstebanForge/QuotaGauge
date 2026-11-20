@@ -52,6 +52,9 @@ pub enum RefreshOutcome {
         expires_in_seconds: f64,
     },
     AuthFailed,
+    /// Google reports an expired or revoked refresh grant as 400 invalid_grant. Every other 4xx
+    /// is not a revocation (client disablement, proxy filtering), so cached credentials survive it.
+    Revoked,
     Unavailable,
 }
 
@@ -260,6 +263,21 @@ impl AntigravityClient {
                 StatusCode::REQUEST_TIMEOUT | StatusCode::TOO_MANY_REQUESTS
             )
         {
+            if response.status() == StatusCode::BAD_REQUEST
+                && response
+                    .text()
+                    .ok()
+                    .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+                    .and_then(|value| {
+                        value
+                            .get("error")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned)
+                    })
+                    .is_some_and(|error| error == "invalid_grant")
+            {
+                return RefreshOutcome::Revoked;
+            }
             RefreshOutcome::AuthFailed
         } else {
             RefreshOutcome::Unavailable
@@ -340,6 +358,18 @@ mod tests {
         let forbidden = test_http::serve_once(403, &[], r#"{"error":"forbidden"}"#);
         assert!(matches!(
             client(&forbidden).refresh_google_token("secret-refresh"),
+            RefreshOutcome::AuthFailed
+        ));
+
+        let revoked = test_http::serve_once(400, &[], r#"{"error":"invalid_grant"}"#);
+        assert!(matches!(
+            client(&revoked).refresh_google_token("secret-refresh"),
+            RefreshOutcome::Revoked
+        ));
+
+        let invalid_client = test_http::serve_once(400, &[], r#"{"error":"invalid_client"}"#);
+        assert!(matches!(
+            client(&invalid_client).refresh_google_token("secret-refresh"),
             RefreshOutcome::AuthFailed
         ));
 

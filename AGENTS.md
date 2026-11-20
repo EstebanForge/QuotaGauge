@@ -165,7 +165,11 @@ bundles` (dispatch-only, id 397210994), for the Linux (deb/rpm/AppImage) and Win
   `kimi-coding` entry (`expires` unix millis) — refreshing would rotate the refresh token and break
   the owning client's grant. Antigravity: local language-server first, then
   `~/.gemini/antigravity-cli/antigravity-oauth-token`, `antigravity-acp/acp_token.json`,
-  `jetski-standalone-oauth-token`, OS keychain last; `~/.gemini/oauth_creds.json` belongs to
+  `jetski-standalone-oauth-token`, owned keychain mirror (`xyz.actitud.quotagauge.antigravity`,
+  only while the foreign item still exists), foreign `gemini` keychain item last — that item
+  belongs to the agy CLI stack and macOS resets its access grant on every rotation the Gemini
+  desktop app makes, so each read can prompt; the mirror avoids the repeat prompts. An agy
+  account switch is invisible while the mirror holds (documented limitation); `~/.gemini/oauth_creds.json` belongs to
   Google's Gemini CLI (can be a different Google account) and is deliberately NOT a source. The
   agy CLI's non-interactive reports are `-p /quota` and `-p /usage`; a bare word like `quota` is
   answered as a chat prompt (slow, token-burning, no groups) and must never be spawned. Kimi

@@ -32,6 +32,26 @@ pub fn read_generic_password(service: &str, account: &str) -> Result<Option<Vec<
     }
 }
 
+/// Attribute-only existence probe. Unlike a secret read this never raises a keychain access
+/// prompt, so credential detection can run at app start without interrupting the user.
+#[cfg(target_os = "macos")]
+pub fn generic_password_item_exists(service: &str, account: &str) -> Option<bool> {
+    use security_framework::item::{ItemClass, ItemSearchOptions};
+
+    match ItemSearchOptions::new()
+        .class(ItemClass::generic_password())
+        .service(service)
+        .account(account)
+        .load_attributes(true)
+        .skip_authenticated_items(true)
+        .search()
+    {
+        Ok(_) => Some(true),
+        Err(error) if error.code() == MACOS_ITEM_NOT_FOUND => Some(false),
+        Err(_) => None,
+    }
+}
+
 #[cfg(target_os = "macos")]
 pub fn read_owned_password(service: &str, account: &str) -> Result<Option<Vec<u8>>, String> {
     read_generic_password(service, account)
@@ -51,6 +71,29 @@ pub fn delete_generic_password(service: &str, account: &str) -> Result<(), Strin
         Ok(()) => Ok(()),
         Err(error) if error.code() == MACOS_ITEM_NOT_FOUND => Ok(()),
         Err(_) => Err("The macOS Keychain item could not be removed.".into()),
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub fn generic_password_item_exists(service: &str, account: &str) -> Option<bool> {
+    use std::{ptr, slice};
+    use windows_sys::Win32::Security::Credentials::{
+        CredFree, CredReadW, CREDENTIALW, CRED_TYPE_GENERIC,
+    };
+
+    let target = format!("{service}:{account}");
+    let wide = target.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+    let mut credential: *mut CREDENTIALW = ptr::null_mut();
+    let found = unsafe { CredReadW(wide.as_ptr(), CRED_TYPE_GENERIC, 0, &mut credential) };
+    if found != 0 {
+        if !credential.is_null() {
+            unsafe { CredFree(credential.cast()) };
+        }
+        return Some(true);
+    }
+    match std::io::Error::last_os_error().raw_os_error() {
+        Some(1168) => Some(false),
+        _ => None,
     }
 }
 
@@ -259,6 +302,19 @@ pub fn generic_password_service_exists(
 }
 
 #[cfg(target_os = "linux")]
+pub fn generic_password_item_exists(service: &str, account: &str) -> Option<bool> {
+    use std::collections::HashMap;
+
+    use secret_service::{blocking::SecretService, EncryptionType};
+
+    let secret_service = SecretService::connect(EncryptionType::Dh).ok()?;
+    let matches = secret_service
+        .search_items(HashMap::from([("service", service), ("username", account)]))
+        .ok()?;
+    Some(matches.unlocked.is_empty() && matches.locked.is_empty())
+}
+
+#[cfg(target_os = "linux")]
 pub fn read_owned_password(service: &str, account: &str) -> Result<Option<Vec<u8>>, String> {
     read_generic_password(service, account)
 }
@@ -354,6 +410,11 @@ pub fn generic_password_service_exists(
     _service: &str,
     _timeout: std::time::Duration,
 ) -> Option<bool> {
+    Some(false)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+pub fn generic_password_item_exists(_service: &str, _account: &str) -> Option<bool> {
     Some(false)
 }
 

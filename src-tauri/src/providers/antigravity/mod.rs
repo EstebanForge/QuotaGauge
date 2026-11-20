@@ -15,7 +15,7 @@ use crate::models::{
 };
 
 use self::{
-    auth::{load_token, AccessTokenCache},
+    auth::{discard_owned_mirror, load_token, AccessTokenCache},
     client::{AntigravityClient, CloudOutcome, RefreshOutcome},
     discovery::discover,
     mapper::{
@@ -233,6 +233,11 @@ impl AntigravityProvider {
                 }
                 RefreshOutcome::AuthFailed => {
                     self.access_token_cache.discard();
+                    return Err(AntigravityError::AuthExpired);
+                }
+                RefreshOutcome::Revoked => {
+                    self.access_token_cache.discard();
+                    discard_owned_mirror();
                     return Err(AntigravityError::AuthExpired);
                 }
                 RefreshOutcome::Unavailable => return Err(AntigravityError::Unavailable),

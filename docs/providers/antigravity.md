@@ -20,6 +20,13 @@ Sign in through Antigravity or run `agy`. QuotaGauge reuses Antigravity's locall
 and can also discover a compatible running Antigravity language server. No API key needs to be added
 to QuotaGauge.
 
+When the local token files are absent, QuotaGauge reads the `gemini` login keychain item that the
+Antigravity stack owns. macOS can raise one access prompt for that foreign item; after it, the
+refresh credential is mirrored into QuotaGauge's own keychain item (`xyz.actitud.quotagauge.antigravity`),
+so later reads stay silent even when the owning app rotates its credentials. Deleting that mirror
+item (or signing out in Antigravity) makes QuotaGauge fall back to the live sources on the next
+refresh.
+
 ## Troubleshooting
 
 - **Not signed in** — open Antigravity or run `agy`, complete sign-in, then refresh QuotaGauge.
