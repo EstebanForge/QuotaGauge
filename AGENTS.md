@@ -132,7 +132,10 @@ Data flow: providers -> UsageService refresh (events `usage-state`, `open-screen
   cryptographically — the tauri CLI has no `verify` subcommand; build a tiny `minisign-verify`
   binary (the same crate the plugin uses) against `plugins.updater.pubkey` in `tauri.conf.json` —
   for all three platforms BEFORE upload, then re-verify the published manifest bytes from the
-  release URL. Signature-nonempty + HTTP 200 is not verification.
+  release URL. Signature-nonempty + HTTP 200 is not verification. CI updater signatures can ship
+  broken (2026-11-24: the workflow's exe.sig did not match its own exe; the identical rerun was
+  valid, so it was a runner flake) — verify every platform's pair with the minisign tool before
+  publish and fix by re-running the workflow, not by skipping the check.
 - Release flow: push the bump commit to main, then dispatch the only active workflow, `Desktop
 bundles` (dispatch-only, id 397210994), for the Linux (deb/rpm/AppImage) and Windows (NSIS)
   legs; the macOS arm64 leg is `./scripts/macos-cross/release-macos.sh` locally. Create the GitHub
