@@ -114,8 +114,8 @@ Data flow: providers -> UsageService refresh (events `usage-state`, `open-screen
   brew clang -target arm64-apple-macos11 -isysroot $SDK -fuse-ld=/usr/bin/ld64.lld
   -Wl,-platform_version,macos,11.0,27.0 — and run cargo via PATH="$HOME/.cargo/bin:$PATH"
   because brew's rust shadows rustup's and lacks the darwin std; the SDK's tbd files needed a
-  2026-11-20 patch adding arm64-macos to their targets lines (backups libSystem*.tbd.bak.* and
-  *.tbd.bak.20261120-* beside them) — older linker/clang combinations tolerated the missing
+  2026-11-20 patch adding arm64-macos to their targets lines (backups
+  `libSystem*.tbd.bak.*` and `*.tbd.bak.20261120-*` beside them) — older linker/clang combinations tolerated the missing
   arm64 declarations, current clang 23.1.5 does not, so if the SDK is ever re-downloaded the
   patch must be reapplied),
   `scripts/macos-cross/bundle-app.sh`, Apple-sign the .app with
