@@ -8,7 +8,6 @@ QuotaGauge tracks the shared Gemini and Claude quota pools reported by Antigravi
 | ------------- | --------------------------------------------------- |
 | Five Hour     | Shared Gemini pool in the rolling 5-hour window     |
 | Weekly        | Shared Gemini pool in the weekly window             |
-| Argon Weekly  | Separate Gemini 4 Argon weekly quota, when reported |
 | Claude        | Shared non-Gemini pool in the rolling 5-hour window |
 | Claude Weekly | Shared non-Gemini pool in the weekly window         |
 
@@ -30,7 +29,6 @@ refresh.
 ## Troubleshooting
 
 - **Not signed in** — open Antigravity or run `agy`, complete sign-in, then refresh QuotaGauge.
-- **Argon Weekly shows No data** — the Argon quota comes from the `agy` CLI. Install it with `brew install --cask antigravity-cli`, run `agy` once to sign in, then refresh. GUI launches do not carry your shell PATH, so QuotaGauge also checks `~/.local/bin`, `/opt/homebrew/bin` and `/usr/local/bin`. Set the `ANTIGRAVITY_CLI_PATH` environment variable to an absolute path to force the location; setting it to an empty value turns the CLI source off.
 - **Sign-in expired** — authenticate again in Antigravity or with `agy`.
 - **Credentials could not be read** — reopen Antigravity so its local sign-in state can be restored.
 - **Usage temporarily unavailable** — wait briefly and refresh again.

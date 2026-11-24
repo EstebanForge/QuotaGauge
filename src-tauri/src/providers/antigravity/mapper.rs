@@ -25,8 +25,6 @@ pub struct ModelConfig {
     resets_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-const ARGON_GROUP_NAME: &str = "Gemini 4 Argon";
-
 const BUCKETS: [(&str, &str, &str, u64); 4] = [
     ("gemini-5h", "geminiPro", "Five Hour", 5 * 60 * 60),
     ("gemini-weekly", "geminiWeekly", "Weekly", 7 * 24 * 60 * 60),
@@ -39,26 +37,13 @@ const BUCKETS: [(&str, &str, &str, u64); 4] = [
     ),
 ];
 
-/// Why an Argon window could not be built; logged at debug level so live payload drift is
-/// diagnosable instead of silently dropping the meter.
-#[derive(Debug, PartialEq)]
-pub enum ArgonReject {
-    NoGroups,
-    NoArgonGroup,
-    WeeklyBucketCount(usize),
-    MissingBucketId,
-    SharedBucketId,
-    BucketDisabled,
-    MissingFraction,
-}
-
 pub fn parse_quota_summary(value: &Value) -> Option<Vec<QuotaWindow>> {
     parse_quota_summaries(std::slice::from_ref(value))
 }
 
 /// One or more `RetrieveUserQuotaSummary` bodies merged by bucket id: the first usable bucket for
 /// each id wins, because a single host can omit a whole pool (the daily host has returned only the
-/// Claude group). Argon is judged per body so two hosts' Argon groups never read as one.
+/// Claude group).
 pub fn parse_quota_summaries(values: &[Value]) -> Option<Vec<QuotaWindow>> {
     let group_lists = values
         .iter()
@@ -74,50 +59,20 @@ pub fn parse_quota_summaries(values: &[Value]) -> Option<Vec<QuotaWindow>> {
     }
 
     let mut found = std::collections::HashMap::new();
-    let mut argon = None;
     for groups in &group_lists {
-        let mut argon_buckets = Vec::new();
-        let mut seen_argon_group = false;
         for group in groups.iter() {
-            let argon_group =
-                group.get("displayName").and_then(Value::as_str) == Some(ARGON_GROUP_NAME);
-            seen_argon_group |= argon_group;
             for bucket in group
                 .get("buckets")
                 .and_then(Value::as_array)
                 .into_iter()
                 .flatten()
             {
-                if argon_group {
-                    argon_buckets.push(bucket);
-                    continue;
-                }
                 pool_bucket(bucket, &mut found);
-            }
-        }
-        if argon.is_none() {
-            if !seen_argon_group {
-                crate::app_debug!(
-                    "antigravity",
-                    "summary body has no '{}' group (groups: {})",
-                    ARGON_GROUP_NAME,
-                    group_outline(groups)
-                );
-            } else {
-                argon = argon_window_checked(&argon_buckets)
-                    .inspect_err(|_| {
-                        crate::app_debug!(
-                            "antigravity",
-                            "summary body Argon buckets: {}",
-                            bucket_outline(&argon_buckets)
-                        );
-                    })
-                    .ok();
             }
         }
     }
 
-    let mut quotas: Vec<QuotaWindow> = BUCKETS
+    let quotas: Vec<QuotaWindow> = BUCKETS
         .iter()
         .filter_map(|(bucket_id, quota_id, label, period_seconds)| {
             let (remaining, resets_at) = found.get(*bucket_id)?;
@@ -130,9 +85,6 @@ pub fn parse_quota_summaries(values: &[Value]) -> Option<Vec<QuotaWindow>> {
             ))
         })
         .collect();
-    if let Some(argon) = argon {
-        insert_argon(&mut quotas, argon);
-    }
     // A body that answered with groups but no known bucket (signed out, renamed
     // buckets) must read as "no data" so the caller falls back to the other
     // sources instead of reporting an empty-but-healthy quota list.
@@ -140,66 +92,6 @@ pub fn parse_quota_summaries(values: &[Value]) -> Option<Vec<QuotaWindow>> {
         return None;
     }
     Some(quotas)
-}
-
-/// Argon Weekly slots in between the Gemini and third-party pools.
-pub fn insert_argon(quotas: &mut Vec<QuotaWindow>, argon: QuotaWindow) {
-    let index = quotas
-        .iter()
-        .position(|quota| quota.id.starts_with("claude"))
-        .unwrap_or(quotas.len());
-    quotas.insert(index, argon);
-}
-
-/// `agy -p "/quota" --output-format json` nests the groups under `command.data` and renames the
-/// canonical fields (`name`, `remaining_fraction`); normalize into the summary bucket shape.
-pub fn parse_agy_cli_quota_checked(value: &Value) -> Result<QuotaWindow, ArgonReject> {
-    let groups = value
-        .pointer("/command/data/groups")
-        .or_else(|| value.pointer("/response/groups"))
-        .or_else(|| value.get("groups"))
-        .and_then(Value::as_array)
-        .ok_or(ArgonReject::NoGroups)?;
-    let argon_groups = groups
-        .iter()
-        .filter(|group| {
-            group
-                .get("name")
-                .and_then(Value::as_str)
-                .or_else(|| group.get("displayName").and_then(Value::as_str))
-                == Some(ARGON_GROUP_NAME)
-        })
-        .collect::<Vec<_>>();
-    if argon_groups.is_empty() {
-        crate::app_debug!(
-            "antigravity",
-            "agy report has no '{}' group (groups: {})",
-            ARGON_GROUP_NAME,
-            group_outline(groups)
-        );
-        return Err(ArgonReject::NoArgonGroup);
-    }
-    let buckets = argon_groups
-        .iter()
-        .filter_map(|group| group.get("buckets").and_then(Value::as_array))
-        .flatten()
-        .map(|bucket| {
-            let mut normalized = bucket.clone();
-            if let Some(fraction) = bucket.get("remaining_fraction").and_then(number) {
-                normalized["remainingFraction"] = Value::from(fraction);
-            }
-            if let Some(id) = bucket
-                .get("bucket_id")
-                .or_else(|| bucket.get("id"))
-                .and_then(Value::as_str)
-            {
-                normalized["bucketId"] = Value::from(id);
-            }
-            normalized
-        })
-        .collect::<Vec<_>>();
-    let refs: Vec<&Value> = buckets.iter().collect();
-    argon_window_checked(&refs)
 }
 
 fn pool_bucket(
@@ -221,123 +113,6 @@ fn pool_bucket(
         .and_then(|text| DateTime::parse_from_rfc3339(text).ok())
         .map(|date| date.to_utc());
     found.insert(id.to_owned(), (fraction, reset));
-}
-
-/// Argon ships its own quota group instead of a stable bucket id, so the group name plus exactly
-/// one weekly bucket identifies the window; anything ambiguous is dropped rather than guessed.
-fn argon_window_checked(buckets: &[&Value]) -> Result<QuotaWindow, ArgonReject> {
-    let weekly = buckets
-        .iter()
-        .filter(|bucket| bucket.get("window").and_then(Value::as_str) == Some("weekly"))
-        .collect::<Vec<_>>();
-    if weekly.len() != 1 {
-        crate::app_debug!(
-            "antigravity",
-            "Argon needs exactly one weekly bucket, found {}",
-            weekly.len()
-        );
-        return Err(ArgonReject::WeeklyBucketCount(weekly.len()));
-    }
-    let bucket = weekly[0];
-    if bucket.get("disabled").and_then(Value::as_bool) == Some(true) {
-        crate::app_debug!("antigravity", "Argon weekly bucket is disabled");
-        return Err(ArgonReject::BucketDisabled);
-    }
-    let id = bucket
-        .get("bucketId")
-        .and_then(Value::as_str)
-        .filter(|id| !id.is_empty())
-        .ok_or_else(|| {
-            crate::app_debug!("antigravity", "Argon weekly bucket has no bucketId");
-            ArgonReject::MissingBucketId
-        })?;
-    if BUCKETS.iter().any(|spec| spec.0 == id) {
-        crate::app_debug!(
-            "antigravity",
-            "Argon weekly bucket id '{id}' collides with a standard pool bucket"
-        );
-        return Err(ArgonReject::SharedBucketId);
-    }
-    let fraction = bucket
-        .get("remainingFraction")
-        .and_then(number)
-        .ok_or_else(|| {
-            crate::app_debug!(
-                "antigravity",
-                "Argon weekly bucket '{id}' has no usable remainingFraction"
-            );
-            ArgonReject::MissingFraction
-        })?;
-    let reset = bucket
-        .get("resetTime")
-        .and_then(Value::as_str)
-        .and_then(|text| DateTime::parse_from_rfc3339(text).ok())
-        .map(|date| date.to_utc());
-    crate::app_debug!(
-        "antigravity",
-        "Argon weekly accepted: bucket '{id}', {:.1}% remaining, reset {}",
-        fraction * 100.0,
-        reset
-            .map(|reset| reset.to_rfc3339())
-            .unwrap_or_else(|| "n/a".into())
-    );
-    Ok(quota_window(
-        "argonWeekly",
-        "Argon Weekly",
-        fraction,
-        reset,
-        7 * 24 * 60 * 60,
-    ))
-}
-
-fn group_outline(groups: &[Value]) -> String {
-    let names = groups
-        .iter()
-        .map(|group| {
-            group
-                .get("displayName")
-                .or_else(|| group.get("name"))
-                .and_then(Value::as_str)
-                .unwrap_or("?")
-        })
-        .collect::<Vec<_>>();
-    if names.is_empty() {
-        "none".to_owned()
-    } else {
-        format!("[{}]", names.join(", "))
-    }
-}
-
-fn bucket_outline(buckets: &[&Value]) -> String {
-    if buckets.is_empty() {
-        return "none".to_owned();
-    }
-    let items = buckets
-        .iter()
-        .map(|bucket| {
-            format!(
-                "{}/{}/{}{}",
-                bucket
-                    .get("bucketId")
-                    .or_else(|| bucket.get("id"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("?"),
-                bucket.get("window").and_then(Value::as_str).unwrap_or("?"),
-                bucket
-                    .get("remainingFraction")
-                    .or_else(|| bucket.get("remaining_fraction"))
-                    .and_then(number)
-                    .map(|fraction| format!("{fraction:.2}"))
-                    .unwrap_or_else(|| "?".to_owned()),
-                if bucket.get("disabled").and_then(Value::as_bool) == Some(true) {
-                    "/disabled"
-                } else {
-                    ""
-                }
-            )
-        })
-        .collect::<Vec<_>>();
-    format!("[{}]", items.join(", "))
 }
 
 fn quota_window(
@@ -546,25 +321,9 @@ mod tests {
     use serde_json::{json, Value};
 
     use super::{
-        build_legacy_quotas, parse_agy_cli_quota_checked, parse_cloud_models,
-        parse_command_model_configs, parse_quota_buckets, parse_quota_summaries,
-        parse_quota_summary, parse_user_status,
+        build_legacy_quotas, parse_cloud_models, parse_command_model_configs, parse_quota_buckets,
+        parse_quota_summaries, parse_quota_summary, parse_user_status,
     };
-
-    #[test]
-    fn legacy_bucket_id_wins_over_the_newer_id_field() {
-        let parsed = parse_agy_cli_quota_checked(&json!({
-            "groups": [
-                {"name": "Gemini 4 Argon", "buckets": [
-                    {"bucket_id": "legacy-id", "id": "newer-id", "window": "weekly",
-                     "remaining_fraction": 0.19}
-                ]}
-            ]
-        }));
-
-        let argon = parsed.unwrap();
-        assert_eq!(argon.id, "argonWeekly");
-    }
 
     #[test]
     fn maps_authoritative_pool_summary_in_fixed_order() {
@@ -579,9 +338,7 @@ mod tests {
 
     #[test]
     fn gemini_five_hour_window_is_named_like_the_antigravity_app() {
-        let value = summary_with_argon(argon_group(json!([
-            {"bucketId": "gemini-4-argon-weekly", "window": "weekly", "remainingFraction": 1.0}
-        ])));
+        let value = summary();
         let quotas = parse_quota_summary(&value).unwrap();
         let gemini = quotas.iter().find(|quota| quota.id == "geminiPro").unwrap();
         assert_eq!(gemini.label, "Five Hour");
@@ -589,13 +346,12 @@ mod tests {
         assert_eq!(claude.label, "Claude");
     }
 
-    fn summary_with_argon(argon_group: Value) -> Value {
+    fn summary() -> Value {
         json!({"groups": [
             {"displayName": "Gemini Models", "buckets": [
                 {"bucketId": "gemini-5h", "remainingFraction": 0.8, "window": "5h"},
                 {"bucketId": "gemini-weekly", "remainingFraction": 0.5, "window": "weekly"}
             ]},
-            argon_group,
             {"displayName": "Claude and GPT models", "buckets": [
                 {"bucketId": "3p-5h", "remainingFraction": 0.7, "window": "5h"},
                 {"bucketId": "3p-weekly", "remainingFraction": 0.6, "window": "weekly"}
@@ -603,139 +359,19 @@ mod tests {
         ]})
     }
 
-    fn argon_group(buckets: Value) -> Value {
-        json!({"displayName": "Gemini 4 Argon", "buckets": buckets})
-    }
-
     #[test]
-    fn summary_orders_session_weekly_argon_then_claude() {
-        let value = summary_with_argon(argon_group(json!([
-            {"bucketId": "gemini-4-argon-weekly", "window": "weekly", "remainingFraction": 0.19}
-        ])));
-        let quotas = parse_quota_summary(&value).unwrap();
+    fn summary_orders_session_weekly_then_claude() {
+        let quotas = parse_quota_summary(&summary()).unwrap();
         assert_eq!(
             quotas.iter().map(|q| q.id.as_str()).collect::<Vec<_>>(),
-            [
-                "geminiPro",
-                "geminiWeekly",
-                "argonWeekly",
-                "claude",
-                "claudeWeekly"
-            ]
+            ["geminiPro", "geminiWeekly", "claude", "claudeWeekly"]
         );
-        assert_eq!(quotas[2].used_percent, 81.0);
-        assert_eq!(quotas[2].period_seconds, 7 * 24 * 60 * 60);
+        assert_eq!(quotas[1].used_percent, 50.0);
+        assert_eq!(quotas[1].period_seconds, 7 * 24 * 60 * 60);
     }
 
     #[test]
-    fn ambiguous_argon_buckets_are_dropped() {
-        let two_weekly = summary_with_argon(argon_group(json!([
-            {"bucketId": "a", "window": "weekly", "remainingFraction": 0.9},
-            {"bucketId": "b", "window": "weekly", "remainingFraction": 0.8}
-        ])));
-        assert!(parse_quota_summary(&two_weekly)
-            .unwrap()
-            .iter()
-            .all(|quota| quota.id != "argonWeekly"));
-
-        let disabled = summary_with_argon(argon_group(json!([
-            {"bucketId": "a", "window": "weekly", "remainingFraction": 0.9, "disabled": true}
-        ])));
-        assert!(parse_quota_summary(&disabled)
-            .unwrap()
-            .iter()
-            .all(|quota| quota.id != "argonWeekly"));
-
-        let shared_id = summary_with_argon(argon_group(json!([
-            {"bucketId": "gemini-weekly", "window": "weekly", "remainingFraction": 0.9}
-        ])));
-        let quotas = parse_quota_summary(&shared_id).unwrap();
-        assert_eq!(quotas.iter().filter(|q| q.id == "geminiWeekly").count(), 1);
-        assert!(quotas.iter().all(|quota| quota.id != "argonWeekly"));
-    }
-
-    #[test]
-    fn agy_cli_print_payload_maps_with_snake_case_fields() {
-        let value = json!({
-            "response": "Gemini 4 Argon Weekly Limit: 81%",
-            "command": {"data": {"groups": [
-                {"name": "Gemini Models", "buckets": [
-                    {"bucket_id": "gemini-5h", "remaining_fraction": 0.9}
-                ]},
-                {"name": "Gemini 4 Argon", "buckets": [
-                    {"id": "gemini-argon-wtu-weekly", "window": "weekly", "remaining_fraction": 0.19}
-                ]}
-            ]}}
-        });
-        let argon = parse_agy_cli_quota_checked(&value).unwrap();
-        assert_eq!(argon.id, "argonWeekly");
-        assert_eq!(argon.used_percent, 81.0);
-
-        assert!(
-            parse_agy_cli_quota_checked(&json!({"command": {"data": {"groups": []}}})).is_err()
-        );
-        assert!(parse_agy_cli_quota_checked(&json!({})).is_err());
-    }
-
-    #[test]
-    fn argon_rejections_carry_the_reason_a_bucket_was_dropped() {
-        use super::{parse_agy_cli_quota_checked, ArgonReject};
-
-        assert_eq!(
-            parse_agy_cli_quota_checked(&json!({})),
-            Err(ArgonReject::NoGroups)
-        );
-        assert_eq!(
-            parse_agy_cli_quota_checked(&json!({"groups": [
-                {"name": "Gemini Models", "buckets": []}
-            ]})),
-            Err(ArgonReject::NoArgonGroup)
-        );
-        assert_eq!(
-            parse_agy_cli_quota_checked(&json!({"groups": [
-                {"name": "Gemini 4 Argon", "buckets": [
-                    {"id": "a", "window": "weekly", "remaining_fraction": 0.9},
-                    {"id": "b", "window": "weekly", "remaining_fraction": 0.8}
-                ]}
-            ]})),
-            Err(ArgonReject::WeeklyBucketCount(2))
-        );
-        assert_eq!(
-            parse_agy_cli_quota_checked(&json!({"groups": [
-                {"name": "Gemini 4 Argon", "buckets": [
-                    {"id": "a", "window": "weekly", "remaining_fraction": 0.9, "disabled": true}
-                ]}
-            ]})),
-            Err(ArgonReject::BucketDisabled)
-        );
-        assert_eq!(
-            parse_agy_cli_quota_checked(&json!({"groups": [
-                {"name": "Gemini 4 Argon", "buckets": [
-                    {"id": "gemini-weekly", "window": "weekly", "remaining_fraction": 0.9}
-                ]}
-            ]})),
-            Err(ArgonReject::SharedBucketId)
-        );
-        assert_eq!(
-            parse_agy_cli_quota_checked(&json!({"groups": [
-                {"name": "Gemini 4 Argon", "buckets": [
-                    {"id": "argon-x", "window": "weekly"}
-                ]}
-            ]})),
-            Err(ArgonReject::MissingFraction)
-        );
-        assert_eq!(
-            parse_agy_cli_quota_checked(&json!({"groups": [
-                {"name": "Gemini 4 Argon", "buckets": [
-                    {"window": "weekly", "remaining_fraction": 0.9}
-                ]}
-            ]})),
-            Err(ArgonReject::MissingBucketId)
-        );
-    }
-
-    #[test]
-    fn summaries_merge_across_hosts_with_first_wins_and_body_local_argon() {
+    fn summaries_merge_across_hosts_first_bucket_wins() {
         let daily = json!({"groups": [
             {"displayName": "Gemini Models", "buckets": [
                 {"bucketId": "gemini-5h", "remainingFraction": 0.8}
@@ -748,15 +384,12 @@ mod tests {
             {"displayName": "Gemini Models", "buckets": [
                 {"bucketId": "gemini-5h", "remainingFraction": 0.1},
                 {"bucketId": "gemini-weekly", "remainingFraction": 0.5}
-            ]},
-            argon_group(json!([
-                {"bucketId": "argon-weekly", "window": "weekly", "remainingFraction": 0.3}
-            ]))
+            ]}
         ]});
         let quotas = parse_quota_summaries(&[daily, production]).unwrap();
         assert_eq!(
             quotas.iter().map(|q| q.id.as_str()).collect::<Vec<_>>(),
-            ["geminiPro", "geminiWeekly", "argonWeekly", "claude"]
+            ["geminiPro", "geminiWeekly", "claude"]
         );
         assert_eq!(quotas[0].used_percent, 20.0);
     }
